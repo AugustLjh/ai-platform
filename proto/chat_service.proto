@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package ai.chat.v1;
+
+option go_package = "github.com/ai-platform/proto/chat;chatpb";
+
+// Chat service for AI interactions
+service ChatService {
+  // Stream chat with AI
+  rpc StreamChat(ChatRequest) returns (stream ChatResponse);
+
+  // Get chat history
+  rpc GetChatHistory(ChatHistoryRequest) returns (ChatHistoryResponse);
+}
+
+// Chat request message
+message ChatRequest {
+  string session_id = 1;
+  string user_id = 2;
+  string tenant_id = 3;
+  string message = 4;
+  map<string, string> metadata = 5;
+  ChatConfig config = 6;
+}
+
+// Chat configuration
+message ChatConfig {
+  string model = 1;
+  float temperature = 2;
+  int32 max_tokens = 3;
+  bool use_rag = 4;
+  bool use_agent = 5;
+  repeated string tools = 6;
+}
+
+// Chat response message (streaming)
+message ChatResponse {
+  string session_id = 1;
+  string message_id = 2;
+  ResponseType type = 3;
+  string content = 4;
+  TokenUsage token_usage = 5;
+  string error = 6;
+  map<string, string> metadata = 7;
+}
+
+enum ResponseType {
+  RESPONSE_TYPE_UNSPECIFIED = 0;
+  RESPONSE_TYPE_CONTENT = 1;
+  RESPONSE_TYPE_THINKING = 2;
+  RESPONSE_TYPE_TOOL_CALL = 3;
+  RESPONSE_TYPE_COMPLETE = 4;
+  RESPONSE_TYPE_ERROR = 5;
+}
+
+// Token usage tracking
+message TokenUsage {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+  float cost = 4;
+}
+
+// Chat history request
+message ChatHistoryRequest {
+  string session_id = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+// Chat history response
+message ChatHistoryResponse {
+  repeated ChatMessage messages = 1;
+  int32 total = 2;
+}
+
+// Chat message
+message ChatMessage {
+  string id = 1;
+  string role = 2;
+  string content = 3;
+  int64 timestamp = 4;
+  TokenUsage token_usage = 5;
+}

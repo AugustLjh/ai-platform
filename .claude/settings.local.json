@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p ai_runtime/api ai_runtime/core/prompt/templates ai_runtime/core/rag ai_runtime/core/llm ai_runtime/core/agent/tools ai_runtime/core/stream)"
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "template": "You are a helpful AI assistant. Please answer the following question based on the provided context.\n\nContext:\n{context}\n\nQuestion: {message}\n\nPlease provide a detailed and accurate answer.",
+  "variables": ["context", "message"]
+}
