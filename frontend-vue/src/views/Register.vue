@@ -1,12 +1,12 @@
 <template>
   <div class="register-container">
     <div class="register-card">
-      <h1>Create Account</h1>
-      <p class="subtitle">Join AI Platform</p>
+      <h1>创建账号</h1>
+      <p class="subtitle">加入 AI 平台</p>
 
       <form @submit.prevent="handleRegister" class="register-form">
         <div class="form-group">
-          <label>Email</label>
+          <label>邮箱</label>
           <input
             v-model="form.email"
             type="email"
@@ -16,33 +16,36 @@
         </div>
 
         <div class="form-group">
-          <label>Password</label>
+          <label>密码</label>
           <input
             v-model="form.password"
             type="password"
             required
-            placeholder="At least 6 characters"
-            minlength="6"
+            placeholder="至少8个字符，包含大小写字母和数字"
+            minlength="8"
           />
+          <div class="password-hint">
+            密码要求：至少8个字符，包含大写字母、小写字母和数字
+          </div>
         </div>
 
         <div class="form-group">
-          <label>Confirm Password</label>
+          <label>确认密码</label>
           <input
             v-model="form.confirmPassword"
             type="password"
             required
-            placeholder="Re-enter password"
+            placeholder="再次输入密码"
           />
         </div>
 
         <button type="submit" :disabled="loading" class="btn-primary">
-          {{ loading ? 'Creating Account...' : 'Register' }}
+          {{ loading ? '注册中...' : '注册' }}
         </button>
       </form>
 
       <div class="footer">
-        <p>Already have an account? <router-link to="/login">Login</router-link></p>
+        <p>已有账号？<router-link to="/login">立即登录</router-link></p>
       </div>
 
       <div v-if="error" class="error">{{ error }}</div>
@@ -75,20 +78,28 @@ const handleRegister = async () => {
 
   // Validate passwords match
   if (form.value.password !== form.value.confirmPassword) {
-    error.value = 'Passwords do not match'
+    error.value = '两次输入的密码不一致'
+    loading.value = false
+    return
+  }
+
+  // Validate password length
+  if (form.value.password.length < 8) {
+    error.value = '密码长度至少为8个字符'
     loading.value = false
     return
   }
 
   try {
     await authStore.register(form.value.email, form.value.password)
-    success.value = 'Account created successfully! Redirecting to login...'
+    success.value = '注册成功！正在跳转到登录页面...'
 
     setTimeout(() => {
       router.push('/login')
     }, 2000)
   } catch (err) {
-    error.value = err.response?.data?.error || 'Registration failed'
+    // Display detailed error message from backend
+    error.value = err.response?.data?.error || '注册失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -152,6 +163,12 @@ h1 {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
 
+.password-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6B7280;
+}
+
 .btn-primary {
   width: 100%;
   padding: 12px;
@@ -192,6 +209,7 @@ h1 {
   color: #991B1B;
   border-radius: 8px;
   font-size: 14px;
+  text-align: center;
 }
 
 .success {
@@ -201,5 +219,6 @@ h1 {
   color: #065F46;
   border-radius: 8px;
   font-size: 14px;
+  text-align: center;
 }
 </style>

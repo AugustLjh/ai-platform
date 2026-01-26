@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrInvalidCredentials = errors.New("邮箱或密码错误")
 )
 
 // AuthService handles authentication operations
@@ -111,7 +111,7 @@ func (s *AuthService) Login(req *LoginRequest) (*AuthResponse, error) {
 
 	// Check if user is active
 	if !user.Active {
-		return nil, errors.New("user account is inactive")
+		return nil, errors.New("用户账号已被禁用")
 	}
 
 	// Verify password
@@ -139,7 +139,7 @@ func (s *AuthService) RefreshToken(refreshToken string) (*AuthResponse, error) {
 
 	// Check if user is active
 	if !user.Active {
-		return nil, errors.New("user account is inactive")
+		return nil, errors.New("用户账号已被禁用")
 	}
 
 	// Generate new access token
@@ -176,7 +176,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*User, error) {
 	}
 
 	if !user.Active {
-		return nil, errors.New("user account is inactive")
+		return nil, errors.New("用户账号已被禁用")
 	}
 
 	return user, nil
@@ -213,14 +213,82 @@ func (s *AuthService) generateAuthResponse(user *User) (*AuthResponse, error) {
 // validateRegisterRequest validates registration request
 func (s *AuthService) validateRegisterRequest(req *RegisterRequest) error {
 	if req.Email == "" {
-		return errors.New("email is required")
+		return errors.New("邮箱不能为空")
 	}
+
+	// Validate email format
+	if !isValidEmail(req.Email) {
+		return errors.New("邮箱格式不正确")
+	}
+
 	if req.Password == "" {
-		return errors.New("password is required")
+		return errors.New("密码不能为空")
 	}
 	if len(req.Password) < 8 {
-		return errors.New("password must be at least 8 characters")
+		return errors.New("密码长度至少为8个字符")
 	}
-	// Add more validation as needed (email format, password complexity, etc.)
+
+	// Check password complexity
+	if !hasUpperCase(req.Password) {
+		return errors.New("密码必须包含至少一个大写字母")
+	}
+	if !hasLowerCase(req.Password) {
+		return errors.New("密码必须包含至少一个小写字母")
+	}
+	if !hasDigit(req.Password) {
+		return errors.New("密码必须包含至少一个数字")
+	}
+
 	return nil
+}
+
+// isValidEmail checks if email format is valid
+func isValidEmail(email string) bool {
+	// Simple email validation
+	if len(email) < 3 || len(email) > 254 {
+		return false
+	}
+	atIndex := -1
+	for i, c := range email {
+		if c == '@' {
+			if atIndex != -1 {
+				return false // Multiple @ symbols
+			}
+			atIndex = i
+		}
+	}
+	if atIndex <= 0 || atIndex >= len(email)-1 {
+		return false
+	}
+	return true
+}
+
+// hasUpperCase checks if string contains uppercase letter
+func hasUpperCase(s string) bool {
+	for _, c := range s {
+		if c >= 'A' && c <= 'Z' {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLowerCase checks if string contains lowercase letter
+func hasLowerCase(s string) bool {
+	for _, c := range s {
+		if c >= 'a' && c <= 'z' {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDigit checks if string contains digit
+func hasDigit(s string) bool {
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			return true
+		}
+	}
+	return false
 }

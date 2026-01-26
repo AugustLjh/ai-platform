@@ -8,6 +8,13 @@ A production-ready AI application platform with microservices architecture using
 
 ## 🌟 Key Features
 
+### Frontend (Vue 3)
+- ✅ **Modern Interface** - Clean and responsive design
+- ✅ **Real-time Chat** - Streaming responses with SSE
+- ✅ **Session Management** - Multiple chat sessions
+- ✅ **Mobile Friendly** - Works on all devices
+- ✅ **Docker Deployment** - One-click containerized deployment
+
 ### Platform Layer (Go)
 - ✅ **JWT Authentication** - Complete user registration/login system
 - ✅ **Multi-Tenancy** - Tenant isolation and management
@@ -30,17 +37,10 @@ A production-ready AI application platform with microservices architecture using
 - ✅ **Redis** - Cache, token blacklist, rate limiting
 - ✅ **Elasticsearch** - Vector search, RAG support
 
-### Frontend (Web UI)
-- ✅ **Modern Interface** - Clean and responsive design
-- ✅ **Real-time Chat** - Streaming responses with SSE
-- ✅ **Session Management** - Multiple chat sessions
-- ✅ **Mobile Friendly** - Works on all devices
-
 ## 📋 Table of Contents
 
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
-- [Frontend UI](#frontend-ui)
 - [Project Structure](#project-structure)
 - [Features](#features)
 - [API Documentation](#api-documentation)
@@ -54,8 +54,9 @@ A production-ready AI application platform with microservices architecture using
 ```
 ┌──────────────────────────────┐
 │   Client (Web/App/CLI)        │
+│   Vue 3 Frontend (Nginx)      │
 └────────────▲─────────────────┘
-             │ SSE / WebSocket
+             │ HTTP/SSE
 ┌────────────┴─────────────────┐
 │    Go Platform Layer (Hub)    │
 │                               │
@@ -112,6 +113,7 @@ docker-compose logs -f
 ```
 
 Access:
+- **Frontend UI**: http://localhost (or http://localhost:80)
 - **API Service**: http://localhost:8080
 - **Kibana** (optional): http://localhost:5601
 
@@ -145,53 +147,31 @@ chmod +x start_dev.sh
 start_dev.bat
 ```
 
-## 🎨 Frontend UI
-
-### Access the Web Interface
-
-After starting the services, access the web interface:
-
-**Option 1: Direct File Access**
-```bash
-cd frontend
-open index.html  # Mac
-start index.html # Windows
-xdg-open index.html # Linux
-```
-
-**Option 2: Local Server**
-```bash
-cd frontend
-python -m http.server 3000
-# Visit http://localhost:3000
-```
-
-**Option 3: Via Platform** (add to platform/main.go)
-```go
-r.PathPrefix("/").Handler(http.FileServer(http.Dir("../frontend")))
-```
-Then visit: http://localhost:8080
-
-### Demo Credentials
-
-Use these credentials to test:
-- **Email**: `demo@example.com`
-- **Password**: `demo123456`
-
-### Features
-
-- **📱 Responsive Design**: Works on desktop, tablet, and mobile
-- **💬 Real-time Chat**: Streaming AI responses
-- **🎛️ Configurable**: Toggle RAG, Agent, adjust temperature
-- **💾 Session History**: Multiple chat sessions with persistence
-- **🎨 Modern UI**: Clean, intuitive interface
-
-See [frontend/README.md](frontend/README.md) for more details.
-
 ## 📁 Project Structure
 
 ```
 ai-platform/
+├── frontend-vue/                # Vue 3 Frontend
+│   ├── public/                  # Static assets
+│   ├── src/
+│   │   ├── api/                 # API service layer
+│   │   │   ├── axios.js        # Axios configuration
+│   │   │   └── index.js        # API endpoints
+│   │   ├── assets/             # Assets
+│   │   ├── components/         # Reusable components
+│   │   ├── router/             # Router configuration
+│   │   ├── store/              # Pinia state management
+│   │   │   ├── auth.js         # Auth state
+│   │   │   ├── chat.js         # Chat state
+│   │   │   └── knowledge.js    # Knowledge base state
+│   │   ├── views/              # Page components
+│   │   ├── App.vue             # Root component
+│   │   └── main.js             # Entry file
+│   ├── Dockerfile              # Docker build file
+│   ├── nginx.conf              # Nginx configuration
+│   ├── package.json
+│   └── vite.config.js
+│
 ├── platform/                    # Go Platform Layer
 │   ├── api/
 │   │   ├── http/               # HTTP/SSE/WebSocket handlers
@@ -231,18 +211,6 @@ ai-platform/
 │   │   └── stream/             # Stream processing
 │   ├── main.py
 │   └── requirements.txt
-│
-├── frontend/                    # Web UI
-│   ├── index.html
-│   ├── assets/
-│   │   ├── css/
-│   │   │   └── main.css        # Styles
-│   │   └── js/
-│   │       ├── config.js       # Configuration
-│   │       ├── auth.js         # Authentication
-│   │       ├── chat.js         # Chat logic
-│   │       └── app.js          # Main app
-│   └── README.md
 │
 ├── db/
 │   └── migrations/             # Database migrations

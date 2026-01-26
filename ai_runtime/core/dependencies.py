@@ -7,7 +7,7 @@ from fastapi import Request, Header, HTTPException
 
 from .config import AppConfig, get_config
 from .database import DatabaseManager, get_db_manager
-from .embeddings import SentenceTransformerEmbedding
+from .embeddings import EmbeddingService, SentenceTransformerEmbedding, OpenAIEmbedding, JinaEmbedding
 from .repositories.knowledge_base import KnowledgeBaseRepository
 from .services.knowledge_base import KnowledgeBaseService
 
@@ -18,7 +18,7 @@ class ServiceContainer:
     """Service container for dependency injection"""
 
     def __init__(self):
-        self._embedding_service: Optional[SentenceTransformerEmbedding] = None
+        self._embedding_service: Optional[EmbeddingService] = None
         self._kb_repository: Optional[KnowledgeBaseRepository] = None
         self._kb_service: Optional[KnowledgeBaseService] = None
 
@@ -32,14 +32,36 @@ class ServiceContainer:
         """
         logger.info("🔧 Initializing services...")
 
-        # Initialize embedding service
-        logger.info(f"   Loading embedding model: {config.embedding.model_name}")
-        self._embedding_service = SentenceTransformerEmbedding(
-            model_name=config.embedding.model_name,
-            device=config.embedding.device,
-            cache_folder=config.embedding.cache_folder,
-        )
-        logger.info(f"   ✅ Embedding model loaded (dim={self._embedding_service.get_embedding_dimension()})")
+        # Initialize embedding service based on provider
+        provider = config.embedding.provider.lower()
+        logger.info(f"   Loading embedding service: {provider} / {config.embedding.model_name}")
+
+        if provider == "openai":
+            if not config.embedding.api_key:
+                raise ValueError("EMBEDDING_API_KEY is required for OpenAI provider")
+            self._embedding_service = OpenAIEmbedding(
+                api_key=config.embedding.api_key,
+                model_name=config.embedding.model_name,
+                api_base=config.embedding.api_base,
+            )
+        elif provider == "jina":
+            if not config.embedding.api_key:
+                raise ValueError("EMBEDDING_API_KEY is required for Jina provider")
+            self._embedding_service = JinaEmbedding(
+                api_key=config.embedding.api_key,
+                model_name=config.embedding.model_name,
+                api_base=config.embedding.api_base,
+            )
+        elif provider == "local":
+            self._embedding_service = SentenceTransformerEmbedding(
+                model_name=config.embedding.model_name,
+                device=config.embedding.device,
+                cache_folder=config.embedding.cache_folder,
+            )
+        else:
+            raise ValueError(f"Unknown embedding provider: {provider}")
+
+        logger.info(f"   ✅ Embedding service loaded (dim={self._embedding_service.get_embedding_dimension()})")
 
         # Initialize repository
         self._kb_repository = KnowledgeBaseRepository(
@@ -76,7 +98,7 @@ class ServiceContainer:
         logger.info("✅ All services initialized successfully")
 
     @property
-    def embedding_service(self) -> SentenceTransformerEmbedding:
+    def embedding_service(self) -> EmbeddingService:
         """Get embedding service"""
         if self._embedding_service is None:
             raise RuntimeError("Embedding service not initialized")

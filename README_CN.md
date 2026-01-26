@@ -8,6 +8,13 @@
 
 ## 🌟 核心特性
 
+### 前端 (Vue 3)
+- ✅ **现代化界面** - 清爽响应式设计
+- ✅ **实时聊天** - SSE 流式响应
+- ✅ **会话管理** - 多会话支持
+- ✅ **移动端适配** - 全设备支持
+- ✅ **Docker 部署** - 一键容器化部署
+
 ### 平台层 (Go)
 - ✅ **JWT 认证** - 完整的用户注册/登录系统
 - ✅ **多租户支持** - 租户隔离和管理
@@ -47,8 +54,9 @@
 ```
 ┌──────────────────────────────┐
 │     客户端 (Web/App/CLI)      │
+│    Vue 3 前端 (Nginx)         │
 └────────────▲─────────────────┘
-             │ SSE / WebSocket
+             │ HTTP/SSE
 ┌────────────┴─────────────────┐
 │      Go 平台层 (中枢)         │
 │                               │
@@ -105,6 +113,7 @@ docker-compose logs -f
 ```
 
 访问：
+- **前端界面**: http://localhost (或 http://localhost:80)
 - **API 服务**: http://localhost:8080
 - **Kibana** (可选): http://localhost:5601
 
@@ -142,6 +151,27 @@ start_dev.bat
 
 ```
 ai-platform/
+├── frontend-vue/                # Vue 3 前端
+│   ├── public/                  # 静态资源
+│   ├── src/
+│   │   ├── api/                 # API 服务层
+│   │   │   ├── axios.js        # Axios 配置
+│   │   │   └── index.js        # API 端点
+│   │   ├── assets/             # 资源文件
+│   │   ├── components/         # 可复用组件
+│   │   ├── router/             # 路由配置
+│   │   ├── store/              # Pinia 状态管理
+│   │   │   ├── auth.js         # 认证状态
+│   │   │   ├── chat.js         # 聊天状态
+│   │   │   └── knowledge.js    # 知识库状态
+│   │   ├── views/              # 页面组件
+│   │   ├── App.vue             # 根组件
+│   │   └── main.js             # 入口文件
+│   ├── Dockerfile              # Docker 构建文件
+│   ├── nginx.conf              # Nginx 配置
+│   ├── package.json
+│   └── vite.config.js
+│
 ├── platform/                    # Go 平台层
 │   ├── api/
 │   │   ├── http/               # HTTP/SSE/WebSocket 处理器

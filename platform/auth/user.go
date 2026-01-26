@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	ErrUserNotFound      = errors.New("user not found")
-	ErrUserAlreadyExists = errors.New("user already exists")
-	ErrInvalidPassword   = errors.New("invalid password")
+	ErrUserNotFound      = errors.New("用户不存在")
+	ErrUserAlreadyExists = errors.New("该邮箱已被注册")
+	ErrInvalidPassword   = errors.New("密码错误")
 )
 
 // User represents a user in the system

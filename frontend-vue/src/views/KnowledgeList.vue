@@ -1,19 +1,19 @@
 <template>
   <div class="knowledge-list-container">
     <div class="header">
-      <h1>Knowledge Bases</h1>
+      <h1>知识库</h1>
       <button @click="goToCreate" class="btn-primary">
-        + Create New
+        + 创建新知识库
       </button>
     </div>
 
-    <div v-if="loading" class="loading">Loading...</div>
+    <div v-if="loading" class="loading">加载中...</div>
 
     <div v-if="error" class="error">{{ error }}</div>
 
     <div v-if="!loading && knowledgeBases.length === 0" class="empty-state">
-      <p>No knowledge bases yet</p>
-      <button @click="goToCreate" class="btn-secondary">Create your first knowledge base</button>
+      <p>还没有知识库</p>
+      <button @click="goToCreate" class="btn-secondary">创建第一个知识库</button>
     </div>
 
     <div v-if="!loading && knowledgeBases.length > 0" class="knowledge-grid">
@@ -26,17 +26,17 @@
         <div class="card-header">
           <h3>{{ kb.name }}</h3>
           <div class="card-actions" @click.stop>
-            <button @click="goToEdit(kb.id)" class="btn-icon" title="Edit">
+            <button @click="goToEdit(kb.id)" class="btn-icon" title="编辑">
               ✏️
             </button>
-            <button @click="handleDelete(kb.id)" class="btn-icon" title="Delete">
+            <button @click="handleDelete(kb.id)" class="btn-icon" title="删除">
               🗑️
             </button>
           </div>
         </div>
-        <p class="description">{{ kb.description || 'No description' }}</p>
+        <p class="description">{{ kb.description || '暂无描述' }}</p>
         <div class="card-footer">
-          <span class="meta">{{ kb.document_count || 0 }} documents</span>
+          <span class="meta">{{ kb.document_count || 0 }} 个文档</span>
           <span class="meta">{{ formatDate(kb.created_at) }}</span>
         </div>
       </div>
@@ -66,7 +66,7 @@ const loadKnowledgeBases = async () => {
   try {
     knowledgeBases.value = await knowledgeStore.fetchKnowledgeBases()
   } catch (err) {
-    error.value = err.response?.data?.error || 'Failed to load knowledge bases'
+    error.value = err.response?.data?.error || '加载知识库失败'
   } finally {
     loading.value = false
   }
@@ -85,7 +85,7 @@ const goToEdit = (id) => {
 }
 
 const handleDelete = async (id) => {
-  if (!confirm('Are you sure you want to delete this knowledge base?')) {
+  if (!confirm('确定要删除这个知识库吗？')) {
     return
   }
 
@@ -93,14 +93,14 @@ const handleDelete = async (id) => {
     await knowledgeStore.deleteKnowledgeBase(id)
     await loadKnowledgeBases()
   } catch (err) {
-    error.value = err.response?.data?.error || 'Failed to delete knowledge base'
+    error.value = err.response?.data?.error || '删除知识库失败'
   }
 }
 
 const formatDate = (dateString) => {
-  if (!dateString) return 'N/A'
+  if (!dateString) return '未知'
   const date = new Date(dateString)
-  return date.toLocaleDateString()
+  return date.toLocaleDateString('zh-CN')
 }
 </script>
 

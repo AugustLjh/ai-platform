@@ -1,45 +1,45 @@
 <template>
   <div class="knowledge-create-container">
     <div class="header">
-      <button @click="goBack" class="btn-back">← Back</button>
-      <h1>Create Knowledge Base</h1>
+      <button @click="goBack" class="btn-back">← 返回</button>
+      <h1>创建知识库</h1>
     </div>
 
     <div class="form-card">
       <form @submit.prevent="handleSubmit">
         <div class="form-group">
-          <label>Name *</label>
+          <label>名称 *</label>
           <input
             v-model="form.name"
             type="text"
             required
-            placeholder="Enter knowledge base name"
+            placeholder="请输入知识库名称"
           />
         </div>
 
         <div class="form-group">
-          <label>Description</label>
+          <label>描述</label>
           <textarea
             v-model="form.description"
             rows="4"
-            placeholder="Enter description (optional)"
+            placeholder="请输入描述（可选）"
           ></textarea>
         </div>
 
         <div class="form-group">
-          <label>Type</label>
+          <label>类型</label>
           <select v-model="form.type">
-            <option value="general">General</option>
-            <option value="technical">Technical</option>
-            <option value="business">Business</option>
-            <option value="personal">Personal</option>
+            <option value="general">通用</option>
+            <option value="technical">技术</option>
+            <option value="business">商业</option>
+            <option value="personal">个人</option>
           </select>
         </div>
 
         <div class="form-group">
           <label>
             <input type="checkbox" v-model="form.is_public" />
-            Make this knowledge base public
+            设为公开知识库
           </label>
         </div>
 
@@ -47,10 +47,10 @@
 
         <div class="form-actions">
           <button type="button" @click="goBack" class="btn-secondary">
-            Cancel
+            取消
           </button>
           <button type="submit" :disabled="loading" class="btn-primary">
-            {{ loading ? 'Creating...' : 'Create Knowledge Base' }}
+            {{ loading ? '创建中...' : '创建知识库' }}
           </button>
         </div>
       </form>
@@ -84,7 +84,7 @@ const handleSubmit = async () => {
     const newKB = await knowledgeStore.createKnowledgeBase(form.value)
     router.push(`/knowledge/${newKB.id}`)
   } catch (err) {
-    error.value = err.response?.data?.error || 'Failed to create knowledge base'
+    error.value = err.response?.data?.error || '创建知识库失败'
   } finally {
     loading.value = false
   }

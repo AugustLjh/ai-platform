@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ai-platform/platform/api/grpc"
@@ -56,6 +57,7 @@ func main() {
 
 	// Initialize services
 	chatService := service.NewChatService(aiClient)
+	knowledgeService := service.NewKnowledgeService()
 
 	// Initialize middleware (with real JWT auth)
 	authMiddleware := middleware.NewAuthMiddleware(authService)
@@ -66,6 +68,7 @@ func main() {
 	// Initialize HTTP handlers
 	chatHandler := httphandler.NewChatHandler(chatService, costTracker)
 	authHandler := httphandler.NewAuthHandler(authService)
+	knowledgeHandler := httphandler.NewKnowledgeHandler(knowledgeService)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -121,6 +124,53 @@ func main() {
 			costTracker.Handler,
 		))
 
+	// Knowledge base endpoints (protected)
+	mux.Handle("/api/v1/knowledge",
+		chain(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					knowledgeHandler.HandleListKnowledgeBases(w, r)
+				} else if r.Method == http.MethodPost {
+					knowledgeHandler.HandleCreateKnowledgeBase(w, r)
+				} else {
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				}
+			}),
+			authMiddleware.Handler,
+		))
+
+	// Knowledge base detail endpoints
+	mux.Handle("/api/v1/knowledge/",
+		chain(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path := r.URL.Path
+				// Check if it's a document operation
+				if strings.Contains(path, "/documents") {
+					if r.Method == http.MethodGet {
+						knowledgeHandler.HandleGetDocuments(w, r)
+					} else if r.Method == http.MethodPost {
+						knowledgeHandler.HandleUploadDocument(w, r)
+					} else if r.Method == http.MethodDelete {
+						knowledgeHandler.HandleDeleteDocument(w, r)
+					} else {
+						http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					}
+				} else {
+					// Knowledge base operations
+					if r.Method == http.MethodGet {
+						knowledgeHandler.HandleGetKnowledgeBase(w, r)
+					} else if r.Method == http.MethodPut {
+						knowledgeHandler.HandleUpdateKnowledgeBase(w, r)
+					} else if r.Method == http.MethodDelete {
+						knowledgeHandler.HandleDeleteKnowledgeBase(w, r)
+					} else {
+						http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					}
+				}
+			}),
+			authMiddleware.Handler,
+		))
+
 	// Start server
 	log.Println("============================================================")
 	log.Println("AI Platform Server Configuration:")
@@ -141,6 +191,16 @@ func main() {
 	log.Println("  - POST /api/v1/chat (sync)")
 	log.Println("  - POST /api/v1/chat/sse (streaming)")
 	log.Println("  - WS   /api/v1/chat/ws (websocket)")
+	log.Println("")
+	log.Println("Knowledge Base Endpoints:")
+	log.Println("  - GET    /api/v1/knowledge (list)")
+	log.Println("  - POST   /api/v1/knowledge (create)")
+	log.Println("  - GET    /api/v1/knowledge/{id} (get)")
+	log.Println("  - PUT    /api/v1/knowledge/{id} (update)")
+	log.Println("  - DELETE /api/v1/knowledge/{id} (delete)")
+	log.Println("  - GET    /api/v1/knowledge/{id}/documents (list docs)")
+	log.Println("  - POST   /api/v1/knowledge/{id}/documents (upload)")
+	log.Println("  - DELETE /api/v1/knowledge/{id}/documents/{docId} (delete doc)")
 	log.Println("")
 	log.Println("Demo User:")
 	log.Printf("  Email: %s", demoUser.Email)

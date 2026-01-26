@@ -1,31 +1,31 @@
 <template>
   <div class="login-container">
     <div class="login-card">
-      <h1>🤖 AI Platform</h1>
-      <p class="subtitle">Vue Frontend</p>
+      <h1>🤖 AI 平台</h1>
+      <p class="subtitle">Vue 前端</p>
 
       <form @submit.prevent="handleLogin" class="login-form">
         <div class="form-group">
-          <label>Email</label>
+          <label>邮箱</label>
           <input v-model="form.email" type="email" required placeholder="your@example.com" />
         </div>
 
         <div class="form-group">
-          <label>Password</label>
-          <input v-model="form.password" type="password" required placeholder="Enter password" />
+          <label>密码</label>
+          <input v-model="form.password" type="password" required placeholder="请输入密码" />
         </div>
 
         <button type="submit" :disabled="loading" class="btn-primary">
-          {{ loading ? 'Logging in...' : 'Login' }}
+          {{ loading ? '登录中...' : '登录' }}
         </button>
       </form>
 
       <div class="footer">
-        <p>Don't have an account? <router-link to="/register">Register</router-link></p>
+        <p>还没有账号？<router-link to="/register">立即注册</router-link></p>
         <div class="demo-info">
-          <p><strong>Demo Account:</strong></p>
-          <p>Email: demo@example.com</p>
-          <p>Password: demo123456</p>
+          <p><strong>演示账号：</strong></p>
+          <p>邮箱：demo@example.com</p>
+          <p>密码：demo123456</p>
         </div>
       </div>
 
@@ -57,7 +57,7 @@ const handleLogin = async () => {
     await authStore.login(form.value.email, form.value.password)
     router.push('/knowledge')
   } catch (err) {
-    error.value = err.response?.data?.error || 'Login failed'
+    error.value = err.response?.data?.error || '登录失败，请检查邮箱和密码'
   } finally {
     loading.value = false
   }
@@ -168,5 +168,6 @@ h1 {
   color: #991B1B;
   border-radius: 8px;
   font-size: 14px;
+  text-align: center;
 }
 </style>

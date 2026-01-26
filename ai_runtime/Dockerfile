@@ -2,20 +2,22 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+ENV ENV_FILE=/app/ai_runtime/.env
 
-# Configure pip to use Chinese mirrors (Tsinghua, Aliyun, USTC)
-#RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
-#    pip config set global.extra-index-url "https://mirrors.aliyun.com/pypi/simple/ https://mirrors.ustc.edu.cn/pypi/web/simple/" && \
-#    pip config set global.trusted-host "pypi.tuna.tsinghua.edu.cn mirrors.aliyun.com mirrors.ustc.edu.cn"
+# Configure Hugging Face mirror for China (解决模型下载问题)
+ENV HF_ENDPOINT=https://hf-mirror.com
 
-
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip config set global.extra-index-url "https://mirrors.aliyun.com/pypi/simple/ https://mirrors.ustc.edu.cn/pypi/web/simple/ https://pypi.org/simple" && \
-    pip config set global.trusted-host "pypi.tuna.tsinghua.edu.cn mirrors.aliyun.com mirrors.ustc.edu.cn pypi.org"
+# Configure pip to use Chinese mirrors
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    pip config set global.timeout 3600 && \
+    pip config set global.default-timeout 7200 && \
+    pip config set install.retries 20 && \
+    pip config set install.no-cache-dir false
 
 # Install dependencies
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install asyncpg && \
+    pip install -r requirements.txt
 
 # Copy source code
 COPY . .

@@ -1,45 +1,45 @@
 <template>
   <div class="knowledge-detail-container">
-    <div v-if="loading" class="loading">Loading...</div>
+    <div v-if="loading" class="loading">加载中...</div>
 
     <div v-if="error" class="error">{{ error }}</div>
 
     <div v-if="!loading && knowledgeBase">
       <div class="header">
-        <button @click="goBack" class="btn-back">← Back</button>
+        <button @click="goBack" class="btn-back">← 返回</button>
         <div class="header-content">
           <h1>{{ knowledgeBase.name }}</h1>
           <div class="header-actions">
-            <button @click="goToEdit" class="btn-secondary">Edit</button>
-            <button @click="handleDelete" class="btn-danger">Delete</button>
+            <button @click="goToEdit" class="btn-secondary">编辑</button>
+            <button @click="handleDelete" class="btn-danger">删除</button>
           </div>
         </div>
       </div>
 
       <div class="info-card">
         <div class="info-row">
-          <span class="label">Description:</span>
-          <span class="value">{{ knowledgeBase.description || 'No description' }}</span>
+          <span class="label">描述：</span>
+          <span class="value">{{ knowledgeBase.description || '暂无描述' }}</span>
         </div>
         <div class="info-row">
-          <span class="label">Type:</span>
-          <span class="value">{{ knowledgeBase.type || 'general' }}</span>
+          <span class="label">类型：</span>
+          <span class="value">{{ getTypeLabel(knowledgeBase.type) }}</span>
         </div>
         <div class="info-row">
-          <span class="label">Status:</span>
-          <span class="value">{{ knowledgeBase.is_public ? 'Public' : 'Private' }}</span>
+          <span class="label">状态：</span>
+          <span class="value">{{ knowledgeBase.is_public ? '公开' : '私有' }}</span>
         </div>
         <div class="info-row">
-          <span class="label">Created:</span>
+          <span class="label">创建时间：</span>
           <span class="value">{{ formatDate(knowledgeBase.created_at) }}</span>
         </div>
       </div>
 
       <div class="documents-section">
         <div class="section-header">
-          <h2>Documents ({{ documents.length }})</h2>
+          <h2>文档 ({{ documents.length }})</h2>
           <label class="btn-primary upload-btn">
-            + Upload Document
+            + 上传文档
             <input
               type="file"
               @change="handleFileUpload"
@@ -52,8 +52,8 @@
         <div v-if="uploadError" class="error">{{ uploadError }}</div>
 
         <div v-if="documents.length === 0" class="empty-state">
-          <p>No documents yet</p>
-          <p class="hint">Upload your first document to get started</p>
+          <p>还没有文档</p>
+          <p class="hint">上传第一个文档开始使用</p>
         </div>
 
         <div v-if="documents.length > 0" class="documents-list">
@@ -72,7 +72,7 @@
             <button
               @click="handleDeleteDocument(doc.id)"
               class="btn-icon-danger"
-              title="Delete"
+              title="删除"
             >
               🗑️
             </button>
@@ -111,7 +111,7 @@ const loadKnowledgeBase = async () => {
   try {
     knowledgeBase.value = await knowledgeStore.fetchKnowledgeBase(knowledgeBaseId)
   } catch (err) {
-    error.value = err.response?.data?.error || 'Failed to load knowledge base'
+    error.value = err.response?.data?.error || '加载知识库失败'
   } finally {
     loading.value = false
   }
@@ -121,7 +121,7 @@ const loadDocuments = async () => {
   try {
     documents.value = await knowledgeStore.fetchDocuments(knowledgeBaseId)
   } catch (err) {
-    console.error('Failed to load documents:', err)
+    console.error('加载文档失败:', err)
   }
 }
 
@@ -135,12 +135,12 @@ const handleFileUpload = async (event) => {
     await loadDocuments()
     event.target.value = ''
   } catch (err) {
-    uploadError.value = err.response?.data?.error || 'Failed to upload document'
+    uploadError.value = err.response?.data?.error || '上传文档失败'
   }
 }
 
 const handleDeleteDocument = async (documentId) => {
-  if (!confirm('Are you sure you want to delete this document?')) {
+  if (!confirm('确定要删除这个文档吗？')) {
     return
   }
 
@@ -148,12 +148,12 @@ const handleDeleteDocument = async (documentId) => {
     await knowledgeStore.deleteDocument(knowledgeBaseId, documentId)
     await loadDocuments()
   } catch (err) {
-    uploadError.value = err.response?.data?.error || 'Failed to delete document'
+    uploadError.value = err.response?.data?.error || '删除文档失败'
   }
 }
 
 const handleDelete = async () => {
-  if (!confirm('Are you sure you want to delete this knowledge base? This action cannot be undone.')) {
+  if (!confirm('确定要删除这个知识库吗？此操作无法撤销。')) {
     return
   }
 
@@ -161,7 +161,7 @@ const handleDelete = async () => {
     await knowledgeStore.deleteKnowledgeBase(knowledgeBaseId)
     router.push('/knowledge')
   } catch (err) {
-    error.value = err.response?.data?.error || 'Failed to delete knowledge base'
+    error.value = err.response?.data?.error || '删除知识库失败'
   }
 }
 
@@ -173,14 +173,24 @@ const goToEdit = () => {
   router.push(`/knowledge/${knowledgeBaseId}/edit`)
 }
 
+const getTypeLabel = (type) => {
+  const typeMap = {
+    'general': '通用',
+    'technical': '技术',
+    'business': '商业',
+    'personal': '个人'
+  }
+  return typeMap[type] || type || '通用'
+}
+
 const formatDate = (dateString) => {
-  if (!dateString) return 'N/A'
+  if (!dateString) return '未知'
   const date = new Date(dateString)
-  return date.toLocaleDateString()
+  return date.toLocaleDateString('zh-CN')
 }
 
 const formatFileSize = (bytes) => {
-  if (!bytes) return 'N/A'
+  if (!bytes) return '未知'
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'

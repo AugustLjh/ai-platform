@@ -11,8 +11,8 @@ The documentation has been streamlined following the principle of "keeping the e
 ### 中文版 (Chinese)
 - **[README_CN.md](README_CN.md)** - 完整的中文项目文档
   - 项目介绍和架构
-  - 快速开始指南（3种启动方式）
-  - 功能特性详解（JWT、Chat API、数据库、RAG、Agent）
+  - 快速开始指南（Docker Compose 一键部署）
+  - 功能特性详解（前端、平台层、AI 运行时、数据库）
   - API 完整文档（认证端点、聊天端点）
   - 数据库配置指南
   - 开发和部署指南
@@ -21,8 +21,8 @@ The documentation has been streamlined following the principle of "keeping the e
 ### English
 - **[README.md](README.md)** - Complete English project documentation
   - Project introduction and architecture
-  - Quick start guide (3 startup methods)
-  - Feature details (JWT, Chat API, Databases, RAG, Agent)
+  - Quick start guide (Docker Compose one-click deployment)
+  - Feature details (Frontend, Platform, AI Runtime, Databases)
   - Complete API documentation (Auth & Chat endpoints)
   - Database configuration
   - Development and deployment guides
@@ -70,6 +70,25 @@ The documentation has been streamlined following the principle of "keeping the e
 
 ---
 
+## 🎨 前端文档 | Frontend Documentation
+
+### Vue 3 前端 | Vue 3 Frontend
+- **[frontend-vue/README.md](frontend-vue/README.md)** (English)
+  - Vue 3 + Vite + Pinia setup
+  - Project structure
+  - Development guide
+  - Build and deployment
+  - API integration
+
+- **[frontend-vue/README_CN.md](frontend-vue/README_CN.md)** (中文)
+  - Vue 3 + Vite + Pinia 配置
+  - 项目结构
+  - 开发指南
+  - 构建和部署
+  - API 集成
+
+---
+
 ## 📝 示例和脚本 | Examples & Scripts
 
 ### API 示例 | API Examples
@@ -111,17 +130,16 @@ ai-platform/
 ├── README_CN.md                        # 中文主文档 | Chinese main README
 ├── DOCS_GUIDE.md                       # 本文件 | This file
 │
+├── frontend-vue/                       # Vue 3 前端
+│   ├── README.md                       # 前端文档 (English)
+│   └── README_CN.md                    # 前端文档 (中文)
+│
 ├── docs/                               # 核心技术文档 | Core technical docs
+│   ├── README.md                       # 文档索引
 │   ├── JWT_AUTHENTICATION.md          # JWT 认证指南 (English)
 │   ├── JWT_AUTHENTICATION_ZH.md       # JWT 认证指南 (中文)
 │   ├── DATABASE_GUIDE.md              # 数据库指南 (English)
-│   ├── DATABASE_GUIDE_ZH.md           # 数据库指南 (中文)
-│   └── archive/                        # 历史文档存档
-│       ├── JWT_AUTH_COMPLETE.md
-│       ├── DATABASE_INTEGRATION_COMPLETE.md
-│       ├── QUICKSTART_JWT.md
-│       ├── PROJECT_README.md
-│       └── PROJECT_OVERVIEW.md
+│   └── DATABASE_GUIDE_ZH.md           # 数据库指南 (中文)
 │
 ├── examples/                           # 示例代码
 │   ├── auth_examples.sh               # 认证示例（Linux/Mac）
@@ -155,6 +173,10 @@ ai-platform/
 → **docs/DATABASE_GUIDE_ZH.md** (中文) - 完整数据库指南
 → 运行 `scripts/init-databases.sh` 一键启动
 
+#### 开发前端 | Develop frontend
+→ **frontend-vue/README.md** (English) - Vue 3 frontend guide
+→ **frontend-vue/README_CN.md** (中文) - Vue 3 前端指南
+
 #### 查看 API 示例 | See API examples
 → **examples/auth_examples.sh** - 认证示例
 → **examples/api_examples.sh** - API 示例
@@ -175,21 +197,21 @@ ai-platform/
 
 ---
 
-## ✅ 文档清单 | Documentation Checklist
-
 ## 💡 文档使用建议 | Documentation Tips
 
 ### 新用户 | New Users
 1. 先读主 README（README.md 或 README_CN.md）
-2. 按照快速开始指南启动项目（3种方式可选）
-3. 查看 examples/ 目录的示例代码学习使用
-4. 遇到问题查看 FAQ 部分
+2. 按照快速开始指南启动项目（Docker Compose 一键部署）
+3. 访问前端界面 http://localhost
+4. 查看 examples/ 目录的示例代码学习使用
+5. 遇到问题查看 FAQ 部分
 
 ### 开发者 | Developers
 1. 阅读主 README 的"开发指南"部分
 2. 查看 docs/ 目录的详细技术文档
-3. 参考 examples/ 目录的示例代码
-4. 使用 scripts/ 目录的工具脚本
+3. 查看 frontend-vue/ 的前端文档
+4. 参考 examples/ 目录的示例代码
+5. 使用 scripts/ 目录的工具脚本
 
 ### 运维人员 | Operations
 1. 阅读"部署指南"章节
@@ -197,27 +219,49 @@ ai-platform/
 3. 参考"监控"和"故障排查"章节
 4. 使用生产部署检查清单
 
-
-## 🗄️ 归档文档说明 | Archived Documents
-
-位于 `docs/archive/` 的文档已被整合到主文档中：
-
-Docs in `docs/archive/` have been consolidated into main docs:
-
-- **PROJECT_README.md** → 内容已整合到 README.md
-- **PROJECT_OVERVIEW.md** → 内容已整合到 README.md
-- **JWT_AUTH_COMPLETE.md** → 内容已整合到 README.md 和 JWT_AUTHENTICATION.md
-- **DATABASE_INTEGRATION_COMPLETE.md** → 内容已整合到 README.md 和 DATABASE_GUIDE.md
-- **QUICKSTART_JWT.md** → 内容已整合到 README.md 的快速开始部分
-
-这些文件保留在 archive/ 目录供参考，但不再维护。
-
-These files are kept in archive/ for reference but are no longer maintained.
-
 ---
 
 ## 🔄 文档更新 | Documentation Updates
 
-文档最后更新：2025-12-20
-Last updated: 2025-12-20
+文档最后更新：2026-01-17
+Last updated: 2026-01-17
 
+**更新内容 | Updates:**
+- 整合和清理了所有技术文档
+- 统一了中英文文档格式
+- 添加了完整的文档导航
+- 更新了 Docker 部署相关文档
+- 删除了归档文档目录，保持项目简洁
+
+---
+
+## 📦 Docker 部署文档 | Docker Deployment
+
+### 服务列表 | Services
+使用 Docker Compose 一键部署所有服务：
+
+Deploy all services with Docker Compose:
+
+```bash
+docker-compose --profile full up -d
+```
+
+**包含的服务 | Included Services:**
+- **frontend** - Vue 3 前端 (Nginx) - Port 80
+- **platform** - Go 平台层 - Port 8080
+- **ai-runtime** - Python AI 运行时 - Ports 8000, 50051
+- **postgres** - PostgreSQL 数据库 - Port 5432
+- **redis** - Redis 缓存 - Port 6379
+- **elasticsearch** - Elasticsearch 搜索 - Port 9200
+- **kibana** (可选) - Kibana 可视化 - Port 5601
+
+### 访问地址 | Access URLs
+- 前端界面 | Frontend: http://localhost
+- API 服务 | API: http://localhost:8080
+- Kibana (可选): http://localhost:5601
+
+---
+
+**使用愉快！如有问题，请查看文档或提交 Issue。** 🚀
+
+**Enjoy! Check docs or submit issues for any questions.** 🚀
