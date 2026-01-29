@@ -4,7 +4,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ai-platform/platform/api/grpc"
@@ -20,7 +19,7 @@ func main() {
 	// Configuration
 	aiRuntimeAddr := getEnv("AI_RUNTIME_ADDR", "localhost:50051")
 	platformPort := getEnv("PLATFORM_PORT", ":8080")
-	jwtSecret := getEnv("JWT_SECRET", "your-secret-key-change-this-in-production")
+	jwtSecret := getEnv("JWT_SECRET", "2f7a48d9e6b3c1a5f8e2b9c4d6a7f3e5b8d2e1c6a9f3d5b7e2c4a6f8d9e3b5c1")
 
 	// Initialize AI client
 	log.Printf("Connecting to AI Runtime at %s...", aiRuntimeAddr)
@@ -57,18 +56,17 @@ func main() {
 
 	// Initialize services
 	chatService := service.NewChatService(aiClient)
-	knowledgeService := service.NewKnowledgeService()
 
 	// Initialize middleware (with real JWT auth)
 	authMiddleware := middleware.NewAuthMiddleware(authService)
 	rateLimiter := middleware.NewRateLimiter(100, time.Minute) // 100 requests per minute
 	guardMiddleware := middleware.NewGuardMiddleware()
 	costTracker := middleware.NewCostTracker()
+	corsMiddleware := middleware.NewCORSMiddleware() // 添加这行
 
 	// Initialize HTTP handlers
 	chatHandler := httphandler.NewChatHandler(chatService, costTracker)
 	authHandler := httphandler.NewAuthHandler(authService)
-	knowledgeHandler := httphandler.NewKnowledgeHandler(knowledgeService)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -124,53 +122,6 @@ func main() {
 			costTracker.Handler,
 		))
 
-	// Knowledge base endpoints (protected)
-	mux.Handle("/api/v1/knowledge",
-		chain(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodGet {
-					knowledgeHandler.HandleListKnowledgeBases(w, r)
-				} else if r.Method == http.MethodPost {
-					knowledgeHandler.HandleCreateKnowledgeBase(w, r)
-				} else {
-					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-				}
-			}),
-			authMiddleware.Handler,
-		))
-
-	// Knowledge base detail endpoints
-	mux.Handle("/api/v1/knowledge/",
-		chain(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				path := r.URL.Path
-				// Check if it's a document operation
-				if strings.Contains(path, "/documents") {
-					if r.Method == http.MethodGet {
-						knowledgeHandler.HandleGetDocuments(w, r)
-					} else if r.Method == http.MethodPost {
-						knowledgeHandler.HandleUploadDocument(w, r)
-					} else if r.Method == http.MethodDelete {
-						knowledgeHandler.HandleDeleteDocument(w, r)
-					} else {
-						http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-					}
-				} else {
-					// Knowledge base operations
-					if r.Method == http.MethodGet {
-						knowledgeHandler.HandleGetKnowledgeBase(w, r)
-					} else if r.Method == http.MethodPut {
-						knowledgeHandler.HandleUpdateKnowledgeBase(w, r)
-					} else if r.Method == http.MethodDelete {
-						knowledgeHandler.HandleDeleteKnowledgeBase(w, r)
-					} else {
-						http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-					}
-				}
-			}),
-			authMiddleware.Handler,
-		))
-
 	// Start server
 	log.Println("============================================================")
 	log.Println("AI Platform Server Configuration:")
@@ -178,7 +129,7 @@ func main() {
 	log.Printf("  Platform Port: %s", platformPort)
 	log.Printf("  AI Runtime: %s", aiRuntimeAddr)
 	log.Println("  Auth: JWT (Real)")
-	log.Println("  Middleware: Auth, RateLimit, Guard, Cost")
+	log.Println("  Middleware: CORS, Auth, RateLimit, Guard, Cost") // 更新这行
 	log.Println("")
 	log.Println("Auth Endpoints:")
 	log.Println("  - POST /api/v1/auth/register")
@@ -192,23 +143,14 @@ func main() {
 	log.Println("  - POST /api/v1/chat/sse (streaming)")
 	log.Println("  - WS   /api/v1/chat/ws (websocket)")
 	log.Println("")
-	log.Println("Knowledge Base Endpoints:")
-	log.Println("  - GET    /api/v1/knowledge (list)")
-	log.Println("  - POST   /api/v1/knowledge (create)")
-	log.Println("  - GET    /api/v1/knowledge/{id} (get)")
-	log.Println("  - PUT    /api/v1/knowledge/{id} (update)")
-	log.Println("  - DELETE /api/v1/knowledge/{id} (delete)")
-	log.Println("  - GET    /api/v1/knowledge/{id}/documents (list docs)")
-	log.Println("  - POST   /api/v1/knowledge/{id}/documents (upload)")
-	log.Println("  - DELETE /api/v1/knowledge/{id}/documents/{docId} (delete doc)")
-	log.Println("")
 	log.Println("Demo User:")
 	log.Printf("  Email: %s", demoUser.Email)
 	log.Println("  Password: demo123456")
 	log.Println("============================================================")
 	log.Printf("Server listening on %s", platformPort)
 
-	if err := http.ListenAndServe(platformPort, mux); err != nil {
+	// 应用全局CORS中间件
+	if err := http.ListenAndServe(platformPort, corsMiddleware.Handler(mux)); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

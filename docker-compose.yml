@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # PostgreSQL Database
   postgres:
-    image: docker.1ms.run/library/postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: ai-platform-postgres
     ports:
 #      - "5432:5432"
@@ -61,22 +61,6 @@ services:
     networks:
       - ai-platform
 
-  # Kibana (optional - for ES visualization)
-  kibana:
-    image: docker.1ms.run/library/kibana:8.13.0
-    container_name: ai-platform-kibana
-    ports:
-      - "5601:5601"
-    environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-    networks:
-      - ai-platform
-    profiles:
-      - observability
-
   # Python AI Runtime (保持原样，因为这是本地构建)
   ai-runtime:
     build:
@@ -92,7 +76,6 @@ services:
       - ./ai_runtime/.env
     volumes:
       - ./ai_runtime:/app
-      - ai_runtime_venv:/usr/local/lib/python3.11/site-packages
       - huggingface_cache:/root/.cache/huggingface
     command: python main.py --mode both --http-port 8000 --grpc-port 50051
     depends_on:

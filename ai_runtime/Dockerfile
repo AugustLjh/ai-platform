@@ -1,29 +1,31 @@
-# Python AI Runtime Dockerfile
 FROM python:3.11-slim
 
+# ---------- 基础环境 ----------
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 WORKDIR /app
-ENV ENV_FILE=/app/ai_runtime/.env
 
-# Configure Hugging Face mirror for China (解决模型下载问题)
-ENV HF_ENDPOINT=https://hf-mirror.com
+# ---------- 系统依赖（按需） ----------
+# 如果你有 grpc / cryptography / numpy / torch 等，通常需要这些
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Configure pip to use Chinese mirrors
-RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
-    pip config set global.timeout 3600 && \
-    pip config set global.default-timeout 7200 && \
-    pip config set install.retries 20 && \
-    pip config set install.no-cache-dir false
-
-# Install dependencies
+# ---------- Python 依赖 ----------
+# 先拷贝 requirements，利用 Docker cache
 COPY requirements.txt .
-RUN pip install asyncpg && \
-    pip install -r requirements.txt
 
-# Copy source code
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# ---------- 应用代码 ----------
 COPY . .
 
-# Expose ports
+# ---------- 端口 ----------
 EXPOSE 8000 50051
 
-# Run the application
+# ---------- 启动 ----------
 CMD ["python", "main.py"]

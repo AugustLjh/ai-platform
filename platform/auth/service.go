@@ -224,8 +224,8 @@ func (s *AuthService) validateRegisterRequest(req *RegisterRequest) error {
 	if req.Password == "" {
 		return errors.New("密码不能为空")
 	}
-	if len(req.Password) < 8 {
-		return errors.New("密码长度至少为8个字符")
+	if len(req.Password) < 6 {
+		return errors.New("密码长度至少为6个字符")
 	}
 
 	// Check password complexity
