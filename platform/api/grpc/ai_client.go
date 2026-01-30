@@ -2,9 +2,11 @@ package grpc
 
 import (
 	"context"
+	"io"
 	"log"
 	"time"
 
+	pb "github.com/ai-platform/platform/proto/chat"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -42,6 +44,7 @@ type ChatConfig struct {
 // AIClient handles gRPC communication with Python AI Runtime
 type AIClient struct {
 	conn    *grpc.ClientConn
+	client  pb.ChatServiceClient
 	address string
 }
 
@@ -57,8 +60,11 @@ func NewAIClient(address string) (*AIClient, error) {
 		return nil, err
 	}
 
+	client := pb.NewChatServiceClient(conn)
+
 	return &AIClient{
 		conn:    conn,
+		client:  client,
 		address: address,
 	}, nil
 }
@@ -68,71 +74,9 @@ func (c *AIClient) Close() error {
 	return c.conn.Close()
 }
 
-// StreamChat streams chat with AI runtime
-// NOTE: In a real implementation, this would use generated gRPC stubs
-// For now, this is a mock implementation to show the structure
+// StreamChat streams chat with AI runtime using real gRPC
 func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
-	// In production, you would:
-	// 1. Generate Go gRPC stubs from proto files
-	// 2. Use the generated client to call StreamChat
-	// 3. Stream responses back through the channel
-
-	messageChan := make(chan *ChatMessage, 100)
-
-	// Mock implementation
-	go func() {
-		defer close(messageChan)
-
-		log.Printf("[AIClient] Mock streaming chat for session: %s", req.SessionID)
-
-		// Simulate streaming response
-		responses := []string{
-			"This ",
-			"is ",
-			"a ",
-			"mock ",
-			"response ",
-			"from ",
-			"AI ",
-			"Runtime. ",
-		}
-
-		for i, content := range responses {
-			select {
-			case <-ctx.Done():
-				return
-			case messageChan <- &ChatMessage{
-				SessionID: req.SessionID,
-				MessageID: "msg_" + req.SessionID,
-				Type:      1, // CONTENT
-				Content:   content,
-				Metadata:  map[string]string{},
-			}:
-				time.Sleep(100 * time.Millisecond)
-			}
-
-			// Send completion on last chunk
-			if i == len(responses)-1 {
-				messageChan <- &ChatMessage{
-					SessionID: req.SessionID,
-					MessageID: "msg_" + req.SessionID,
-					Type:      4, // COMPLETE
-					Content:   "",
-					Metadata:  map[string]string{},
-				}
-			}
-		}
-	}()
-
-	return messageChan, nil
-}
-
-// Real implementation would look like this:
-/*
-func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
-	client := pb.NewChatServiceClient(c.conn)
-
-	// Convert request
+	// Convert request to protobuf
 	pbReq := &pb.ChatRequest{
 		SessionId: req.SessionID,
 		UserId:    req.UserID,
@@ -149,22 +93,28 @@ func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *Ch
 		},
 	}
 
-	stream, err := client.StreamChat(ctx, pbReq)
+	// Call gRPC streaming method
+	stream, err := c.client.StreamChat(ctx, pbReq)
 	if err != nil {
 		return nil, err
 	}
 
+	// Create output channel
 	messageChan := make(chan *ChatMessage, 100)
 
+	// Start goroutine to receive stream
 	go func() {
 		defer close(messageChan)
 
 		for {
 			resp, err := stream.Recv()
 			if err == io.EOF {
+				// Stream ended normally
 				return
 			}
 			if err != nil {
+				// Stream error
+				log.Printf("[AIClient] Stream error: %v", err)
 				messageChan <- &ChatMessage{
 					Type:  5, // ERROR
 					Error: err.Error(),
@@ -172,10 +122,11 @@ func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *Ch
 				return
 			}
 
+			// Convert protobuf response to internal message
 			messageChan <- &ChatMessage{
 				SessionID: resp.SessionId,
 				MessageID: resp.MessageId,
-				Type:      resp.Type,
+				Type:      int32(resp.Type),
 				Content:   resp.Content,
 				Error:     resp.Error,
 				Metadata:  resp.Metadata,
@@ -185,4 +136,3 @@ func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *Ch
 
 	return messageChan, nil
 }
-*/

@@ -131,12 +131,52 @@ services:
       context: ./frontend-vue
       dockerfile: Dockerfile
     container_name: ai-platform-frontend
-    ports:
-      - "80:80"
     depends_on:
       - platform
     networks:
       - ai-platform
+    profiles:
+      - full
+
+  # Nginx Gateway (NEW)
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: ai-platform-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+      - EMAIL=${EMAIL:-admin@example.com}
+      - STAGING=${LETSENCRYPT_STAGING:-0}
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/ssl:/etc/nginx/ssl
+      - letsencrypt_data:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    networks:
+      - ai-platform
+    depends_on:
+      - frontend
+      - platform
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # Certbot (Certificate Renewal)
+  certbot:
+    image: certbot/certbot:latest
+    container_name: ai-platform-certbot
+    volumes:
+      - letsencrypt_data:/etc/letsencrypt
+      - certbot_webroot:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done;'"
+    networks:
+      - ai-platform
+    depends_on:
+      - nginx
     profiles:
       - full
 
@@ -150,6 +190,10 @@ volumes:
   ai_runtime_venv:
     driver: local
   huggingface_cache:
+    driver: local
+  letsencrypt_data:
+    driver: local
+  certbot_webroot:
     driver: local
 
 networks:

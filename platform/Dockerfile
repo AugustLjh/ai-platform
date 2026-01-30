@@ -6,8 +6,12 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/re
 
 WORKDIR /app
 
-# 2. 安装编译依赖 (git)
-RUN apk add --no-cache git
+# 2. 安装编译依赖 (git, protobuf)
+RUN apk add --no-cache git protobuf protobuf-dev
+
+# 2.1 安装 Go proto 插件
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
 # 3. 复制依赖定义文件
 COPY go.mod ./
@@ -18,6 +22,17 @@ ENV GOSUMDB=sum.golang.google.cn
 
 # 5. 生成 go.sum（如果不存在）并下载依赖（利用Docker缓存层）
 RUN go mod tidy && go mod download
+
+# 5.1 复制 proto 文件并生成 stubs
+COPY ../proto /proto
+RUN mkdir -p proto/chat && \
+    protoc \
+    --go_out=. \
+    --go_opt=paths=source_relative \
+    --go-grpc_out=. \
+    --go-grpc_opt=paths=source_relative \
+    -I/proto \
+    /proto/chat_service.proto
 
 # 6. 复制源代码
 COPY . .
