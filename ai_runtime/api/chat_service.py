@@ -8,12 +8,12 @@ import os
 # Add proto path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../proto'))
 
-from core.prompt import PromptBuilder
-from core.rag import RAGPipeline, Retriever, SimpleVectorStore
-from core.llm import LocalLLM, OpenAILLM
-from core.agent import AgentExecutor
-from core.agent.tools import get_default_tools
-from core.stream import StreamPipeline, TokenCounterMiddleware, CostTrackingMiddleware
+from ..core.prompt import PromptBuilder
+from ..core.rag import RAGPipeline, Retriever, SimpleVectorStore
+from ..core.llm import LocalLLM, OpenAILLM
+from ..core.agent import AgentExecutor
+from ..core.agent.tools import get_default_tools
+from ..core.stream import StreamPipeline, TokenCounterMiddleware, CostTrackingMiddleware
 
 
 class ChatServiceImpl:

@@ -3,7 +3,7 @@ Configuration Management for AI Runtime
 """
 import os
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class DatabaseConfig(BaseModel):
@@ -34,6 +34,8 @@ class DatabaseConfig(BaseModel):
 
 class EmbeddingConfig(BaseModel):
     """Embedding model configuration"""
+    model_config = ConfigDict(protected_namespaces=())
+
     provider: str = Field(
         default="local",
         description="Embedding provider: local/openai/jina"

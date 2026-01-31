@@ -5,19 +5,19 @@ import logging
 from typing import List, Optional, Dict, Any
 from fastapi import UploadFile
 
-from core.models.knowledge_base import (
+from ..models.knowledge_base import (
     Document,
     SourceType,
     AccessLevel,
     CreateDocumentRequest,
     UpdateDocumentRequest,
 )
-from core.repositories.knowledge_base import KnowledgeBaseRepository
-from core.embeddings import EmbeddingService
-from core.parsers.file_parser import FileParser
-from core.parsers.url_fetcher import URLFetcher
-from core.audit import AuditLogger
-from core.quota import QuotaManager
+from ..repositories.knowledge_base import KnowledgeBaseRepository
+from ..embeddings import EmbeddingService
+from ..parsers.file_parser import FileParser
+from ..parsers.url_fetcher import URLFetcher
+from ..audit import AuditLogger
+from ..quota import QuotaManager
 
 
 logger = logging.getLogger(__name__)
