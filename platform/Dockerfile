@@ -1,70 +1,56 @@
-# Go Platform Layer Dockerfile
+# ====== builder ======
 FROM golang:1.21-alpine AS builder
 
-# 1. 配置 Alpine 镜像源 (清华)
+# Alpine 镜像源（可保留）
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories
 
-WORKDIR /app
+WORKDIR /src/platform
 
-# 2. 安装编译依赖 (git, protobuf)
+# 编译依赖（protoc + git）
 RUN apk add --no-cache git protobuf protobuf-dev
 
-# 2.1 安装 Go proto 插件
-RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+# Go proto 插件（建议固定版本，避免 @latest 漂移）
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.33.0 && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
 
-# 3. 复制依赖定义文件
-COPY go.mod ./
-
-# 4. 【关键修复】配置 Go 模块代理和校验（国内镜像）
+# Go 模块代理（保留）
 ENV GOPROXY=https://goproxy.cn,https://goproxy.io,direct
 ENV GOSUMDB=sum.golang.google.cn
 
-# 5. 生成 go.sum（如果不存在）并下载依赖（利用Docker缓存层）
-RUN go mod tidy && go mod download
+# 先拷依赖文件（缓存友好）
+COPY platform/go.mod platform/go.sum ./
+RUN go mod download
 
-# 5.1 复制 proto 文件并生成 stubs
-COPY ../proto /proto
+# 拷 platform 源码
+COPY platform/ ./
+
+# 拷 proto 并生成到 platform/proto/chat
+COPY proto /proto
 RUN mkdir -p proto/chat && \
     protoc \
-    --go_out=. \
-    --go_opt=paths=source_relative \
-    --go-grpc_out=. \
-    --go-grpc_opt=paths=source_relative \
-    -I/proto \
-    /proto/chat_service.proto
+      -I/proto \
+      --go_out=proto/chat --go_opt=paths=source_relative \
+      --go-grpc_out=proto/chat --go-grpc_opt=paths=source_relative \
+      /proto/chat_service.proto
 
-# 6. 复制源代码
-COPY . .
+# 构建二进制（静态）
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/platform main.go
 
-# 7. 构建（剥离调试信息以减小体积）
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o platform main.go
-
-# ====== 最终运行阶段 ======
-# 8. 使用固定版本的 Alpine 镜像
+# ====== runtime ======
 FROM alpine:3.19
 
-# 9. 配置 Alpine 镜像源 (清华)
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories
-
-# 10. 安装运行时依赖：CA证书、时区数据（可选）
 RUN apk --no-cache add ca-certificates tzdata
 
-# 11. 创建非root用户运行（安全增强）
 RUN addgroup -g 1001 -S appuser && \
     adduser -u 1001 -S appuser -G appuser
 USER appuser
 
-WORKDIR /home/appuser/
+WORKDIR /home/appuser
 
-# 12. 从构建阶段复制二进制文件
-COPY --from=builder --chown=appuser:appuser /app/platform .
+COPY --from=builder --chown=appuser:appuser /out/platform ./platform
 
-# 13. 暴露端口（声明性，实际运行时需-p映射）
 EXPOSE 8080
-
-# 14. 设置时区（可选，如 Asia/Shanghai）
 ENV TZ=Asia/Shanghai
 
-# 15. 启动应用
 CMD ["./platform"]

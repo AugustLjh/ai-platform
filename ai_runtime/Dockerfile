@@ -17,27 +17,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ---------- Python 依赖 ----------
 # 先拷贝 requirements，利用 Docker cache
-COPY requirements.txt .
+COPY ai_runtime/requirements.txt requirements.txt
 
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 # ---------- Proto 文件生成 ----------
 # 复制 proto 文件并生成 stubs
-COPY ../proto /proto
-RUN mkdir -p proto && \
+COPY proto /proto
+
+# 生成到 /generated（不怕 /app volume 覆盖）
+RUN mkdir -p /generated && \
     python -m grpc_tools.protoc \
-    -I/proto \
-    --python_out=./proto \
-    --grpc_python_out=./proto \
-    /proto/chat_service.proto && \
-    touch proto/__init__.py
+      -I/proto \
+      --python_out=/generated \
+      --grpc_python_out=/generated \
+      /proto/chat_service.proto && \
+    touch /generated/__init__.py
+
+# 让运行时能找到生成的模块
+ENV PYTHONPATH=/generated
 
 # ---------- 应用代码 ----------
-COPY . .
+COPY ai_runtime/ .
 
 # ---------- 端口 ----------
 EXPOSE 8000 50051
 
 # ---------- 启动 ----------
-CMD ["python", "main.py"]
+CMD ["python", "-m", "main", "--mode", "both", "--http-port", "8000", "--grpc-port", "50051"]
+
