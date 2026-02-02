@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"time"
 
@@ -18,6 +20,7 @@ func main() {
 
 	// Configuration
 	aiRuntimeAddr := getEnv("AI_RUNTIME_ADDR", "localhost:50051")
+	aiRuntimeHttpAddr := getEnv("AI_RUNTIME_HTTP_ADDR", "http://localhost:8000")
 	platformPort := getEnv("PLATFORM_PORT", ":8080")
 	jwtSecret := getEnv("JWT_SECRET", "2f7a48d9e6b3c1a5f8e2b9c4d6a7f3e5b8d2e1c6a9f3d5b7e2c4a6f8d9e3b5c1")
 
@@ -122,12 +125,45 @@ func main() {
 			costTracker.Handler,
 		))
 
+	// Knowledge Base endpoints - proxy to AI Runtime HTTP server
+	aiRuntimeUrl, err := url.Parse(aiRuntimeHttpAddr)
+	if err != nil {
+		log.Fatalf("Invalid AI_RUNTIME_HTTP_ADDR: %v", err)
+	}
+	kbProxy := httputil.NewSingleHostReverseProxy(aiRuntimeUrl)
+	kbProxy.Director = func(req *http.Request) {
+		req.URL.Scheme = aiRuntimeUrl.Scheme
+		req.URL.Host = aiRuntimeUrl.Host
+		req.URL.Path = req.URL.Path // Keep the original path
+		req.Header.Set("X-Forwarded-Host", req.Host)
+		req.Header.Set("X-Origin-Host", aiRuntimeUrl.Host)
+	}
+
+	// Add knowledge base routes with middleware
+	mux.Handle("/api/v1/knowledge/",
+		chain(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Get user from context
+				user, ok := middleware.GetUser(r.Context())
+				if ok {
+					// Add user info to request headers
+					r.Header.Set("X-User-ID", user.ID)
+					r.Header.Set("X-Tenant-ID", user.TenantID)
+				}
+				kbProxy.ServeHTTP(w, r)
+			}),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
 	// Start server
 	log.Println("============================================================")
 	log.Println("AI Platform Server Configuration:")
 	log.Println("------------------------------------------------------------")
 	log.Printf("  Platform Port: %s", platformPort)
-	log.Printf("  AI Runtime: %s", aiRuntimeAddr)
+	log.Printf("  AI Runtime gRPC: %s", aiRuntimeAddr)
+	log.Printf("  AI Runtime HTTP: %s", aiRuntimeHttpAddr)
 	log.Println("  Auth: JWT (Real)")
 	log.Println("  Middleware: CORS, Auth, RateLimit, Guard, Cost") // 更新这行
 	log.Println("")
@@ -142,6 +178,14 @@ func main() {
 	log.Println("  - POST /api/v1/chat (sync)")
 	log.Println("  - POST /api/v1/chat/sse (streaming)")
 	log.Println("  - WS   /api/v1/chat/ws (websocket)")
+	log.Println("")
+	log.Println("Knowledge Base Endpoints:")
+	log.Println("  - GET    /api/v1/knowledge/documents")
+	log.Println("  - POST   /api/v1/knowledge/documents")
+	log.Println("  - GET    /api/v1/knowledge/documents/{id}")
+	log.Println("  - PUT    /api/v1/knowledge/documents/{id}")
+	log.Println("  - DELETE /api/v1/knowledge/documents/{id}")
+	log.Println("  - POST   /api/v1/knowledge/documents/search")
 	log.Println("")
 	log.Println("Demo User:")
 	log.Printf("  Email: %s", demoUser.Email)
