@@ -2,7 +2,10 @@ module github.com/ai-platform/platform
 
 go 1.21
 
+replace github.com/ai-platform/platform/proto/chat => ./proto/chat
+
 require (
+	github.com/ai-platform/platform/proto/chat v0.0.0-00010101000000-000000000000
 	github.com/elastic/go-elasticsearch/v8 v8.11.1
 	github.com/golang-jwt/jwt/v5 v5.2.0
 	github.com/google/uuid v1.5.0

@@ -6,14 +6,16 @@
 
 A production-ready AI application platform with microservices architecture using Go (Platform Layer) and Python (AI Runtime), communicating via gRPC streaming.
 
+English | [简体中文](./README_CN.md)
+
 ## 🌟 Key Features
 
 ### Frontend (Vue 3)
 - ✅ **Modern Interface** - Clean and responsive design
 - ✅ **Real-time Chat** - Streaming responses with SSE
+- ✅ **Knowledge Base** - Document upload, search, management
 - ✅ **Session Management** - Multiple chat sessions
 - ✅ **Mobile Friendly** - Works on all devices
-- ✅ **Docker Deployment** - One-click containerized deployment
 
 ### Platform Layer (Go)
 - ✅ **JWT Authentication** - Complete user registration/login system
@@ -22,645 +24,681 @@ A production-ready AI application platform with microservices architecture using
 - ✅ **Content Security** - Request filtering and safety checks
 - ✅ **Cost Tracking** - Token usage metering and cost calculation
 - ✅ **Multi-Protocol** - HTTP/SSE/WebSocket support
-- ✅ **Database Integration** - PostgreSQL + Redis + Elasticsearch
+- ✅ **API Proxy** - Knowledge base API reverse proxy
 
 ### AI Runtime (Python)
-- ✅ **Prompt Builder** - Template-based prompt management
+- ✅ **Knowledge Base** - Document management, vector search
 - ✅ **RAG Pipeline** - Retrieval-Augmented Generation
 - ✅ **LLM Integration** - OpenAI and local model support
 - ✅ **Agent System** - Tool-using agents
 - ✅ **Streaming** - Complete streaming output support
-- ✅ **Middleware Pipeline** - Extensible processing chain
+- ✅ **File Parsing** - PDF, Markdown, HTML support
 
 ### Databases
-- ✅ **PostgreSQL** - Users, sessions, messages storage
+- ✅ **PostgreSQL + pgvector** - Users, sessions, documents, vectors
 - ✅ **Redis** - Cache, token blacklist, rate limiting
-- ✅ **Elasticsearch** - Vector search, RAG support
+- ✅ **Elasticsearch** - Full-text search, logging
 
 ## 📋 Table of Contents
 
-- [Architecture](#architecture)
 - [Quick Start](#quick-start)
+- [Architecture](#architecture)
 - [Project Structure](#project-structure)
-- [Features](#features)
-- [API Documentation](#api-documentation)
-- [Database Setup](#database-setup)
 - [Development](#development)
-- [Deployment](#deployment)
-- [FAQ](#faq)
+- [Production Deployment](#production-deployment)
+- [API Documentation](#api-documentation)
+- [Configuration](#configuration)
 
-## 🏗️ Architecture
-
-```
-┌──────────────────────────────┐
-│   Client (Web/App/CLI)        │
-│   Vue 3 Frontend (Nginx)      │
-└────────────▲─────────────────┘
-             │ HTTP/SSE
-┌────────────┴─────────────────┐
-│    Go Platform Layer (Hub)    │
-│                               │
-│  ✓ JWT Authentication         │
-│  ✓ Rate Limiting/Quotas       │
-│  ✓ Cost Tracking              │
-│  ✓ Content Security           │
-│  ✓ Audit Logging              │
-└────────────▲─────────────────┘
-             │ gRPC Streaming
-┌────────────┴─────────────────┐
-│  Python AI Runtime (Brain)    │
-│                               │
-│  ✓ Prompt Builder             │
-│  ✓ RAG Pipeline               │
-│  ✓ LLM Integration            │
-│  ✓ Agent Executor             │
-│  ✓ Stream Processing          │
-└────────────▲─────────────────┘
-             │
-┌────────────┴─────────────────┐
-│    Database Infrastructure    │
-│  PostgreSQL | Redis | ES      │
-└──────────────────────────────┘
-```
+---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- **Docker & Docker Compose** (recommended)
-- **Go 1.21+** (if running locally)
-- **Python 3.11+** (if running locally)
-- **PostgreSQL 16** (if not using Docker)
-- **Redis 7** (if not using Docker)
-- **Elasticsearch 8** (if not using Docker)
+- Docker & Docker Compose
+- Git
 
-### Option 1: Docker Compose (Recommended)
+### Development Environment (Hot Reload)
 
 ```bash
-# 1. Clone repository
+# Clone the repository
 git clone <repository-url>
 cd ai-platform
 
-# 2. Configure environment
-cp .env.example .env
-# Edit .env with your settings
+# Start development environment
+make dev
 
-# 3. Start all services
-docker-compose --profile full up -d
-
-# 4. View logs
-docker-compose logs -f
+# Or use docker-compose
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml --profile full up -d
 ```
 
-Access:
-- **Frontend UI**: http://localhost (or http://localhost:80)
-- **API Service**: http://localhost:8080
-- **Kibana** (optional): http://localhost:5601
+**Access URLs:**
+- Frontend (Vite dev server): http://localhost:5173
+- Backend API: http://localhost:8080
+- AI Runtime: http://localhost:8000
+- PostgreSQL: localhost:5433
+- Redis: localhost:6379
+- Elasticsearch: http://localhost:9200
 
-### Option 2: Databases Only
+**Development Features:**
+- ✅ Hot reload (Python watchdog, Go Air, Vite HMR)
+- ✅ Source code mounted to containers
+- ✅ All ports exposed for debugging
+- ✅ Detailed debug logs
+
+### Production Environment (Fully Containerized)
 
 ```bash
-# Start databases
-./scripts/init-databases.sh  # Linux/Mac
-# or
-scripts\init-databases.bat   # Windows
+# Start production environment
+make prod
 
-# Start Python AI Runtime
-cd ai_runtime
-pip install -r requirements.txt
-python main.py
-
-# Start Go Platform (new terminal)
-cd platform
-go mod download
-go run main.go
+# Or use docker-compose
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml --profile full up -d
 ```
 
-### Option 3: Development Scripts
+**Access URLs:**
+- HTTP: http://localhost
+- HTTPS: https://your-domain.com (requires domain and certificate)
 
-```bash
-# Linux/Mac
-chmod +x start_dev.sh
-./start_dev.sh
+**Production Features:**
+- ✅ Fully containerized, no host dependencies
+- ✅ Optimized resource limits
+- ✅ Health checks and auto-restart
+- ✅ Only necessary ports exposed (80/443)
 
-# Windows
-start_dev.bat
+### Demo Account
+
 ```
+Email: demo@example.com
+Password: demo123456
+```
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Nginx Gateway                        │
+│                      (80/443, SSL/TLS)                       │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+         ┌───────────────┴───────────────┐
+         │                               │
+         ▼                               ▼
+┌─────────────────┐            ┌─────────────────┐
+│  Vue Frontend   │            │  Go Platform    │
+│   (Nginx)       │            │   Layer         │
+│                 │            │                 │
+│  - UI           │            │  - JWT Auth     │
+│  - Knowledge    │            │  - Rate Limit   │
+│  - Chat         │            │  - Cost Track   │
+└─────────────────┘            │  - API Proxy    │
+                               └────────┬────────┘
+                                        │
+                        ┌───────────────┴───────────────┐
+                        │                               │
+                        ▼ (gRPC)                        ▼ (HTTP)
+                ┌──────────────┐              ┌──────────────┐
+                │ Chat Service │              │ Knowledge    │
+                │   (gRPC)     │              │   Base API   │
+                └──────────────┘              └──────────────┘
+                        │                               │
+                        └───────────┬───────────────────┘
+                                    ▼
+                        ┌─────────────────────┐
+                        │  Python AI Runtime  │
+                        │                     │
+                        │  - LLM Integration  │
+                        │  - RAG Pipeline     │
+                        │  - Vector Search    │
+                        │  - File Parsing     │
+                        └──────────┬──────────┘
+                                   │
+                ┌──────────────────┼──────────────────┐
+                ▼                  ▼                  ▼
+        ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+        │ PostgreSQL   │  │    Redis     │  │Elasticsearch │
+        │  + pgvector  │  │              │  │              │
+        └──────────────┘  └──────────────┘  └──────────────┘
+```
+
+### Communication Flow
+
+1. **Authentication**: User → Nginx → Platform (JWT) → Return Token
+2. **Chat**: User → Nginx → Platform → AI Runtime (gRPC) → LLM → Stream Response
+3. **Knowledge Base**: User → Nginx → Platform (HTTP Proxy) → AI Runtime → PostgreSQL
+
+---
 
 ## 📁 Project Structure
 
 ```
 ai-platform/
-├── frontend-vue/                # Vue 3 Frontend
-│   ├── public/                  # Static assets
+├── frontend-vue/              # Vue 3 Frontend
 │   ├── src/
-│   │   ├── api/                 # API service layer
-│   │   │   ├── axios.js        # Axios configuration
-│   │   │   └── index.js        # API endpoints
-│   │   ├── assets/             # Assets
-│   │   ├── components/         # Reusable components
-│   │   ├── router/             # Router configuration
-│   │   ├── store/              # Pinia state management
-│   │   │   ├── auth.js         # Auth state
-│   │   │   ├── chat.js         # Chat state
-│   │   │   └── knowledge.js    # Knowledge base state
-│   │   ├── views/              # Page components
-│   │   ├── App.vue             # Root component
-│   │   └── main.js             # Entry file
-│   ├── Dockerfile              # Docker build file
-│   ├── nginx.conf              # Nginx configuration
-│   ├── package.json
-│   └── vite.config.js
+│   │   ├── api/              # API calls
+│   │   ├── components/       # Reusable components
+│   │   ├── views/            # Page views
+│   │   ├── store/            # Pinia state management
+│   │   └── router/           # Vue Router
+│   ├── Dockerfile            # Production build
+│   └── Dockerfile.dev        # Development build
 │
-├── platform/                    # Go Platform Layer
+├── platform/                  # Go Platform Layer
+│   ├── main.go               # Main entry
 │   ├── api/
-│   │   ├── http/               # HTTP/SSE/WebSocket handlers
-│   │   │   ├── auth_handler.go
-│   │   │   └── chat_handler.go
-│   │   └── grpc/               # gRPC client
-│   │       └── ai_client.go
-│   ├── auth/                    # JWT authentication
-│   │   ├── jwt.go
-│   │   ├── user.go
-│   │   └── service.go
-│   ├── database/                # Database integration
-│   │   ├── postgres.go
-│   │   ├── redis.go
-│   │   ├── elasticsearch.go
-│   │   ├── user_store.go
-│   │   └── session_store.go
-│   ├── middleware/              # Middleware
-│   │   ├── auth.go
-│   │   ├── rate_limit.go
-│   │   ├── guard.go
-│   │   └── cost.go
-│   ├── service/                 # Business logic
-│   │   ├── chat_service.go
-│   │   └── session_service.go
-│   ├── main.go
-│   └── go.mod
+│   │   ├── http/             # HTTP handlers
+│   │   └── grpc/             # gRPC client
+│   ├── middleware/           # Middleware
+│   ├── auth/                 # Auth service
+│   ├── service/              # Business logic
+│   ├── proto/chat/           # Protobuf generated files
+│   ├── Dockerfile            # Production build
+│   └── .air.toml             # Hot reload config
 │
-├── ai_runtime/                  # Python AI Runtime
+├── ai_runtime/                # Python AI Runtime
+│   ├── main.py               # Main entry
 │   ├── api/
-│   │   └── chat_service.py
+│   │   ├── http_server.py    # FastAPI HTTP service
+│   │   ├── grpc_server.py    # gRPC service
+│   │   ├── chat_service.py   # Chat service
+│   │   └── knowledge_base.py # Knowledge base API
 │   ├── core/
-│   │   ├── prompt/             # Prompt management
-│   │   ├── rag/                # RAG pipeline
-│   │   ├── llm/                # LLM integration
-│   │   ├── agent/              # Agent executor
-│   │   └── stream/             # Stream processing
-│   ├── main.py
-│   └── requirements.txt
+│   │   ├── services/         # Business logic
+│   │   ├── repositories/     # Data access
+│   │   ├── models/           # Data models
+│   │   ├── embeddings/       # Vector embeddings
+│   │   └── parsers/          # File parsers
+│   ├── Dockerfile            # Production build
+│   └── requirements.txt      # Python dependencies
 │
-├── db/
-│   └── migrations/             # Database migrations
-│       └── 001_initial_schema.sql
+├── nginx/                     # Nginx Gateway
+│   ├── Dockerfile
+│   ├── nginx.conf
+│   └── conf.d/
 │
-├── docs/                        # Documentation
-│   ├── DATABASE_GUIDE.md
-│   ├── JWT_AUTHENTICATION.md
-│   └── JWT_IMPLEMENTATION_SUMMARY.md
+├── db/migrations/             # Database migrations
+│   ├── 001_initial_schema.sql
+│   ├── 002_knowledge_base_enhancements.sql
+│   └── 003_enable_pgvector.sql
 │
-├── examples/                    # Examples
-│   ├── auth_examples.sh
-│   ├── api_examples.sh
-│   └── websocket_client_jwt.html
-│
-├── scripts/                     # Utility scripts
-│   ├── init-databases.sh
-│   └── generate_proto.sh
-│
-├── proto/                       # gRPC protocol definitions
+├── proto/                     # Protobuf definitions
 │   └── chat_service.proto
 │
-├── docker-compose.yml
-├── .env.example
-└── README.md                    # This file
+├── docker-compose.yml         # Base configuration
+├── docker-compose.dev.yml     # Development config
+├── docker-compose.prod.yml    # Production config
+├── Makefile                   # Convenient commands
+├── .env                       # Environment variables
+└── README.md                  # This document
 ```
 
-## ✨ Features
+---
 
-### 1. JWT Authentication System
+## 💻 Development
 
-Complete user authentication and authorization:
+### Start Development Environment
 
 ```bash
-# Register user
-curl -X POST http://localhost:8080/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"password123"}'
+# Using Makefile (recommended)
+make dev
 
-# Login
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"demo@example.com","password":"demo123456"}'
+# View logs
+make dev-logs
+
+# Stop
+make dev-down
 ```
 
-**Demo User:**
-- Email: `demo@example.com`
-- Password: `demo123456`
+### Development Features
 
-Details: [docs/JWT_AUTHENTICATION.md](docs/JWT_AUTHENTICATION.md)
+**Hot Reload:**
+- **Python**: watchdog auto-restart
+- **Go**: Air hot reload
+- **Vue**: Vite HMR
 
-### 2. Chat API
+**Source Code Mounting:**
+```yaml
+ai-runtime:
+  volumes:
+    - ./ai_runtime:/app:rw              # Mount source code
+    - huggingface_cache:/root/.cache    # Cache persistence
 
-Three modes of chat interface:
+platform:
+  volumes:
+    - ./platform:/src/platform:rw       # Mount source code
+    - platform_build_cache:/go/pkg      # Go build cache
 
-#### Synchronous Chat
+frontend:
+  volumes:
+    - ./frontend-vue:/app:rw            # Mount source code
+    - /app/node_modules                 # Exclude node_modules
+```
+
+### Code Changes
+
+1. Modify Python code → Auto-restart AI Runtime
+2. Modify Go code → Air auto-recompile
+3. Modify Vue code → Vite HMR instant update
+
+### Debugging
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/chat \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "session_001",
-    "message": "Hello!",
-    "config": {"use_rag": false, "use_agent": false}
-  }'
+# View specific service logs
+docker-compose logs -f platform
+docker-compose logs -f ai-runtime
+docker-compose logs -f frontend
+
+# Enter container
+docker-compose exec platform sh
+docker-compose exec ai-runtime bash
+
+# Connect to database
+make db-shell
+
+# Connect to Redis
+make redis-cli
 ```
 
-#### Streaming Chat (SSE)
+---
+
+## 🚢 Production Deployment
+
+### Start Production Environment
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/chat/sse \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"session_002","message":"Tell me a story"}'
+# Using Makefile (recommended)
+make prod
+
+# View logs
+make prod-logs
+
+# Stop
+make prod-down
 ```
 
-#### WebSocket Chat
-```javascript
-const ws = new WebSocket('ws://localhost:8080/api/v1/chat/ws');
-// See examples/websocket_client_jwt.html
+### Production Features
+
+**Fully Containerized:**
+- ❌ No source code mounting
+- ✅ Use code copied during build
+- ✅ Containers run independently
+
+**Resource Limits:**
+```yaml
+ai-runtime:
+  deploy:
+    resources:
+      limits:
+        cpus: '2'
+        memory: 4G
+      reservations:
+        cpus: '1'
+        memory: 2G
 ```
 
-### 3. Database Integration
-
-#### PostgreSQL
-- User management
-- Session history
-- Message storage
-- Token usage tracking
-- Audit logging
-
-#### Redis
-- API response caching
-- JWT token blacklist
-- Session data
-- Distributed rate limiting
-
-#### Elasticsearch
-- Vector search (RAG)
-- Document indexing
-- Semantic search
-
-Details: [docs/DATABASE_GUIDE.md](docs/DATABASE_GUIDE.md)
-
-### 4. RAG (Retrieval-Augmented Generation)
-
-```python
-# Add documents to vector store
-from core.rag import RAGPipeline, Document
-
-documents = [
-    Document(content="Document content...", metadata={"source": "doc1.pdf"}),
-]
-await rag_pipeline.add_documents(documents)
-
-# Query with RAG
-context = await rag_pipeline.process("User question", top_k=5)
+**Health Checks:**
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
 ```
 
-### 5. Agent Tool System
-
-```python
-# Built-in tools
-- get_current_time: Get current time
-- calculator: Perform calculations
-
-# Use agent
-curl -X POST http://localhost:8080/api/v1/chat \
-  -H "Authorization: Bearer <token>" \
-  -d '{
-    "message": "What time is it?",
-    "config": {"use_agent": true, "tools": ["get_current_time"]}
-  }'
+**Auto Restart:**
+```yaml
+restart: always
 ```
+
+### Configure Domain and SSL
+
+1. Modify `.env` file:
+```bash
+DOMAIN=your-domain.com
+EMAIL=admin@your-domain.com
+LETSENCRYPT_STAGING=0
+```
+
+2. Restart Nginx:
+```bash
+docker-compose restart nginx
+```
+
+3. Obtain SSL certificate:
+```bash
+docker-compose exec certbot certbot certonly \
+  --webroot -w /var/www/certbot \
+  -d your-domain.com \
+  --email admin@your-domain.com \
+  --agree-tos
+```
+
+---
 
 ## 📚 API Documentation
 
-### Authentication Endpoints
+### Authentication API
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/v1/auth/register` | User registration | No |
-| POST | `/api/v1/auth/login` | User login | No |
-| POST | `/api/v1/auth/refresh` | Refresh token | No |
-| GET | `/api/v1/auth/me` | Get current user | Yes |
-| POST | `/api/v1/auth/logout` | Logout | Yes |
+**Register**
+```http
+POST /api/v1/auth/register
+Content-Type: application/json
 
-### Chat Endpoints
-
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/v1/chat` | Synchronous chat | Yes |
-| POST | `/api/v1/chat/sse` | Streaming chat (SSE) | Yes |
-| WS | `/api/v1/chat/ws` | WebSocket chat | Yes |
-
-### Health Check
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-
-Full API documentation: [docs/JWT_AUTHENTICATION.md](docs/JWT_AUTHENTICATION.md)
-
-## 💾 Database Setup
-
-### Connection Information
-
-**PostgreSQL:**
-```
-Host: localhost:5432
-Database: ai_platform
-User: ai_platform
-Password: ai_platform_password
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
 ```
 
-**Redis:**
-```
-Host: localhost:6379
+**Login**
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
+
+Response:
+{
+  "access_token": "eyJhbGc...",
+  "refresh_token": "eyJhbGc...",
+  "user": {
+    "id": "user-id",
+    "email": "user@example.com"
+  }
+}
 ```
 
-**Elasticsearch:**
-```
-URL: http://localhost:9200
+**Get Current User**
+```http
+GET /api/v1/auth/me
+Authorization: Bearer <access_token>
 ```
 
-### Initialize Databases
+### Chat API
+
+**Synchronous Chat**
+```http
+POST /api/v1/chat
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "session_id": "session-123",
+  "message": "Hello",
+  "config": {
+    "use_rag": false,
+    "use_agent": false,
+    "temperature": 0.7,
+    "max_tokens": 2000
+  }
+}
+```
+
+**Streaming Chat (SSE)**
+```http
+POST /api/v1/chat/sse
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "session_id": "session-123",
+  "message": "Hello"
+}
+
+Response: (Server-Sent Events)
+data: {"type": 1, "content": "Hel"}
+data: {"type": 1, "content": "lo"}
+data: [DONE]
+```
+
+### Knowledge Base API
+
+**List Documents**
+```http
+GET /api/v1/knowledge/documents?page=1&page_size=20
+Authorization: Bearer <access_token>
+
+Response:
+{
+  "documents": [...],
+  "total": 100,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+**Create Document**
+```http
+POST /api/v1/knowledge/documents
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "title": "Document Title",
+  "content": "Document content",
+  "source": "manual",
+  "source_type": "manual",
+  "access_level": "tenant",
+  "auto_index": true
+}
+```
+
+**Upload File**
+```http
+POST /api/v1/knowledge/documents/upload
+Authorization: Bearer <access_token>
+Content-Type: multipart/form-data
+
+file: <file>
+access_level: tenant
+auto_index: true
+```
+
+**Search Documents**
+```http
+POST /api/v1/knowledge/documents/search
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "query": "search keywords",
+  "top_k": 10
+}
+
+Response:
+{
+  "results": [
+    {
+      "document": {...},
+      "score": 0.95
+    }
+  ],
+  "total": 10
+}
+```
+
+**Get Statistics**
+```http
+GET /api/v1/knowledge/stats
+Authorization: Bearer <access_token>
+
+Response:
+{
+  "total_documents": 100,
+  "indexed_documents": 95,
+  "by_source_type": {
+    "manual": 50,
+    "file": 30,
+    "url": 20
+  }
+}
+```
+
+---
+
+## ⚙️ Configuration
+
+### Environment Variables
+
+**Root `.env`**
+```bash
+# JWT Secret
+JWT_SECRET=your-secret-key-change-this-in-production
+
+# Database Configuration
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=ai_platform
+POSTGRES_USER=ai_platform
+POSTGRES_PASSWORD=19980912
+
+# Redis
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# Elasticsearch
+ELASTICSEARCH_URL=http://elasticsearch:9200
+
+# Domain Configuration (Production)
+DOMAIN=your-domain.com
+EMAIL=admin@your-domain.com
+```
+
+**ai_runtime/.env**
+```bash
+# Embedding Model Configuration
+EMBEDDING_PROVIDER=local
+EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_DEVICE=cpu
+
+# LLM Configuration
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your-api-key
+OPENAI_API_BASE=https://api.openai.com/v1
+
+# RAG Configuration
+ENABLE_RAG=true
+RAG_TOP_K=5
+RAG_SIMILARITY_THRESHOLD=0.7
+
+# Agent Configuration
+ENABLE_AGENT=true
+AGENT_MAX_ITERATIONS=10
+```
+
+### Makefile Commands
 
 ```bash
-# Linux/Mac
-./scripts/init-databases.sh
+# View all commands
+make help
 
-# Windows
-scripts\init-databases.bat
+# Development
+make dev              # Start development environment
+make dev-build        # Rebuild and start
+make dev-logs         # View logs
+make dev-down         # Stop
 
-# Or use Docker Compose
-docker-compose up -d postgres redis elasticsearch
+# Production
+make prod             # Start production environment
+make prod-build       # Rebuild and start
+make prod-logs        # View logs
+make prod-down        # Stop
+
+# Database Management
+make db-migrate       # Run database migrations
+make db-shell         # Connect to PostgreSQL
+make redis-cli        # Connect to Redis
+
+# Service Management
+make restart-platform
+make restart-ai-runtime
+make restart-frontend
 ```
 
-### Database Migrations
+---
 
-Migrations run automatically on PostgreSQL startup. To run manually:
+## 🔧 Troubleshooting
+
+### View Logs
 
 ```bash
-psql -h localhost -U ai_platform -d ai_platform -f db/migrations/001_initial_schema.sql
+# All services
+make dev-logs
+
+# Specific service
+docker-compose logs -f platform
+docker-compose logs -f ai-runtime
 ```
 
-Details: [docs/DATABASE_GUIDE.md](docs/DATABASE_GUIDE.md)
-
-## 🔧 Development
-
-### Environment Configuration
-
-1. **Copy environment template**
-```bash
-cp .env.example .env
-```
-
-2. **Configure key variables**
-```bash
-# JWT secret (MUST change in production!)
-JWT_SECRET=your-super-secret-key-change-in-production
-
-# Database
-POSTGRES_HOST=localhost
-POSTGRES_PASSWORD=your-secure-password
-
-# OpenAI (optional)
-OPENAI_API_KEY=your-openai-api-key
-```
-
-### Generate gRPC Stubs
+### Enter Container
 
 ```bash
-# Linux/Mac
-chmod +x generate_proto.sh
-./generate_proto.sh
-
-# Windows
-generate_proto.bat
+docker-compose exec platform sh
+docker-compose exec ai-runtime bash
+docker-compose exec postgres psql -U ai_platform -d ai_platform
 ```
 
-### Local Development
-
-**Start AI Runtime:**
-```bash
-cd ai_runtime
-pip install -r requirements.txt
-python main.py
-```
-
-**Start Platform:**
-```bash
-cd platform
-go mod download
-go run main.go
-```
-
-### Run Tests
-
-**Go tests:**
-```bash
-cd platform
-go test ./...
-```
-
-**Python tests:**
-```bash
-cd ai_runtime
-pytest
-```
-
-### Code Style
-
-**Go:**
-```bash
-gofmt -w .
-go vet ./...
-```
-
-**Python:**
-```bash
-black .
-flake8
-```
-
-## 🚢 Deployment
-
-### Docker Deployment
+### Restart Service
 
 ```bash
-# Build images
-docker-compose build
-
-# Start all services
-docker-compose --profile full up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop services
-docker-compose down
+docker-compose restart platform
+docker-compose restart ai-runtime
 ```
 
-### Kubernetes Deployment
+### Clean and Rebuild
 
 ```bash
-# Apply configuration
-kubectl apply -f k8s/
-
-# Check status
-kubectl get pods
-kubectl get services
+make clean
+make dev-build
 ```
 
-### Production Checklist
+---
 
-- [ ] Change all default passwords
-- [ ] Set strong JWT secret
-- [ ] Enable HTTPS/TLS
-- [ ] Configure firewall rules
-- [ ] Set up database backups
-- [ ] Configure log collection
-- [ ] Set up monitoring & alerts
-- [ ] Configure CDN (if needed)
-- [ ] Enable rate limiting
-- [ ] Configure error tracking
+## 📝 FAQ
 
-### Environment Variables (Production)
+**Q: How to switch LLM provider?**
 
-```bash
-# Security
-JWT_SECRET=<strong-random-string>
-POSTGRES_PASSWORD=<strong-password>
-REDIS_PASSWORD=<strong-password>
+A: Modify `LLM_PROVIDER` and related configs in `ai_runtime/.env`.
 
-# Databases (use managed services)
-POSTGRES_HOST=<RDS-address>
-REDIS_HOST=<ElastiCache-address>
-ELASTICSEARCH_URL=<OpenSearch-address>
+**Q: How to add new embedding model?**
 
-# Feature flags
-ENVIRONMENT=production
-LOG_LEVEL=INFO
-ENABLE_TELEMETRY=true
-```
+A: Modify `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL` in `ai_runtime/.env`.
 
-## ❓ FAQ
-
-### Q: How to change JWT secret?
-
-A: Set `JWT_SECRET` in `.env` file or as environment variable:
-```bash
-export JWT_SECRET="your-new-secret-key"
-```
-
-### Q: How to add new agent tools?
-
-A: Create new tool class in `ai_runtime/core/agent/tools/`:
-```python
-class MyTool(Tool):
-    def __init__(self):
-        super().__init__("my_tool", "Tool description")
-
-    async def execute(self, **kwargs):
-        # Implement tool logic
-        return result
-```
-
-### Q: How to switch to OpenAI?
-
-A: Modify `ai_runtime/main.py`:
-```python
-from core.llm import OpenAILLM
-
-# Replace LocalLLM
-self.llm = OpenAILLM(
-    model="gpt-4",
-    api_key=os.getenv("OPENAI_API_KEY")
-)
-```
-
-### Q: How to add RAG documents?
-
-A: Use Elasticsearch API or code:
-```python
-from database import ElasticsearchVectorStore
-
-# Index document
-doc = VectorDocument(
-    id="doc-1",
-    tenant_id="tenant-1",
-    title="Document Title",
-    content="Document content",
-    embedding=vector  # Get from embedding model
-)
-await vector_store.IndexDocument(ctx, doc)
-```
-
-### Q: Database connection failed?
-
-A: Check:
-1. Database services running: `docker-compose ps`
-2. Connection info correct: check `.env`
-3. Firewall rules
-4. View logs: `docker-compose logs postgres`
-
-### Q: How to backup data?
+**Q: How to backup data?**
 
 A:
 ```bash
-# PostgreSQL backup
+# Backup PostgreSQL
 docker-compose exec postgres pg_dump -U ai_platform ai_platform > backup.sql
 
 # Restore
 docker-compose exec -T postgres psql -U ai_platform ai_platform < backup.sql
-
-# Redis backup
-docker-compose exec redis redis-cli SAVE
 ```
 
-## 📖 Documentation Index
+**Q: How to view API documentation?**
 
-- **[Quick Start](QUICKSTART.md)** - 5-minute guide
-- **[JWT Authentication](docs/JWT_AUTHENTICATION.md)** - Complete auth guide
-- **[Database Guide](docs/DATABASE_GUIDE.md)** - Database setup and usage
-- **[API Reference](docs/API_REFERENCE.md)** - Complete API docs
-- **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment
-- **[Development Guide](docs/DEVELOPMENT.md)** - Developer docs
-
-## 🤝 Contributing
-
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## 📄 License
-
-This project is licensed under the MIT License - see [LICENSE](LICENSE) file
-
-## 🙏 Acknowledgments
-
-- OpenAI - LLM support
-- LangChain - AI framework
-- PostgreSQL - Database
-- Redis - Cache
-- Elasticsearch - Search engine
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/your-org/ai-platform/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/ai-platform/discussions)
-- **Documentation**: [docs/](docs/)
+A: Visit http://localhost:8000/docs (AI Runtime FastAPI docs)
 
 ---
 
-**Enjoy! Check docs or submit issues for any questions.** 🚀
+## 📄 License
+
+MIT License
+
+---
+
+## 🤝 Contributing
+
+Issues and Pull Requests are welcome!
+
+---
+
+## 📧 Contact
+
+For questions, please submit an Issue.

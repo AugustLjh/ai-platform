@@ -29,11 +29,12 @@ func main() {
 	aiClient, err := grpc.NewAIClient(aiRuntimeAddr)
 	if err != nil {
 		log.Printf("Warning: Failed to connect to AI Runtime: %v", err)
-		log.Println("Running in mock mode...")
-		// Continue with mock client
-		aiClient, _ = grpc.NewAIClient(aiRuntimeAddr)
+		log.Println("Chat service will not be available until AI Runtime is ready")
+		// Create a nil client to avoid panic
+		aiClient = nil
+	} else {
+		defer aiClient.Close()
 	}
-	defer aiClient.Close()
 
 	// Initialize auth components
 	tokenManager := auth.NewTokenManager(
@@ -58,7 +59,10 @@ func main() {
 	log.Printf("Created demo user: %s / demo123456", demoUser.Email)
 
 	// Initialize services
-	chatService := service.NewChatService(aiClient)
+	var chatService *service.ChatService
+	if aiClient != nil {
+		chatService = service.NewChatService(aiClient)
+	}
 
 	// Initialize middleware (with real JWT auth)
 	authMiddleware := middleware.NewAuthMiddleware(authService)
@@ -68,7 +72,10 @@ func main() {
 	corsMiddleware := middleware.NewCORSMiddleware() // 添加这行
 
 	// Initialize HTTP handlers
-	chatHandler := httphandler.NewChatHandler(chatService, costTracker)
+	var chatHandler *httphandler.ChatHandler
+	if chatService != nil {
+		chatHandler = httphandler.NewChatHandler(chatService, costTracker)
+	}
 	authHandler := httphandler.NewAuthHandler(authService)
 
 	// Setup routes
@@ -97,33 +104,44 @@ func main() {
 			authMiddleware.Handler,
 		))
 
-	// Chat endpoints (with full middleware)
-	mux.Handle("/api/v1/chat/sse",
-		chain(
-			http.HandlerFunc(chatHandler.HandleSSE),
-			authMiddleware.Handler,
-			rateLimiter.Handler,
-			guardMiddleware.Handler,
-			costTracker.Handler,
-		))
+	// Chat endpoints (with full middleware) - only if chat service is available
+	if chatHandler != nil {
+		mux.Handle("/api/v1/chat/sse",
+			chain(
+				http.HandlerFunc(chatHandler.HandleSSE),
+				authMiddleware.Handler,
+				rateLimiter.Handler,
+				guardMiddleware.Handler,
+				costTracker.Handler,
+			))
 
-	mux.Handle("/api/v1/chat/ws",
-		chain(
-			http.HandlerFunc(chatHandler.HandleWebSocket),
-			authMiddleware.Handler,
-			rateLimiter.Handler,
-			guardMiddleware.Handler,
-			costTracker.Handler,
-		))
+		mux.Handle("/api/v1/chat/ws",
+			chain(
+				http.HandlerFunc(chatHandler.HandleWebSocket),
+				authMiddleware.Handler,
+				rateLimiter.Handler,
+				guardMiddleware.Handler,
+				costTracker.Handler,
+			))
 
-	mux.Handle("/api/v1/chat",
-		chain(
-			http.HandlerFunc(chatHandler.HandleChatSync),
-			authMiddleware.Handler,
-			rateLimiter.Handler,
-			guardMiddleware.Handler,
-			costTracker.Handler,
-		))
+		mux.Handle("/api/v1/chat",
+			chain(
+				http.HandlerFunc(chatHandler.HandleChatSync),
+				authMiddleware.Handler,
+				rateLimiter.Handler,
+				guardMiddleware.Handler,
+				costTracker.Handler,
+			))
+	} else {
+		// Return service unavailable for chat endpoints
+		unavailableHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error": "Chat service is not available. AI Runtime is not connected."}`))
+		})
+		mux.Handle("/api/v1/chat/sse", unavailableHandler)
+		mux.Handle("/api/v1/chat/ws", unavailableHandler)
+		mux.Handle("/api/v1/chat", unavailableHandler)
+	}
 
 	// Knowledge Base endpoints - proxy to AI Runtime HTTP server
 	aiRuntimeUrl, err := url.Parse(aiRuntimeHttpAddr)
@@ -179,13 +197,17 @@ func main() {
 	log.Println("  - POST /api/v1/chat/sse (streaming)")
 	log.Println("  - WS   /api/v1/chat/ws (websocket)")
 	log.Println("")
-	log.Println("Knowledge Base Endpoints:")
+	log.Println("Knowledge Base Endpoints (proxied to AI Runtime):")
 	log.Println("  - GET    /api/v1/knowledge/documents")
 	log.Println("  - POST   /api/v1/knowledge/documents")
 	log.Println("  - GET    /api/v1/knowledge/documents/{id}")
 	log.Println("  - PUT    /api/v1/knowledge/documents/{id}")
 	log.Println("  - DELETE /api/v1/knowledge/documents/{id}")
 	log.Println("  - POST   /api/v1/knowledge/documents/search")
+	log.Println("  - POST   /api/v1/knowledge/documents/upload")
+	log.Println("  - POST   /api/v1/knowledge/documents/from-url")
+	log.Println("  - POST   /api/v1/knowledge/documents/batch")
+	log.Println("  - GET    /api/v1/knowledge/stats")
 	log.Println("")
 	log.Println("Demo User:")
 	log.Printf("  Email: %s", demoUser.Email)

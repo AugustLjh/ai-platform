@@ -1,20 +1,22 @@
 version: '3.8'
 
+# ============================================
+# 基础配置 - 所有环境共用
+# 开发环境: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# 生产环境: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# ============================================
+
 services:
   # PostgreSQL Database
   postgres:
     image: pgvector/pgvector:pg16
     container_name: ai-platform-postgres
-    ports:
-#      - "5432:5432"
-      - "5433:5432"
     environment:
       - POSTGRES_USER=ai_platform
       - POSTGRES_PASSWORD=19980912
       - POSTGRES_DB=ai_platform
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ai_platform"]
       interval: 10s
@@ -27,8 +29,6 @@ services:
   redis:
     image: docker.1ms.run/library/redis:alpine
     container_name: ai-platform-redis
-    ports:
-      - "6379:6379"
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -44,9 +44,6 @@ services:
   elasticsearch:
     image: docker.1ms.run/library/elasticsearch:8.13.0
     container_name: ai-platform-elasticsearch
-    ports:
-      - "9200:9200"
-      - "9300:9300"
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -61,7 +58,7 @@ services:
     networks:
       - ai-platform
 
-  # Python AI Runtime (保持原样，因为这是本地构建)
+  # Python AI Runtime
   ai-runtime:
     build:
       context: .
@@ -72,12 +69,16 @@ services:
       - "50051:50051"
     environment:
       - HF_ENDPOINT=https://hf-mirror.com
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_USER=ai_platform
+      - POSTGRES_PASSWORD=19980912
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
     env_file:
       - ./ai_runtime/.env
-    volumes:
-      - ./ai_runtime:/app
-      - huggingface_cache:/root/.cache/huggingface
-    #command: python main.py --mode both --http-port 8000 --grpc-port 50051
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,7 +91,7 @@ services:
     profiles:
       - full
 
-  # Go Platform Layer (保持原样，因为这是本地构建)
+  # Go Platform Layer
   platform:
     build:
       context: .
@@ -100,8 +101,8 @@ services:
       - "8080:8080"
     environment:
       - AI_RUNTIME_ADDR=ai-runtime:50051
+      - AI_RUNTIME_HTTP_ADDR=http://ai-runtime:8000
       - PLATFORM_PORT=:8080
-      - LOG_LEVEL=INFO
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=ai_platform
@@ -125,7 +126,7 @@ services:
     profiles:
       - full
 
-  # Vue Frontend (保持原样，因为这是本地构建)
+  # Vue Frontend
   frontend:
     build:
       context: ./frontend-vue
@@ -138,7 +139,7 @@ services:
     profiles:
       - full
 
-  # Nginx Gateway (NEW)
+  # Nginx Gateway
   nginx:
     build:
       context: ./nginx
@@ -147,13 +148,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    environment:
-      - DOMAIN=${DOMAIN:-localhost}
-      - EMAIL=${EMAIL:-admin@example.com}
-      - STAGING=${LETSENCRYPT_STAGING:-0}
     volumes:
-      - ./nginx/conf.d:/etc/nginx/conf.d
-      - ./nginx/ssl:/etc/nginx/ssl
       - letsencrypt_data:/etc/letsencrypt
       - certbot_webroot:/var/www/certbot
     networks:
@@ -161,7 +156,6 @@ services:
     depends_on:
       - frontend
       - platform
-    restart: unless-stopped
     profiles:
       - full
 
@@ -186,8 +180,6 @@ volumes:
   redis_data:
     driver: local
   es_data:
-    driver: local
-  ai_runtime_venv:
     driver: local
   huggingface_cache:
     driver: local

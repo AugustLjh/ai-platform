@@ -8,7 +8,7 @@
       <div class="header">
         <button @click="goBack" class="btn-back">← 返回</button>
         <div class="header-content">
-          <h1>{{ knowledgeBase.name }}</h1>
+          <h1>{{ knowledgeBase.title || knowledgeBase.name }}</h1>
           <div class="header-actions">
             <button @click="goToEdit" class="btn-secondary">编辑</button>
             <button @click="handleDelete" class="btn-danger">删除</button>
@@ -18,16 +18,20 @@
 
       <div class="info-card">
         <div class="info-row">
-          <span class="label">描述：</span>
-          <span class="value">{{ knowledgeBase.description || '暂无描述' }}</span>
+          <span class="label">内容：</span>
+          <span class="value">{{ knowledgeBase.content || knowledgeBase.description || '暂无描述' }}</span>
+        </div>
+        <div class="info-row">
+          <span class="label">来源：</span>
+          <span class="value">{{ knowledgeBase.source || '手动创建' }}</span>
         </div>
         <div class="info-row">
           <span class="label">类型：</span>
-          <span class="value">{{ getTypeLabel(knowledgeBase.type) }}</span>
+          <span class="value">{{ knowledgeBase.source_type || 'manual' }}</span>
         </div>
         <div class="info-row">
-          <span class="label">状态：</span>
-          <span class="value">{{ knowledgeBase.is_public ? '公开' : '私有' }}</span>
+          <span class="label">访问级别：</span>
+          <span class="value">{{ knowledgeBase.access_level === 'tenant' ? '租户共享' : '个人私有' }}</span>
         </div>
         <div class="info-row">
           <span class="label">创建时间：</span>
@@ -64,9 +68,9 @@
           >
             <div class="doc-icon">📄</div>
             <div class="doc-info">
-              <div class="doc-name">{{ doc.name }}</div>
+              <div class="doc-name">{{ doc.title || doc.name }}</div>
               <div class="doc-meta">
-                {{ formatFileSize(doc.size) }} • {{ formatDate(doc.uploaded_at) }}
+                {{ doc.source_type || 'manual' }} • {{ formatDate(doc.created_at || doc.uploaded_at) }}
               </div>
             </div>
             <button

@@ -24,7 +24,7 @@
         @click="goToDetail(kb.id)"
       >
         <div class="card-header">
-          <h3>{{ kb.name }}</h3>
+          <h3>{{ kb.title || kb.name }}</h3>
           <div class="card-actions" @click.stop>
             <button @click="goToEdit(kb.id)" class="btn-icon" title="编辑">
               ✏️
@@ -34,9 +34,9 @@
             </button>
           </div>
         </div>
-        <p class="description">{{ kb.description || '暂无描述' }}</p>
+        <p class="description">{{ kb.content || kb.description || '暂无描述' }}</p>
         <div class="card-footer">
-          <span class="meta">{{ kb.document_count || 0 }} 个文档</span>
+          <span class="meta">{{ kb.source_type || 'manual' }}</span>
           <span class="meta">{{ formatDate(kb.created_at) }}</span>
         </div>
       </div>

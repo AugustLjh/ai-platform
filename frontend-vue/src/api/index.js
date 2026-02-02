@@ -93,49 +93,77 @@ export const chatAPI = {
 }
 
 export const knowledgeAPI = {
-  // Get all knowledge bases
-  getKnowledgeBases() {
-    return api.get('/api/v1/knowledge')
+  // Get all documents (knowledge base items)
+  getKnowledgeBases(page = 1, pageSize = 100) {
+    return api.get('/api/v1/knowledge/documents', {
+      params: { page, page_size: pageSize }
+    })
   },
 
-  // Get knowledge base by ID
+  // Get document by ID
   getKnowledgeBase(id) {
-    return api.get(`/api/v1/knowledge/${id}`)
+    return api.get(`/api/v1/knowledge/documents/${id}`)
   },
 
-  // Create knowledge base
+  // Create document
   createKnowledgeBase(data) {
-    return api.post('/api/v1/knowledge', data)
+    return api.post('/api/v1/knowledge/documents', {
+      title: data.name || data.title,
+      content: data.description || data.content || '',
+      source: data.source || 'manual',
+      source_type: 'manual',
+      access_level: 'tenant',
+      auto_index: true
+    })
   },
 
-  // Update knowledge base
+  // Update document
   updateKnowledgeBase(id, data) {
-    return api.put(`/api/v1/knowledge/${id}`, data)
+    return api.put(`/api/v1/knowledge/documents/${id}`, {
+      title: data.name || data.title,
+      content: data.description || data.content,
+      re_index: true
+    })
   },
 
-  // Delete knowledge base
+  // Delete document
   deleteKnowledgeBase(id) {
-    return api.delete(`/api/v1/knowledge/${id}`)
+    return api.delete(`/api/v1/knowledge/documents/${id}`)
   },
 
-  // Upload document to knowledge base
+  // Upload file as document
   uploadDocument(knowledgeBaseId, file) {
     const formData = new FormData()
     formData.append('file', file)
-    return api.post(`/api/v1/knowledge/${knowledgeBaseId}/documents`, formData, {
+    formData.append('access_level', 'tenant')
+    formData.append('auto_index', 'true')
+    return api.post('/api/v1/knowledge/documents/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
     })
   },
 
-  // Get documents in knowledge base
+  // Get documents (same as getKnowledgeBases for compatibility)
   getDocuments(knowledgeBaseId) {
-    return api.get(`/api/v1/knowledge/${knowledgeBaseId}/documents`)
+    return api.get('/api/v1/knowledge/documents')
   },
 
-  // Delete document
+  // Delete document (same as deleteKnowledgeBase)
   deleteDocument(knowledgeBaseId, documentId) {
-    return api.delete(`/api/v1/knowledge/${knowledgeBaseId}/documents/${documentId}`)
+    return api.delete(`/api/v1/knowledge/documents/${documentId}`)
+  },
+
+  // Search documents
+  searchDocuments(query, topK = 10) {
+    return api.post('/api/v1/knowledge/documents/search', {
+      query,
+      top_k: topK
+    })
+  },
+
+  // Get knowledge base stats
+  getStats() {
+    return api.get('/api/v1/knowledge/stats')
   }
 }

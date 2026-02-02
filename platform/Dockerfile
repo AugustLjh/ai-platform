@@ -19,19 +19,28 @@ ENV GOSUMDB=sum.golang.google.cn
 
 # 先拷依赖文件（缓存友好）
 COPY platform/go.mod platform/go.sum ./
-RUN go mod download
 
-# 拷 platform 源码
-COPY platform/ ./
-
-# 拷 proto 并生成到 platform/proto/chat
+# 拷 proto 并生成到 platform/proto/chat（在 go mod download 之前）
 COPY proto /proto
 RUN mkdir -p proto/chat && \
     protoc \
       -I/proto \
       --go_out=proto/chat --go_opt=paths=source_relative \
       --go-grpc_out=proto/chat --go-grpc_opt=paths=source_relative \
-      /proto/chat_service.proto
+      /proto/chat_service.proto && \
+    echo 'module github.com/ai-platform/platform/proto/chat' > proto/chat/go.mod && \
+    echo '' >> proto/chat/go.mod && \
+    echo 'go 1.21' >> proto/chat/go.mod && \
+    echo '' >> proto/chat/go.mod && \
+    echo 'require (' >> proto/chat/go.mod && \
+    echo '	google.golang.org/grpc v1.60.0' >> proto/chat/go.mod && \
+    echo '	google.golang.org/protobuf v1.31.0' >> proto/chat/go.mod && \
+    echo ')' >> proto/chat/go.mod
+
+RUN go mod download
+
+# 拷 platform 源码
+COPY platform/ ./
 
 # 构建二进制（静态）
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/platform main.go

@@ -16,8 +16,9 @@ export const useKnowledgeStore = defineStore('knowledge', {
       this.error = null
       try {
         const { data } = await knowledgeAPI.getKnowledgeBases()
-        this.knowledgeBases = data
-        return data
+        // Handle paginated response from documents API
+        this.knowledgeBases = data.documents || []
+        return this.knowledgeBases
       } catch (error) {
         this.error = error.response?.data?.error || 'Failed to fetch knowledge bases'
         throw error
@@ -99,8 +100,9 @@ export const useKnowledgeStore = defineStore('knowledge', {
       this.error = null
       try {
         const { data } = await knowledgeAPI.getDocuments(knowledgeBaseId)
-        this.documents = data
-        return data
+        // Handle paginated response
+        this.documents = data.documents || []
+        return this.documents
       } catch (error) {
         this.error = error.response?.data?.error || 'Failed to fetch documents'
         throw error

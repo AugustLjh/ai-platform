@@ -93,10 +93,10 @@ const loadKnowledgeBase = async () => {
   try {
     knowledgeBase.value = await knowledgeStore.fetchKnowledgeBase(knowledgeBaseId)
     form.value = {
-      name: knowledgeBase.value.name,
-      description: knowledgeBase.value.description || '',
+      name: knowledgeBase.value.title || knowledgeBase.value.name,
+      description: knowledgeBase.value.content || knowledgeBase.value.description || '',
       type: knowledgeBase.value.type || 'general',
-      is_public: knowledgeBase.value.is_public || false
+      is_public: knowledgeBase.value.access_level === 'tenant'
     }
   } catch (err) {
     error.value = err.response?.data?.error || '加载知识库失败'
