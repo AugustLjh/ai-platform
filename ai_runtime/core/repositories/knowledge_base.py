@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 import asyncpg
-from ..models.knowledge_base import (
+from core.models.knowledge_base import (
     Document,
     SourceType,
     AccessLevel,

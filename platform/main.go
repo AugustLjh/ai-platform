@@ -48,10 +48,10 @@ func main() {
 	// Create a demo user for testing
 	demoPassword, _ := auth.HashPassword("demo123456")
 	demoUser := &auth.User{
-		ID:           "demo-user-001",
+		ID:           "b1eebc99-9c0b-4ef8-bb6d-6bb9bd380a12",
 		Email:        "demo@example.com",
 		PasswordHash: demoPassword,
-		TenantID:     "demo-tenant",
+		TenantID:     "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
 		Role:         "user",
 		Active:       true,
 	}
