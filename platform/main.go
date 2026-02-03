@@ -39,7 +39,7 @@ func main() {
 	// Initialize auth components
 	tokenManager := auth.NewTokenManager(
 		jwtSecret,
-		time.Hour,      // Access token TTL: 1 hour
+		24*time.Hour,   // Access token TTL: 24 hours
 		24*time.Hour*7, // Refresh token TTL: 7 days
 	)
 	userStore := auth.NewInMemoryUserStore()

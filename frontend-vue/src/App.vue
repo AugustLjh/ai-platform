@@ -5,6 +5,10 @@
 </template>
 
 <script setup>
+import { useActivityTracker } from '@/composables/useActivityTracker'
+
+// Initialize activity tracker
+useActivityTracker()
 </script>
 
 <style>

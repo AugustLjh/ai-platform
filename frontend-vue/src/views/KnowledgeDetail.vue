@@ -1,5 +1,7 @@
 <template>
-  <div class="knowledge-detail-container">
+  <div class="knowledge-detail-wrapper">
+    <Navbar />
+    <div class="knowledge-detail-container">
     <div v-if="loading" class="loading">加载中...</div>
 
     <div v-if="error" class="error">{{ error }}</div>
@@ -84,6 +86,7 @@
         </div>
       </div>
     </div>
+    </div>
   </div>
 </template>
 
@@ -91,6 +94,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useKnowledgeStore } from '@/store/knowledge'
+import Navbar from '@/components/Navbar.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -202,6 +206,11 @@ const formatFileSize = (bytes) => {
 </script>
 
 <style scoped>
+.knowledge-detail-wrapper {
+  min-height: 100vh;
+  background: linear-gradient(180deg, #f8f9ff 0%, #ffffff 100%);
+}
+
 .knowledge-detail-container {
   max-width: 1000px;
   margin: 0 auto;

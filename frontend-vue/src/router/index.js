@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Login from '../views/Login.vue'
 import Register from '../views/Register.vue'
+import Chat from '../views/Chat.vue'
 import KnowledgeList from '../views/KnowledgeList.vue'
 import KnowledgeCreate from '../views/KnowledgeCreate.vue'
 import KnowledgeDetail from '../views/KnowledgeDetail.vue'
@@ -9,7 +10,13 @@ import KnowledgeEdit from '../views/KnowledgeEdit.vue'
 const routes = [
   {
     path: '/',
-    redirect: '/knowledge'
+    redirect: '/chat'
+  },
+  {
+    path: '/chat',
+    name: 'Chat',
+    component: Chat,
+    meta: { requiresAuth: true }
   },
   {
     path: '/login',
@@ -59,7 +66,7 @@ router.beforeEach((to, from, next) => {
   if (to.meta.requiresAuth && !isAuthenticated) {
     next('/login')
   } else if ((to.path === '/login' || to.path === '/register') && isAuthenticated) {
-    next('/knowledge')
+    next('/chat')
   } else {
     next()
   }

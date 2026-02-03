@@ -157,7 +157,7 @@ func (s *AuthService) RefreshToken(refreshToken string) (*AuthResponse, error) {
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken, // Keep same refresh token
 		TokenType:    "Bearer",
-		ExpiresIn:    3600, // 1 hour
+		ExpiresIn:    86400, // 24 hours
 		User:         user,
 	}, nil
 }
@@ -205,7 +205,7 @@ func (s *AuthService) generateAuthResponse(user *User) (*AuthResponse, error) {
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		TokenType:    "Bearer",
-		ExpiresIn:    3600, // 1 hour
+		ExpiresIn:    86400, // 24 hours
 		User:         user,
 	}, nil
 }

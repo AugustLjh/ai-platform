@@ -1,5 +1,7 @@
 <template>
-  <div class="knowledge-edit-container">
+  <div class="knowledge-edit-wrapper">
+    <Navbar />
+    <div class="knowledge-edit-container">
     <div class="header">
       <button @click="goBack" class="btn-back">← 返回</button>
       <h1>编辑知识库</h1>
@@ -57,6 +59,7 @@
         </div>
       </form>
     </div>
+    </div>
   </div>
 </template>
 
@@ -64,6 +67,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useKnowledgeStore } from '@/store/knowledge'
+import Navbar from '@/components/Navbar.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -125,6 +129,11 @@ const goBack = () => {
 </script>
 
 <style scoped>
+.knowledge-edit-wrapper {
+  min-height: 100vh;
+  background: linear-gradient(180deg, #f8f9ff 0%, #ffffff 100%);
+}
+
 .knowledge-edit-container {
   max-width: 800px;
   margin: 0 auto;

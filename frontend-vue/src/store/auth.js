@@ -2,12 +2,15 @@ import { defineStore } from 'pinia'
 import { authAPI } from '@/api'
 
 export const useAuthStore = defineStore('auth', {
-  state: () => ({
-    user: null,
-    accessToken: localStorage.getItem('access_token'),
-    refreshToken: localStorage.getItem('refresh_token'),
-    isAuthenticated: !!localStorage.getItem('access_token')
-  }),
+  state: () => {
+    const userInfo = localStorage.getItem('user_info')
+    return {
+      user: userInfo ? JSON.parse(userInfo) : null,
+      accessToken: localStorage.getItem('access_token'),
+      refreshToken: localStorage.getItem('refresh_token'),
+      isAuthenticated: !!localStorage.getItem('access_token')
+    }
+  },
 
   actions: {
     async login(email, password) {
@@ -59,6 +62,8 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('access_token', data.access_token)
       localStorage.setItem('refresh_token', data.refresh_token)
       localStorage.setItem('user_info', JSON.stringify(data.user))
+      // Initialize last activity time on login
+      localStorage.setItem('last_activity_time', Date.now().toString())
     },
 
     clearAuth() {
@@ -70,6 +75,7 @@ export const useAuthStore = defineStore('auth', {
       localStorage.removeItem('access_token')
       localStorage.removeItem('refresh_token')
       localStorage.removeItem('user_info')
+      localStorage.removeItem('last_activity_time')
     }
   }
 })
