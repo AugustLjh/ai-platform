@@ -23,6 +23,44 @@ class AccessLevel(str, Enum):
 
 # === 数据库模型 ===
 
+class KnowledgeBase:
+    """知识库数据库模型"""
+    def __init__(
+        self,
+        id: str,
+        tenant_id: str,
+        name: str,
+        description: Optional[str] = None,
+        user_id: Optional[str] = None,
+        access_level: AccessLevel = AccessLevel.TENANT,
+        created_at: Optional[datetime] = None,
+        updated_at: Optional[datetime] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        self.id = id
+        self.tenant_id = tenant_id
+        self.user_id = user_id
+        self.name = name
+        self.description = description
+        self.access_level = access_level
+        self.created_at = created_at or datetime.utcnow()
+        self.updated_at = updated_at or datetime.utcnow()
+        self.metadata = metadata or {}
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "user_id": self.user_id,
+            "name": self.name,
+            "description": self.description,
+            "access_level": self.access_level.value,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "metadata": self.metadata,
+        }
+
+
 class Document:
     """文档数据库模型"""
     def __init__(
@@ -31,6 +69,7 @@ class Document:
         tenant_id: str,
         title: str,
         content: str,
+        knowledge_base_id: Optional[str] = None,
         source: Optional[str] = None,
         source_type: SourceType = SourceType.MANUAL,
         embedding_model: Optional[str] = None,
@@ -46,6 +85,7 @@ class Document:
         self.id = id
         self.tenant_id = tenant_id
         self.user_id = user_id
+        self.knowledge_base_id = knowledge_base_id
         self.access_level = access_level
         self.title = title
         self.content = content
@@ -64,6 +104,7 @@ class Document:
             "id": self.id,
             "tenant_id": self.tenant_id,
             "user_id": self.user_id,
+            "knowledge_base_id": self.knowledge_base_id,
             "access_level": self.access_level.value,
             "title": self.title,
             "content": self.content,
@@ -80,8 +121,61 @@ class Document:
 
 # === API Request/Response Schemas ===
 
+# Knowledge Base Schemas
+class CreateKnowledgeBaseRequest(BaseModel):
+    """创建知识库请求"""
+    name: str = Field(..., min_length=1, max_length=255, description="知识库名称")
+    description: Optional[str] = Field(None, description="知识库描述")
+    access_level: AccessLevel = Field(AccessLevel.TENANT, description="访问权限")
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="额外元数据")
+
+
+class UpdateKnowledgeBaseRequest(BaseModel):
+    """更新知识库请求"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255, description="知识库名称")
+    description: Optional[str] = Field(None, description="知识库描述")
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class KnowledgeBaseResponse(BaseModel):
+    """知识库响应"""
+    id: str
+    tenant_id: str
+    user_id: Optional[str]
+    name: str
+    description: Optional[str]
+    access_level: str
+    created_at: str
+    updated_at: str
+    metadata: Dict[str, Any]
+
+
+class KnowledgeBaseWithStats(BaseModel):
+    """带统计信息的知识库响应"""
+    id: str
+    tenant_id: str
+    user_id: Optional[str]
+    name: str
+    description: Optional[str]
+    access_level: str
+    created_at: str
+    updated_at: str
+    metadata: Dict[str, Any]
+    document_count: int = Field(0, description="文档数量")
+
+
+class ListKnowledgeBasesResponse(BaseModel):
+    """知识库列表响应"""
+    knowledge_bases: List[KnowledgeBaseWithStats]
+    total: int
+    page: int
+    page_size: int
+
+
+# Document Schemas
 class CreateDocumentRequest(BaseModel):
     """创建文档请求"""
+    knowledge_base_id: str = Field(..., description="所属知识库ID")
     title: str = Field(..., min_length=1, max_length=255, description="文档标题")
     content: str = Field(..., min_length=1, description="文档内容")
     source: Optional[str] = Field(None, max_length=255, description="来源URL或文件名")
@@ -105,6 +199,7 @@ class DocumentResponse(BaseModel):
     id: str
     tenant_id: str
     user_id: Optional[str]
+    knowledge_base_id: Optional[str]
     access_level: str
     title: str
     content: str

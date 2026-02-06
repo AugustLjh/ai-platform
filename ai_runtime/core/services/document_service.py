@@ -1,5 +1,5 @@
 """
-Knowledge Base Service - Business Logic Layer
+Document Service - Business Logic Layer
 """
 import logging
 from typing import List, Optional, Dict, Any
@@ -12,7 +12,8 @@ from core.models.knowledge_base import (
     CreateDocumentRequest,
     UpdateDocumentRequest,
 )
-from core.repositories.knowledge_base import KnowledgeBaseRepository
+from core.repositories.document_repository import DocumentRepository
+from core.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from core.embeddings import EmbeddingService
 from core.parsers.file_parser import FileParser
 from core.parsers.url_fetcher import URLFetcher
@@ -23,12 +24,13 @@ from core.quota import QuotaManager
 logger = logging.getLogger(__name__)
 
 
-class KnowledgeBaseService:
-    """知识库业务逻辑服务"""
+class DocumentService:
+    """文档业务逻辑服务"""
 
     def __init__(
         self,
-        repository: KnowledgeBaseRepository,
+        repository: DocumentRepository,
+        kb_repository: KnowledgeBaseRepository,
         embedding_service: EmbeddingService,
         audit_logger: Optional[AuditLogger] = None,
         quota_manager: Optional[QuotaManager] = None,
@@ -37,12 +39,14 @@ class KnowledgeBaseService:
         初始化服务
 
         Args:
-            repository: 数据库仓库
+            repository: 文档数据库仓库
+            kb_repository: 知识库数据库仓库
             embedding_service: 向量嵌入服务
             audit_logger: 审计日志服务（可选）
             quota_manager: 配额管理服务（可选）
         """
         self.repository = repository
+        self.kb_repository = kb_repository
         self.embedding_service = embedding_service
         self.audit_logger = audit_logger
         self.quota_manager = quota_manager
@@ -67,6 +71,16 @@ class KnowledgeBaseService:
         Returns:
             创建的文档对象
         """
+        # 验证知识库存在且用户有权限访问
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=request.knowledge_base_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            raise ValueError(f"Knowledge base {request.knowledge_base_id} not found or access denied")
+
         # 检查配额
         if self.quota_manager:
             await self.quota_manager.check_document_quota(tenant_id)
@@ -88,6 +102,7 @@ class KnowledgeBaseService:
         doc = await self.repository.create_document(
             tenant_id=tenant_id,
             user_id=user_id if request.access_level == AccessLevel.USER else None,
+            knowledge_base_id=request.knowledge_base_id,
             access_level=request.access_level,
             title=request.title,
             content=request.content,

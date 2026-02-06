@@ -72,11 +72,11 @@
           @click="goToDetail(kb.id)"
         >
           <div class="card-icon">
-            {{ getCardIcon(kb.source_type) }}
+            📚
           </div>
           <div class="card-content">
             <div class="card-header">
-              <h3>{{ kb.title || kb.name }}</h3>
+              <h3>{{ kb.name }}</h3>
               <div class="card-actions" @click.stop>
                 <button @click="goToEdit(kb.id)" class="action-btn" title="编辑">
                   <span>✏️</span>
@@ -86,9 +86,9 @@
                 </button>
               </div>
             </div>
-            <p class="description">{{ kb.content || kb.description || '暂无描述' }}</p>
+            <p class="description">{{ kb.description || '暂无描述' }}</p>
             <div class="card-footer">
-              <div class="badge">{{ getSourceTypeLabel(kb.source_type) }}</div>
+              <div class="badge">{{ kb.document_count || 0 }} 个文档</div>
               <span class="meta">{{ formatDate(kb.created_at) }}</span>
             </div>
           </div>
@@ -114,27 +114,24 @@ const searchQuery = ref('')
 const activeFilter = ref('all')
 
 const filters = [
-  { value: 'all', label: '全部', icon: '📋' },
-  { value: 'manual', label: '手动创建', icon: '✍️' },
-  { value: 'file', label: '文件上传', icon: '📄' },
-  { value: 'url', label: 'URL导入', icon: '🔗' }
+  { value: 'all', label: '全部', icon: '📋' }
 ]
 
 const filteredKnowledgeBases = computed(() => {
   let result = knowledgeBases.value
 
-  // 按类型筛选
-  if (activeFilter.value !== 'all') {
-    result = result.filter(kb => kb.source_type === activeFilter.value)
-  }
+  // 按类型筛选 - 知识库没有 source_type，移除此过滤
+  // if (activeFilter.value !== 'all') {
+  //   result = result.filter(kb => kb.source_type === activeFilter.value)
+  // }
 
   // 按搜索关键词筛选
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(kb => {
-      const title = (kb.title || kb.name || '').toLowerCase()
-      const content = (kb.content || kb.description || '').toLowerCase()
-      return title.includes(query) || content.includes(query)
+      const name = (kb.name || '').toLowerCase()
+      const description = (kb.description || '').toLowerCase()
+      return name.includes(query) || description.includes(query)
     })
   }
 
@@ -151,7 +148,7 @@ const loadKnowledgeBases = async () => {
   try {
     knowledgeBases.value = await knowledgeStore.fetchKnowledgeBases()
   } catch (err) {
-    error.value = err.response?.data?.error || '加载知识库失败'
+    error.value = err.response?.data?.detail || '加载知识库失败'
   } finally {
     loading.value = false
   }
@@ -174,7 +171,7 @@ const goToEdit = (id) => {
 }
 
 const handleDelete = async (id) => {
-  if (!confirm('确定要删除这个知识库吗？此操作无法撤销。')) {
+  if (!confirm('确定要删除这个知识库吗？此操作将删除知识库中的所有文档，且无法撤销。')) {
     return
   }
 
@@ -182,28 +179,8 @@ const handleDelete = async (id) => {
     await knowledgeStore.deleteKnowledgeBase(id)
     await loadKnowledgeBases()
   } catch (err) {
-    error.value = err.response?.data?.error || '删除知识库失败'
+    error.value = err.response?.data?.detail || '删除知识库失败'
   }
-}
-
-const getCardIcon = (sourceType) => {
-  const icons = {
-    manual: '✍️',
-    file: '📄',
-    url: '🔗',
-    batch: '📦'
-  }
-  return icons[sourceType] || '📚'
-}
-
-const getSourceTypeLabel = (sourceType) => {
-  const labels = {
-    manual: '手动创建',
-    file: '文件上传',
-    url: 'URL导入',
-    batch: '批量导入'
-  }
-  return labels[sourceType] || '未知'
 }
 
 const formatDate = (dateString) => {

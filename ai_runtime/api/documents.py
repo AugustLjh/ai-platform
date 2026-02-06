@@ -1,5 +1,5 @@
 """
-Knowledge Base API Routes
+Documents API Routes
 """
 import logging
 from typing import Optional
@@ -18,8 +18,10 @@ from core.models.knowledge_base import (
     SourceType,
     AccessLevel,
 )
-from core.services.knowledge_base import KnowledgeBaseService
+from core.services.document_service import DocumentService
+from core.services.knowledge_base_service import KnowledgeBaseService
 from core.dependencies import (
+    get_document_service,
     get_kb_service,
     get_current_tenant_id,
     get_current_user_id,
@@ -31,7 +33,7 @@ from core.quota import QuotaError, convert_quota_error_to_http_exception
 logger = logging.getLogger(__name__)
 
 # 创建路由器
-router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge-base"])
+router = APIRouter(prefix="/api/v1/knowledge", tags=["documents"])
 
 
 # ===== API端点 =====
@@ -40,7 +42,7 @@ router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge-base"])
 @router.post("/documents", response_model=DocumentResponse, status_code=201)
 async def create_document(
     request: CreateDocumentRequest,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
     context: dict = Depends(get_current_request_context),
@@ -48,6 +50,7 @@ async def create_document(
     """
     创建文档
 
+    - **knowledge_base_id**: 所属知识库ID（必填）
     - **title**: 文档标题
     - **content**: 文档内容
     - **source**: 来源（可选）
@@ -57,8 +60,10 @@ async def create_document(
     - **auto_index**: 是否自动生成向量索引
     """
     try:
-        doc = await kb_service.create_document(tenant_id, user_id, request, context)
+        doc = await doc_service.create_document(tenant_id, user_id, request, context)
         return DocumentResponse(**doc.to_dict())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except QuotaError as e:
         raise convert_quota_error_to_http_exception(e)
     except Exception as e:
@@ -69,7 +74,7 @@ async def create_document(
 @router.get("/documents/{document_id}", response_model=DocumentResponse)
 async def get_document(
     document_id: str,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
@@ -78,7 +83,7 @@ async def get_document(
 
     - **document_id**: 文档ID
     """
-    doc = await kb_service.get_document(document_id, tenant_id, user_id)
+    doc = await doc_service.get_document(document_id, tenant_id, user_id)
 
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found or access denied")
@@ -90,7 +95,7 @@ async def get_document(
 async def update_document(
     document_id: str,
     request: UpdateDocumentRequest,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
@@ -104,7 +109,7 @@ async def update_document(
     - **metadata**: 新元数据（可选）
     - **re_index**: 是否重新生成索引
     """
-    doc = await kb_service.update_document(document_id, tenant_id, user_id, request)
+    doc = await doc_service.update_document(document_id, tenant_id, user_id, request)
 
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found or access denied")
@@ -115,7 +120,7 @@ async def update_document(
 @router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
     document_id: str,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
@@ -124,7 +129,7 @@ async def delete_document(
 
     - **document_id**: 文档ID
     """
-    success = await kb_service.delete_document(document_id, tenant_id, user_id)
+    success = await doc_service.delete_document(document_id, tenant_id, user_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="Document not found or access denied")
@@ -136,9 +141,10 @@ async def delete_document(
 async def list_documents(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    knowledge_base_id: Optional[str] = Query(None, description="筛选知识库ID"),
     access_level: Optional[AccessLevel] = Query(None, description="筛选访问级别"),
     source_type: Optional[SourceType] = Query(None, description="筛选来源类型"),
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
@@ -147,12 +153,14 @@ async def list_documents(
 
     - **page**: 页码（从1开始）
     - **page_size**: 每页数量（1-100）
+    - **knowledge_base_id**: 筛选知识库ID（可选）
     - **access_level**: 筛选访问级别（可选）
     - **source_type**: 筛选来源类型（可选）
     """
-    docs, total = await kb_service.list_documents(
+    docs, total = await doc_service.list_documents(
         tenant_id=tenant_id,
         user_id=user_id,
+        knowledge_base_id=knowledge_base_id,
         access_level=access_level,
         source_type=source_type,
         page=page,
@@ -170,7 +178,7 @@ async def list_documents(
 @router.post("/documents/search", response_model=SearchDocumentsResponse)
 async def search_documents(
     request: SearchDocumentsRequest,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
@@ -182,7 +190,7 @@ async def search_documents(
     - **access_level**: 筛选访问级别（可选）
     - **source_type**: 筛选来源类型（可选）
     """
-    results = await kb_service.search_documents(
+    results = await doc_service.search_documents(
         tenant_id=tenant_id,
         user_id=user_id,
         query=request.query,
@@ -207,9 +215,10 @@ async def search_documents(
 @router.post("/documents/upload", response_model=DocumentResponse, status_code=201)
 async def upload_file(
     file: UploadFile = File(..., description="上传的文件"),
+    knowledge_base_id: str = Form(..., description="所属知识库ID"),
     access_level: AccessLevel = Form(AccessLevel.TENANT, description="访问权限"),
     auto_index: bool = Form(True, description="是否自动索引"),
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
@@ -223,14 +232,16 @@ async def upload_file(
     - HTML：.html, .htm
 
     - **file**: 上传的文件
+    - **knowledge_base_id**: 所属知识库ID
     - **access_level**: 访问权限 (tenant/user)
     - **auto_index**: 是否自动生成向量索引
     """
     try:
-        doc = await kb_service.upload_file(
+        doc = await doc_service.upload_file(
             tenant_id=tenant_id,
             user_id=user_id,
             file=file,
+            knowledge_base_id=knowledge_base_id,
             access_level=access_level,
             auto_index=auto_index,
         )
@@ -245,9 +256,10 @@ async def upload_file(
 @router.post("/documents/from-url", response_model=DocumentResponse, status_code=201)
 async def create_from_url(
     url: str = Form(..., description="目标URL"),
+    knowledge_base_id: str = Form(..., description="所属知识库ID"),
     access_level: AccessLevel = Form(AccessLevel.TENANT, description="访问权限"),
     auto_index: bool = Form(True, description="是否自动索引"),
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
@@ -255,14 +267,16 @@ async def create_from_url(
     从URL抓取内容并创建文档
 
     - **url**: 目标URL
+    - **knowledge_base_id**: 所属知识库ID
     - **access_level**: 访问权限 (tenant/user)
     - **auto_index**: 是否自动生成向量索引
     """
     try:
-        doc = await kb_service.create_from_url(
+        doc = await doc_service.create_from_url(
             tenant_id=tenant_id,
             user_id=user_id,
             url=url,
+            knowledge_base_id=knowledge_base_id,
             access_level=access_level,
             auto_index=auto_index,
         )
@@ -277,7 +291,7 @@ async def create_from_url(
 @router.post("/documents/batch", response_model=BatchCreateResponse)
 async def batch_create_documents(
     request: BatchCreateRequest,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
@@ -288,7 +302,7 @@ async def batch_create_documents(
 
     返回每个文档的创建结果，包括成功/失败状态
     """
-    results = await kb_service.batch_create_documents(
+    results = await doc_service.batch_create_documents(
         tenant_id=tenant_id,
         user_id=user_id,
         requests=request.documents,

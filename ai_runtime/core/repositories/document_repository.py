@@ -1,5 +1,5 @@
 """
-Knowledge Base Repository - Database Access Layer
+Document Repository - Database Access Layer
 """
 import json
 import uuid
@@ -13,8 +13,8 @@ from core.models.knowledge_base import (
 )
 
 
-class KnowledgeBaseRepository:
-    """知识库数据库访问层"""
+class DocumentRepository:
+    """文档数据库访问层"""
 
     def __init__(self, db_pool: asyncpg.Pool, use_pgvector: bool = False):
         """
@@ -32,6 +32,7 @@ class KnowledgeBaseRepository:
         tenant_id: str,
         title: str,
         content: str,
+        knowledge_base_id: str,
         user_id: Optional[str] = None,
         access_level: AccessLevel = AccessLevel.TENANT,
         source: Optional[str] = None,
@@ -47,6 +48,7 @@ class KnowledgeBaseRepository:
             tenant_id: 租户ID
             title: 文档标题
             content: 文档内容
+            knowledge_base_id: 所属知识库ID
             user_id: 用户ID（私有文档）
             access_level: 访问级别
             source: 来源
@@ -65,10 +67,10 @@ class KnowledgeBaseRepository:
 
         query = """
             INSERT INTO documents (
-                id, tenant_id, user_id, access_level, title, content,
+                id, tenant_id, user_id, knowledge_base_id, access_level, title, content,
                 source, source_type, embedding_model, embedding,
                 indexed, indexed_at, created_at, updated_at, metadata
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING *
         """
 
@@ -78,6 +80,7 @@ class KnowledgeBaseRepository:
                 doc_id,
                 tenant_id,
                 user_id,
+                knowledge_base_id,
                 access_level.value,
                 title,
                 content,
@@ -253,6 +256,7 @@ class KnowledgeBaseRepository:
         self,
         tenant_id: str,
         user_id: Optional[str] = None,
+        knowledge_base_id: Optional[str] = None,
         access_level: Optional[AccessLevel] = None,
         source_type: Optional[SourceType] = None,
         page: int = 1,
@@ -264,6 +268,7 @@ class KnowledgeBaseRepository:
         Args:
             tenant_id: 租户ID
             user_id: 用户ID
+            knowledge_base_id: 筛选知识库ID
             access_level: 筛选访问级别
             source_type: 筛选来源类型
             page: 页码（从1开始）
@@ -285,6 +290,12 @@ class KnowledgeBaseRepository:
             # 用户可以看到租户级别的文档 + 自己的私有文档
             conditions.append(f"(access_level = 'tenant' OR (access_level = 'user' AND user_id = ${param_idx}))")
             params.append(user_id)
+            param_idx += 1
+
+        # 知识库过滤
+        if knowledge_base_id:
+            conditions.append(f"knowledge_base_id = ${param_idx}")
+            params.append(knowledge_base_id)
             param_idx += 1
 
         # 来源类型过滤
@@ -422,6 +433,7 @@ class KnowledgeBaseRepository:
             id=str(row['id']),
             tenant_id=str(row['tenant_id']),
             user_id=str(row['user_id']) if row['user_id'] else None,
+            knowledge_base_id=str(row['knowledge_base_id']) if row.get('knowledge_base_id') else None,
             access_level=AccessLevel(row['access_level']),
             title=row['title'],
             content=row['content'],

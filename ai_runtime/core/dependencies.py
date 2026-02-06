@@ -8,8 +8,10 @@ from fastapi import Request, Header, HTTPException
 from .config import AppConfig, get_config
 from .database import DatabaseManager, get_db_manager
 from .embeddings import EmbeddingService, SentenceTransformerEmbedding, OpenAIEmbedding, JinaEmbedding
-from .repositories.knowledge_base import KnowledgeBaseRepository
-from .services.knowledge_base import KnowledgeBaseService
+from .repositories.document_repository import DocumentRepository
+from .repositories.knowledge_base_repository import KnowledgeBaseRepository
+from .services.document_service import DocumentService
+from .services.knowledge_base_service import KnowledgeBaseService
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,9 @@ class ServiceContainer:
     def __init__(self):
         self._embedding_service: Optional[EmbeddingService] = None
         self._kb_repository: Optional[KnowledgeBaseRepository] = None
+        self._document_repository: Optional[DocumentRepository] = None
         self._kb_service: Optional[KnowledgeBaseService] = None
+        self._document_service: Optional[DocumentService] = None
 
     async def initialize(self, config: AppConfig, db_manager: DatabaseManager):
         """
@@ -63,12 +67,17 @@ class ServiceContainer:
 
         logger.info(f"   ✅ Embedding service loaded (dim={self._embedding_service.get_embedding_dimension()})")
 
-        # Initialize repository
+        # Initialize repositories
         self._kb_repository = KnowledgeBaseRepository(
+            db_pool=db_manager.pool,
+        )
+        logger.info("   ✅ Knowledge base repository initialized")
+
+        self._document_repository = DocumentRepository(
             db_pool=db_manager.pool,
             use_pgvector=config.vector_search.use_pgvector,
         )
-        logger.info(f"   ✅ Knowledge base repository initialized (pgvector={'enabled' if config.vector_search.use_pgvector else 'disabled'})")
+        logger.info(f"   ✅ Document repository initialized (pgvector={'enabled' if config.vector_search.use_pgvector else 'disabled'})")
 
         # Initialize audit logger
         from .audit import AuditLogger
@@ -86,14 +95,22 @@ class ServiceContainer:
         )
         logger.info("   ✅ Quota manager initialized")
 
-        # Initialize service
+        # Initialize services
         self._kb_service = KnowledgeBaseService(
-            repository=self._kb_repository,
-            embedding_service=self._embedding_service,
+            kb_repository=self._kb_repository,
             audit_logger=self._audit_logger if config.enable_audit_log else None,
             quota_manager=self._quota_manager,
         )
         logger.info("   ✅ Knowledge base service initialized")
+
+        self._document_service = DocumentService(
+            repository=self._document_repository,
+            kb_repository=self._kb_repository,
+            embedding_service=self._embedding_service,
+            audit_logger=self._audit_logger if config.enable_audit_log else None,
+            quota_manager=self._quota_manager,
+        )
+        logger.info("   ✅ Document service initialized")
 
         logger.info("✅ All services initialized successfully")
 
@@ -112,11 +129,25 @@ class ServiceContainer:
         return self._kb_repository
 
     @property
+    def document_repository(self) -> DocumentRepository:
+        """Get document repository"""
+        if self._document_repository is None:
+            raise RuntimeError("Document repository not initialized")
+        return self._document_repository
+
+    @property
     def kb_service(self) -> KnowledgeBaseService:
         """Get knowledge base service"""
         if self._kb_service is None:
             raise RuntimeError("Knowledge base service not initialized")
         return self._kb_service
+
+    @property
+    def document_service(self) -> DocumentService:
+        """Get document service"""
+        if self._document_service is None:
+            raise RuntimeError("Document service not initialized")
+        return self._document_service
 
 
 # Global service container
@@ -150,6 +181,16 @@ async def get_kb_service() -> KnowledgeBaseService:
         KnowledgeBaseService instance
     """
     return get_container().kb_service
+
+
+async def get_document_service() -> DocumentService:
+    """
+    FastAPI dependency: Get document service
+
+    Returns:
+        DocumentService instance
+    """
+    return get_container().document_service
 
 
 async def get_current_tenant_id(

@@ -2,10 +2,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Login from '../views/Login.vue'
 import Register from '../views/Register.vue'
 import Chat from '../views/Chat.vue'
-import KnowledgeList from '../views/KnowledgeList.vue'
-import KnowledgeCreate from '../views/KnowledgeCreate.vue'
-import KnowledgeDetail from '../views/KnowledgeDetail.vue'
-import KnowledgeEdit from '../views/KnowledgeEdit.vue'
+import KnowledgeBaseList from '../views/KnowledgeBaseList.vue'
+import KnowledgeBaseCreate from '../views/KnowledgeBaseCreate.vue'
+import KnowledgeBaseDetail from '../views/KnowledgeBaseDetail.vue'
+import KnowledgeBaseEdit from '../views/KnowledgeBaseEdit.vue'
 
 const routes = [
   {
@@ -30,26 +30,26 @@ const routes = [
   },
   {
     path: '/knowledge',
-    name: 'KnowledgeList',
-    component: KnowledgeList,
+    name: 'KnowledgeBaseList',
+    component: KnowledgeBaseList,
     meta: { requiresAuth: true }
   },
   {
     path: '/knowledge/create',
-    name: 'KnowledgeCreate',
-    component: KnowledgeCreate,
+    name: 'KnowledgeBaseCreate',
+    component: KnowledgeBaseCreate,
     meta: { requiresAuth: true }
   },
   {
     path: '/knowledge/:id',
-    name: 'KnowledgeDetail',
-    component: KnowledgeDetail,
+    name: 'KnowledgeBaseDetail',
+    component: KnowledgeBaseDetail,
     meta: { requiresAuth: true }
   },
   {
     path: '/knowledge/:id/edit',
-    name: 'KnowledgeEdit',
-    component: KnowledgeEdit,
+    name: 'KnowledgeBaseEdit',
+    component: KnowledgeBaseEdit,
     meta: { requiresAuth: true }
   }
 ]

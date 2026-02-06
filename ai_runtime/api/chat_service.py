@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../proto'))
 
 from core.prompt import PromptBuilder
 from core.rag import RAGPipeline, Retriever, SimpleVectorStore
-from core.llm import LocalLLM, OpenAILLM
+from core.llm import LocalLLM, OpenAILLM, DeepseekLLM
 from core.agent import AgentExecutor
 from core.agent.tools import get_default_tools
 from core.stream import StreamPipeline, TokenCounterMiddleware, CostTrackingMiddleware
@@ -23,7 +23,8 @@ class ChatServiceImpl:
         self.rag_pipeline = RAGPipeline(self.retriever)
 
         # Initialize LLM (using Local for demo, can switch to OpenAI)
-        self.llm = LocalLLM(model="local-model")
+        self.llm = DeepseekLLM(model="deepseek-chat", api_key=os.getenv("DEEPSEEK_API_KEY"))
+
 
         # Initialize agent with tools
         self.agent = AgentExecutor(self.llm, tools=get_default_tools())

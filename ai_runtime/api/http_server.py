@@ -12,7 +12,8 @@ import json
 import logging
 
 from .chat_service import ChatServiceImpl
-from .knowledge_base import router as kb_router
+from .documents import router as documents_router
+from .knowledge_bases import router as kb_router
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +86,9 @@ def create_http_app() -> FastAPI:
     # Initialize chat service
     chat_service = ChatServiceImpl()
 
-    # Include knowledge base router
+    # Include routers
     app.include_router(kb_router)
+    app.include_router(documents_router)
 
     @app.get("/", response_model=Dict[str, str])
     async def root():

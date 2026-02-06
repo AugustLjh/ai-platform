@@ -40,7 +40,7 @@ export const chatAPI = {
   // Send message with SSE (streaming)
   async sendMessageSSE(sessionId, message, config = {}, onChunk) {
     const token = localStorage.getItem('access_token')
-    const response = await fetch(`${api.defaults.baseURL}/api/v1/chat/sse`, {
+    const response = await fetch(`/api/v1/chat/sse`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -92,50 +92,103 @@ export const chatAPI = {
   }
 }
 
-export const knowledgeAPI = {
-  // Get all documents (knowledge base items)
-  getKnowledgeBases(page = 1, pageSize = 100) {
-    return api.get('/api/v1/knowledge/documents', {
+export const knowledgeBaseAPI = {
+  // Get all knowledge bases
+  getKnowledgeBases(page = 1, pageSize = 20) {
+    return api.get('/api/v1/knowledge-bases', {
       params: { page, page_size: pageSize }
     })
   },
 
-  // Get document by ID
+  // Get knowledge base by ID (with stats)
   getKnowledgeBase(id) {
+    return api.get(`/api/v1/knowledge-bases/${id}`)
+  },
+
+  // Create knowledge base
+  createKnowledgeBase(data) {
+    return api.post('/api/v1/knowledge-bases', {
+      name: data.name,
+      description: data.description || '',
+      access_level: data.access_level || 'tenant',
+      metadata: data.metadata || {}
+    })
+  },
+
+  // Update knowledge base
+  updateKnowledgeBase(id, data) {
+    return api.put(`/api/v1/knowledge-bases/${id}`, {
+      name: data.name,
+      description: data.description,
+      metadata: data.metadata
+    })
+  },
+
+  // Delete knowledge base
+  deleteKnowledgeBase(id) {
+    return api.delete(`/api/v1/knowledge-bases/${id}`)
+  },
+
+  // Get documents in knowledge base
+  getKnowledgeBaseDocuments(id, page = 1, pageSize = 20) {
+    return api.get(`/api/v1/knowledge-bases/${id}/documents`, {
+      params: { page, page_size: pageSize }
+    })
+  },
+
+  // Get knowledge base stats
+  getKnowledgeBaseStats(id) {
+    return api.get(`/api/v1/knowledge-bases/${id}/stats`)
+  }
+}
+
+export const documentAPI = {
+  // Get all documents
+  getDocuments(params = {}) {
+    return api.get('/api/v1/knowledge/documents', { params })
+  },
+
+  // Get document by ID
+  getDocument(id) {
     return api.get(`/api/v1/knowledge/documents/${id}`)
   },
 
   // Create document
-  createKnowledgeBase(data) {
+  createDocument(data) {
     return api.post('/api/v1/knowledge/documents', {
-      title: data.name || data.title,
-      content: data.description || data.content || '',
+      knowledge_base_id: data.knowledge_base_id,
+      title: data.title,
+      content: data.content,
       source: data.source || 'manual',
-      source_type: 'manual',
-      access_level: 'tenant',
-      auto_index: true
+      source_type: data.source_type || 'manual',
+      access_level: data.access_level || 'tenant',
+      metadata: data.metadata || {},
+      auto_index: data.auto_index !== false
     })
   },
 
   // Update document
-  updateKnowledgeBase(id, data) {
+  updateDocument(id, data) {
     return api.put(`/api/v1/knowledge/documents/${id}`, {
-      title: data.name || data.title,
-      content: data.description || data.content,
-      re_index: true
+      title: data.title,
+      content: data.content,
+      source: data.source,
+      metadata: data.metadata,
+      re_index: data.re_index || false
     })
   },
 
   // Delete document
-  deleteKnowledgeBase(id) {
+  deleteDocument(id) {
     return api.delete(`/api/v1/knowledge/documents/${id}`)
   },
 
   // Upload file as document
-  uploadDocument(knowledgeBaseId, file) {
+  uploadDocument(knowledgeBaseId, file, accessLevel = 'tenant') {
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('access_level', 'tenant')
+    formData.append('knowledge_base_id', knowledgeBaseId)
+    formData.append('access_level', accessLevel)
     formData.append('auto_index', 'true')
     return api.post('/api/v1/knowledge/documents/upload', formData, {
       headers: {
@@ -144,14 +197,14 @@ export const knowledgeAPI = {
     })
   },
 
-  // Get documents (same as getKnowledgeBases for compatibility)
-  getDocuments(knowledgeBaseId) {
-    return api.get('/api/v1/knowledge/documents')
-  },
-
-  // Delete document (same as deleteKnowledgeBase)
-  deleteDocument(knowledgeBaseId, documentId) {
-    return api.delete(`/api/v1/knowledge/documents/${documentId}`)
+  // Create document from URL
+  createFromUrl(knowledgeBaseId, url, accessLevel = 'tenant') {
+    const formData = new FormData()
+    formData.append('url', url)
+    formData.append('knowledge_base_id', knowledgeBaseId)
+    formData.append('access_level', accessLevel)
+    formData.append('auto_index', 'true')
+    return api.post('/api/v1/knowledge/documents/from-url', formData)
   },
 
   // Search documents
@@ -162,7 +215,57 @@ export const knowledgeAPI = {
     })
   },
 
-  // Get knowledge base stats
+  // Batch create documents
+  batchCreateDocuments(documents) {
+    return api.post('/api/v1/knowledge/documents/batch', {
+      documents
+    })
+  }
+}
+
+// Legacy API for backward compatibility
+export const knowledgeAPI = {
+  // Map to knowledge bases
+  getKnowledgeBases(page = 1, pageSize = 100) {
+    return knowledgeBaseAPI.getKnowledgeBases(page, pageSize)
+  },
+
+  getKnowledgeBase(id) {
+    return knowledgeBaseAPI.getKnowledgeBase(id)
+  },
+
+  createKnowledgeBase(data) {
+    return knowledgeBaseAPI.createKnowledgeBase(data)
+  },
+
+  updateKnowledgeBase(id, data) {
+    return knowledgeBaseAPI.updateKnowledgeBase(id, data)
+  },
+
+  deleteKnowledgeBase(id) {
+    return knowledgeBaseAPI.deleteKnowledgeBase(id)
+  },
+
+  // Map to documents
+  getDocuments(knowledgeBaseId) {
+    if (knowledgeBaseId) {
+      return knowledgeBaseAPI.getKnowledgeBaseDocuments(knowledgeBaseId)
+    }
+    return documentAPI.getDocuments()
+  },
+
+  deleteDocument(knowledgeBaseId, documentId) {
+    return documentAPI.deleteDocument(documentId)
+  },
+
+  uploadDocument(knowledgeBaseId, file) {
+    return documentAPI.uploadDocument(knowledgeBaseId, file)
+  },
+
+  searchDocuments(query, topK = 10) {
+    return documentAPI.searchDocuments(query, topK)
+  },
+
   getStats() {
     return api.get('/api/v1/knowledge/stats')
   }
