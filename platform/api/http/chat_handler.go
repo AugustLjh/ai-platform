@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/ai-platform/platform/middleware"
@@ -27,7 +28,19 @@ func NewChatHandler(chatService *service.ChatService, costTracker *middleware.Co
 		costTracker: costTracker,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				return true // In production, check origin properly
+				origin := r.Header.Get("Origin")
+				allowedOrigins := []string{
+					"http://localhost:3000",
+					"http://localhost:8080",
+					os.Getenv("FRONTEND_URL"),
+				}
+				for _, allowed := range allowedOrigins {
+					if origin == allowed {
+						return true
+					}
+				}
+				log.Printf("[Security] Rejected WebSocket from origin: %s", origin)
+				return false
 			},
 		},
 	}
@@ -95,7 +108,11 @@ func (h *ChatHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Send SSE message
-			data, _ := json.Marshal(msg)
+			data, err := json.Marshal(msg)
+			if err != nil {
+				log.Printf("[SSE] Failed to marshal message: %v", err)
+				continue
+			}
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 
@@ -146,7 +163,8 @@ func (h *ChatHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		serviceReq := h.toServiceRequest(&req)
 
 		// Stream chat
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel() // Ensure cleanup in all paths
 
 		messageChan, err := h.chatService.StreamChat(ctx, serviceReq)
 		if err != nil {
@@ -233,11 +251,18 @@ func (h *ChatHandler) HandleChatSync(w http.ResponseWriter, r *http.Request) {
 	response := ChatResponse{
 		SessionID: req.SessionID,
 		Content:   fullResponse,
-		Metadata:  lastMsg.Metadata,
+	}
+
+	// Only add metadata if lastMsg exists
+	if lastMsg != nil {
+		response.Metadata = lastMsg.Metadata
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
 }
 
 // toServiceRequest converts HTTP request to service request

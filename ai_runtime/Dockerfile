@@ -13,6 +13,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     protobuf-compiler \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- Python 依赖 ----------
@@ -45,5 +46,9 @@ COPY ai_runtime/ .
 EXPOSE 8000 50051
 
 # ---------- 启动 ----------
+COPY ai_runtime/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "main", "--mode", "both", "--http-port", "8000", "--grpc-port", "50051"]
 

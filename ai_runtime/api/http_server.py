@@ -63,6 +63,23 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = None
 
 
+class InternalChatRequest:
+    """Internal request object for chat service"""
+    def __init__(self, session_id: str, message: str, config):
+        self.session_id = session_id
+        self.message = message
+        self.config = config
+
+
+class InternalChatConfig:
+    """Internal config object for chat service"""
+    def __init__(self, use_rag: bool, use_agent: bool, temperature: float, max_tokens: int):
+        self.use_rag = use_rag
+        self.use_agent = use_agent
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+
 def create_http_app() -> FastAPI:
     """Create and configure FastAPI application"""
 
@@ -124,16 +141,16 @@ def create_http_app() -> FastAPI:
             full_response = ""
 
             # Convert to internal request format
-            internal_request = type('Request', (), {
-                'session_id': request.session_id,
-                'message': request.message,
-                'config': type('Config', (), {
-                    'use_rag': request.config.use_rag,
-                    'use_agent': request.config.use_agent,
-                    'temperature': request.config.temperature,
-                    'max_tokens': request.config.max_tokens
-                })()
-            })()
+            internal_request = InternalChatRequest(
+                session_id=request.session_id,
+                message=request.message,
+                config=InternalChatConfig(
+                    use_rag=request.config.use_rag,
+                    use_agent=request.config.use_agent,
+                    temperature=request.config.temperature,
+                    max_tokens=request.config.max_tokens
+                )
+            )
 
             # Collect all chunks
             async for chunk in chat_service.stream_chat(internal_request):
@@ -158,16 +175,16 @@ def create_http_app() -> FastAPI:
         async def event_generator():
             try:
                 # Convert to internal request format
-                internal_request = type('Request', (), {
-                    'session_id': request.session_id,
-                    'message': request.message,
-                    'config': type('Config', (), {
-                        'use_rag': request.config.use_rag,
-                        'use_agent': request.config.use_agent,
-                        'temperature': request.config.temperature,
-                        'max_tokens': request.config.max_tokens
-                    })()
-                })()
+                internal_request = InternalChatRequest(
+                    session_id=request.session_id,
+                    message=request.message,
+                    config=InternalChatConfig(
+                        use_rag=request.config.use_rag,
+                        use_agent=request.config.use_agent,
+                        temperature=request.config.temperature,
+                        max_tokens=request.config.max_tokens
+                    )
+                )
 
                 # Stream responses
                 async for chunk in chat_service.stream_chat(internal_request):
@@ -199,9 +216,16 @@ def create_http_app() -> FastAPI:
         """Get chat history for a session"""
         try:
             # Convert to internal request format
-            internal_request = type('Request', (), {
-                'session_id': session_id
-            })()
+            internal_request = InternalChatRequest(
+                session_id=session_id,
+                message="",
+                config=InternalChatConfig(
+                    use_rag=False,
+                    use_agent=False,
+                    temperature=0.7,
+                    max_tokens=2000
+                )
+            )
 
             history_data = await chat_service.get_chat_history(internal_request)
 

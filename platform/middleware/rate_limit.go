@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"sync"
 	"time"
@@ -8,11 +9,13 @@ import (
 
 // RateLimiter implements token bucket rate limiting
 type RateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*bucket
-	rate     int           // requests per window
-	window   time.Duration // time window
+	mu              sync.Mutex
+	buckets         map[string]*bucket
+	rate            int           // requests per window
+	window          time.Duration // time window
 	cleanupInterval time.Duration
+	ctx             context.Context
+	cancel          context.CancelFunc
 }
 
 type bucket struct {
@@ -22,11 +25,14 @@ type bucket struct {
 
 // NewRateLimiter creates a new rate limiter
 func NewRateLimiter(rate int, window time.Duration) *RateLimiter {
+	ctx, cancel := context.WithCancel(context.Background())
 	rl := &RateLimiter{
-		buckets:  make(map[string]*bucket),
-		rate:     rate,
-		window:   window,
+		buckets:         make(map[string]*bucket),
+		rate:            rate,
+		window:          window,
 		cleanupInterval: 5 * time.Minute,
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	// Start cleanup goroutine
@@ -100,14 +106,24 @@ func (rl *RateLimiter) cleanup() {
 	ticker := time.NewTicker(rl.cleanupInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for key, b := range rl.buckets {
-			if now.Sub(b.lastSeen) > rl.window*2 {
-				delete(rl.buckets, key)
+	for {
+		select {
+		case <-rl.ctx.Done():
+			return
+		case <-ticker.C:
+			rl.mu.Lock()
+			now := time.Now()
+			for key, b := range rl.buckets {
+				if now.Sub(b.lastSeen) > rl.window*2 {
+					delete(rl.buckets, key)
+				}
 			}
+			rl.mu.Unlock()
 		}
-		rl.mu.Unlock()
 	}
+}
+
+// Shutdown gracefully stops the rate limiter
+func (rl *RateLimiter) Shutdown() {
+	rl.cancel()
 }

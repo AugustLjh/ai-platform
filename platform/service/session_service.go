@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -26,12 +27,17 @@ type Message struct {
 type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // NewSessionManager creates a new session manager
 func NewSessionManager() *SessionManager {
+	ctx, cancel := context.WithCancel(context.Background())
 	sm := &SessionManager{
 		sessions: make(map[string]*Session),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 
 	// Start cleanup goroutine
@@ -106,15 +112,25 @@ func (sm *SessionManager) cleanup() {
 	ticker := time.NewTicker(30 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		sm.mu.Lock()
-		now := time.Now()
-		for id, session := range sm.sessions {
-			// Remove sessions older than 24 hours
-			if now.Sub(session.UpdatedAt) > 24*time.Hour {
-				delete(sm.sessions, id)
+	for {
+		select {
+		case <-sm.ctx.Done():
+			return
+		case <-ticker.C:
+			sm.mu.Lock()
+			now := time.Now()
+			for id, session := range sm.sessions {
+				// Remove sessions older than 24 hours
+				if now.Sub(session.UpdatedAt) > 24*time.Hour {
+					delete(sm.sessions, id)
+				}
 			}
+			sm.mu.Unlock()
 		}
-		sm.mu.Unlock()
 	}
+}
+
+// Shutdown gracefully stops the session manager
+func (sm *SessionManager) Shutdown() {
+	sm.cancel()
 }

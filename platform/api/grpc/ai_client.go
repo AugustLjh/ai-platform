@@ -50,11 +50,14 @@ type AIClient struct {
 
 // NewAIClient creates a new AI client
 func NewAIClient(address string) (*AIClient, error) {
-	conn, err := grpc.Dial(
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(
+		ctx,
 		address,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: Use TLS in production
 		grpc.WithBlock(),
-		grpc.WithTimeout(5*time.Second),
 	)
 	if err != nil {
 		return nil, err
@@ -107,29 +110,38 @@ func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *Ch
 		defer close(messageChan)
 
 		for {
-			resp, err := stream.Recv()
-			if err == io.EOF {
-				// Stream ended normally
-				return
-			}
-			if err != nil {
-				// Stream error
-				log.Printf("[AIClient] Stream error: %v", err)
+			select {
+			case <-ctx.Done():
 				messageChan <- &ChatMessage{
 					Type:  5, // ERROR
-					Error: err.Error(),
+					Error: "Request cancelled",
 				}
 				return
-			}
+			default:
+				resp, err := stream.Recv()
+				if err == io.EOF {
+					// Stream ended normally
+					return
+				}
+				if err != nil {
+					// Stream error
+					log.Printf("[AIClient] Stream error: %v", err)
+					messageChan <- &ChatMessage{
+						Type:  5, // ERROR
+						Error: err.Error(),
+					}
+					return
+				}
 
-			// Convert protobuf response to internal message
-			messageChan <- &ChatMessage{
-				SessionID: resp.SessionId,
-				MessageID: resp.MessageId,
-				Type:      int32(resp.Type),
-				Content:   resp.Content,
-				Error:     resp.Error,
-				Metadata:  resp.Metadata,
+				// Convert protobuf response to internal message
+				messageChan <- &ChatMessage{
+					SessionID: resp.SessionId,
+					MessageID: resp.MessageId,
+					Type:      int32(resp.Type),
+					Content:   resp.Content,
+					Error:     resp.Error,
+					Metadata:  resp.Metadata,
+				}
 			}
 		}
 	}()

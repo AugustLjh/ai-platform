@@ -158,19 +158,3 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		"message": "退出登录成功，请删除本地令牌",
 	}, http.StatusOK)
 }
-
-// respondJSON sends a JSON response
-func respondJSON(w http.ResponseWriter, data interface{}, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// respondError sends a JSON error response
-func respondError(w http.ResponseWriter, message string, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]string{
-		"error": message,
-	})
-}

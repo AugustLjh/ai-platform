@@ -1,0 +1,429 @@
+"""
+LLM Models Management API
+Provides endpoints for managing LLM model configurations
+"""
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from uuid import UUID
+import logging
+
+from core.dependencies import get_db_manager, get_current_tenant_id, get_current_user_id
+from core.database import DatabaseManager
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1/models", tags=["models"])
+
+
+# Request/Response Models
+class LLMModelConfig(BaseModel):
+    """LLM model configuration"""
+    temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(default=2000, ge=1, le=8000)
+    top_p: Optional[float] = Field(default=1.0, ge=0.0, le=1.0)
+    frequency_penalty: Optional[float] = Field(default=0.0, ge=-2.0, le=2.0)
+    presence_penalty: Optional[float] = Field(default=0.0, ge=-2.0, le=2.0)
+
+
+class LLMModelCreate(BaseModel):
+    """Create LLM model request"""
+    name: str = Field(..., min_length=1, max_length=100)
+    display_name: str = Field(..., min_length=1, max_length=255)
+    provider: str = Field(..., pattern="^(openai|deepseek|local|mock)$")
+    model_id: str = Field(..., min_length=1, max_length=100)
+    api_base: Optional[str] = Field(None, max_length=500)
+    api_key: Optional[str] = None
+    config: Optional[LLMModelConfig] = Field(default_factory=LLMModelConfig)
+    enabled: bool = Field(default=True)
+    is_default: bool = Field(default=False)
+
+
+class LLMModelUpdate(BaseModel):
+    """Update LLM model request"""
+    display_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    api_base: Optional[str] = Field(None, max_length=500)
+    api_key: Optional[str] = None
+    config: Optional[LLMModelConfig] = None
+    enabled: Optional[bool] = None
+    is_default: Optional[bool] = None
+
+
+class LLMModelResponse(BaseModel):
+    """LLM model response"""
+    id: str
+    name: str
+    display_name: str
+    provider: str
+    model_id: str
+    api_base: Optional[str]
+    has_api_key: bool
+    config: Dict[str, Any]
+    enabled: bool
+    is_default: bool
+    created_at: str
+    updated_at: str
+
+
+class LLMModelsListResponse(BaseModel):
+    """List of LLM models"""
+    models: List[LLMModelResponse]
+    total: int
+
+
+@router.get("", response_model=LLMModelsListResponse)
+async def list_models(
+    enabled_only: bool = True,
+    tenant_id: str = Depends(get_current_tenant_id),
+    db: DatabaseManager = Depends(get_db_manager)
+):
+    """
+    Get list of available LLM models
+
+    Args:
+        enabled_only: Only return enabled models
+        tenant_id: Current tenant ID
+        db: Database manager
+
+    Returns:
+        List of LLM models
+    """
+    try:
+        query = """
+            SELECT
+                id, name, display_name, provider, model_id,
+                api_base, api_key_encrypted, config, enabled, is_default,
+                created_at, updated_at
+            FROM llm_models
+            WHERE (tenant_id = $1 OR tenant_id IS NULL)
+        """
+        params = [tenant_id]
+
+        if enabled_only:
+            query += " AND enabled = true"
+
+        query += " ORDER BY is_default DESC, display_name ASC"
+
+        rows = await db.pool.fetch(query, *params)
+
+        models = []
+        for row in rows:
+            models.append(LLMModelResponse(
+                id=str(row['id']),
+                name=row['name'],
+                display_name=row['display_name'],
+                provider=row['provider'],
+                model_id=row['model_id'],
+                api_base=row['api_base'],
+                has_api_key=bool(row['api_key_encrypted']),
+                config=row['config'] or {},
+                enabled=row['enabled'],
+                is_default=row['is_default'],
+                created_at=row['created_at'].isoformat(),
+                updated_at=row['updated_at'].isoformat()
+            ))
+
+        return LLMModelsListResponse(models=models, total=len(models))
+
+    except Exception as e:
+        logger.error(f"Failed to list models: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list models: {str(e)}"
+        )
+
+
+@router.get("/{model_id}", response_model=LLMModelResponse)
+async def get_model(
+    model_id: str,
+    tenant_id: str = Depends(get_current_tenant_id),
+    db: DatabaseManager = Depends(get_db_manager)
+):
+    """
+    Get specific LLM model by ID
+
+    Args:
+        model_id: Model ID
+        tenant_id: Current tenant ID
+        db: Database manager
+
+    Returns:
+        LLM model details
+    """
+    try:
+        query = """
+            SELECT
+                id, name, display_name, provider, model_id,
+                api_base, api_key_encrypted, config, enabled, is_default,
+                created_at, updated_at
+            FROM llm_models
+            WHERE id = $1 AND (tenant_id = $2 OR tenant_id IS NULL)
+        """
+
+        row = await db.pool.fetchrow(query, UUID(model_id), tenant_id)
+
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Model not found"
+            )
+
+        return LLMModelResponse(
+            id=str(row['id']),
+            name=row['name'],
+            display_name=row['display_name'],
+            provider=row['provider'],
+            model_id=row['model_id'],
+            api_base=row['api_base'],
+            has_api_key=bool(row['api_key_encrypted']),
+            config=row['config'] or {},
+            enabled=row['enabled'],
+            is_default=row['is_default'],
+            created_at=row['created_at'].isoformat(),
+            updated_at=row['updated_at'].isoformat()
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid model ID format"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get model: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get model: {str(e)}"
+        )
+
+
+@router.post("", response_model=LLMModelResponse, status_code=status.HTTP_201_CREATED)
+async def create_model(
+    model: LLMModelCreate,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    db: DatabaseManager = Depends(get_db_manager)
+):
+    """
+    Create new LLM model configuration
+
+    Args:
+        model: Model creation data
+        tenant_id: Current tenant ID
+        user_id: Current user ID
+        db: Database manager
+
+    Returns:
+        Created model details
+    """
+    try:
+        # TODO: Encrypt API key before storing
+        api_key_encrypted = model.api_key if model.api_key else None
+
+        query = """
+            INSERT INTO llm_models (
+                name, display_name, provider, model_id,
+                api_base, api_key_encrypted, config, enabled, is_default,
+                tenant_id, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING
+                id, name, display_name, provider, model_id,
+                api_base, api_key_encrypted, config, enabled, is_default,
+                created_at, updated_at
+        """
+
+        row = await db.pool.fetchrow(
+            query,
+            model.name,
+            model.display_name,
+            model.provider,
+            model.model_id,
+            model.api_base,
+            api_key_encrypted,
+            model.config.dict() if model.config else {},
+            model.enabled,
+            model.is_default,
+            tenant_id,
+            UUID(user_id) if user_id else None
+        )
+
+        return LLMModelResponse(
+            id=str(row['id']),
+            name=row['name'],
+            display_name=row['display_name'],
+            provider=row['provider'],
+            model_id=row['model_id'],
+            api_base=row['api_base'],
+            has_api_key=bool(row['api_key_encrypted']),
+            config=row['config'] or {},
+            enabled=row['enabled'],
+            is_default=row['is_default'],
+            created_at=row['created_at'].isoformat(),
+            updated_at=row['updated_at'].isoformat()
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to create model: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create model: {str(e)}"
+        )
+
+
+@router.put("/{model_id}", response_model=LLMModelResponse)
+async def update_model(
+    model_id: str,
+    model: LLMModelUpdate,
+    tenant_id: str = Depends(get_current_tenant_id),
+    db: DatabaseManager = Depends(get_db_manager)
+):
+    """
+    Update LLM model configuration
+
+    Args:
+        model_id: Model ID
+        model: Model update data
+        tenant_id: Current tenant ID
+        db: Database manager
+
+    Returns:
+        Updated model details
+    """
+    try:
+        # Build dynamic update query
+        updates = []
+        params = []
+        param_count = 1
+
+        if model.display_name is not None:
+            updates.append(f"display_name = ${param_count}")
+            params.append(model.display_name)
+            param_count += 1
+
+        if model.api_base is not None:
+            updates.append(f"api_base = ${param_count}")
+            params.append(model.api_base)
+            param_count += 1
+
+        if model.api_key is not None:
+            # TODO: Encrypt API key
+            updates.append(f"api_key_encrypted = ${param_count}")
+            params.append(model.api_key)
+            param_count += 1
+
+        if model.config is not None:
+            updates.append(f"config = ${param_count}")
+            params.append(model.config.dict())
+            param_count += 1
+
+        if model.enabled is not None:
+            updates.append(f"enabled = ${param_count}")
+            params.append(model.enabled)
+            param_count += 1
+
+        if model.is_default is not None:
+            updates.append(f"is_default = ${param_count}")
+            params.append(model.is_default)
+            param_count += 1
+
+        if not updates:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No fields to update"
+            )
+
+        updates.append(f"updated_at = NOW()")
+
+        params.extend([UUID(model_id), tenant_id])
+
+        query = f"""
+            UPDATE llm_models
+            SET {', '.join(updates)}
+            WHERE id = ${param_count} AND (tenant_id = ${param_count + 1} OR tenant_id IS NULL)
+            RETURNING
+                id, name, display_name, provider, model_id,
+                api_base, api_key_encrypted, config, enabled, is_default,
+                created_at, updated_at
+        """
+
+        row = await db.pool.fetchrow(query, *params)
+
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Model not found"
+            )
+
+        return LLMModelResponse(
+            id=str(row['id']),
+            name=row['name'],
+            display_name=row['display_name'],
+            provider=row['provider'],
+            model_id=row['model_id'],
+            api_base=row['api_base'],
+            has_api_key=bool(row['api_key_encrypted']),
+            config=row['config'] or {},
+            enabled=row['enabled'],
+            is_default=row['is_default'],
+            created_at=row['created_at'].isoformat(),
+            updated_at=row['updated_at'].isoformat()
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid model ID format"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update model: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update model: {str(e)}"
+        )
+
+
+@router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_model(
+    model_id: str,
+    tenant_id: str = Depends(get_current_tenant_id),
+    db: DatabaseManager = Depends(get_db_manager)
+):
+    """
+    Delete LLM model configuration
+
+    Args:
+        model_id: Model ID
+        tenant_id: Current tenant ID
+        db: Database manager
+    """
+    try:
+        query = """
+            DELETE FROM llm_models
+            WHERE id = $1 AND (tenant_id = $2 OR tenant_id IS NULL)
+            RETURNING id
+        """
+
+        row = await db.pool.fetchrow(query, UUID(model_id), tenant_id)
+
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Model not found"
+            )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid model ID format"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete model: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete model: {str(e)}"
+        )

@@ -351,3 +351,25 @@ class KnowledgeBaseService:
             metadata=kb_dict.get("metadata", {}),
             document_count=kb_dict.get("document_count", 0),
         )
+
+    async def search_documents(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        query: str,
+        top_k: int = 5,
+        knowledge_base_id: Optional[str] = None,
+    ) -> List[Tuple[Any, float]]:
+        """Search documents for RAG retrieval"""
+        from core.services.document_service import DocumentService
+        from core.dependencies import get_container
+
+        container = get_container()
+        doc_service = container.get_document_service()
+
+        return await doc_service.search_documents(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            query=query,
+            top_k=top_k,
+        )

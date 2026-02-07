@@ -47,6 +47,5 @@ BEGIN
     END IF;
 END $$;
 
--- Optional: Make knowledge_base_id NOT NULL after migration is verified
--- Uncomment the following line after verifying all documents are migrated:
--- ALTER TABLE documents ALTER COLUMN knowledge_base_id SET NOT NULL;
+-- Make knowledge_base_id NOT NULL after migration is verified
+ALTER TABLE documents ALTER COLUMN knowledge_base_id SET NOT NULL;

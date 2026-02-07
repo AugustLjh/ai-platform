@@ -142,8 +142,13 @@ class KnowledgeBaseRepository:
         async with self.db_pool.acquire() as conn:
             result = await conn.execute(query, kb_id, tenant_id, user_id)
 
-            # Check if any row was deleted
-            return result.split()[-1] != "0"
+            # asyncpg returns "DELETE N" where N is number of rows
+            try:
+                rows_deleted = int(result.split()[-1])
+                return rows_deleted > 0
+            except (ValueError, IndexError):
+                logger.error(f"Unexpected DELETE result format: {result}")
+                return False
 
     async def list_knowledge_bases(
         self,
@@ -324,7 +329,8 @@ class KnowledgeBaseRepository:
         if isinstance(metadata, str):
             try:
                 metadata = json.loads(metadata)
-            except:
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Failed to parse metadata JSON: {e}")
                 metadata = {}
 
         return KnowledgeBase(

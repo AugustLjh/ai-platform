@@ -47,8 +47,8 @@ async def create_knowledge_base(
     - **metadata**: 额外元数据（可选）
     """
     try:
-        ip_address = http_request.client.host if http_request else None
-        user_agent = http_request.headers.get("user-agent") if http_request else None
+        ip_address = http_request.client.host if http_request and http_request.client else None
+        user_agent = http_request.headers.get("user-agent") if http_request and http_request.headers else None
 
         kb = await kb_service.create_knowledge_base(
             tenant_id=tenant_id,
@@ -115,8 +115,8 @@ async def update_knowledge_base(
     注意：access_level 创建后不可修改
     """
     try:
-        ip_address = http_request.client.host if http_request else None
-        user_agent = http_request.headers.get("user-agent") if http_request else None
+        ip_address = http_request.client.host if http_request and http_request.client else None
+        user_agent = http_request.headers.get("user-agent") if http_request and http_request.headers else None
 
         kb = await kb_service.update_knowledge_base(
             kb_id=kb_id,
@@ -153,8 +153,8 @@ async def delete_knowledge_base(
     警告：此操作将级联删除知识库中的所有文档，且不可恢复！
     """
     try:
-        ip_address = http_request.client.host if http_request else None
-        user_agent = http_request.headers.get("user-agent") if http_request else None
+        ip_address = http_request.client.host if http_request and http_request.client else None
+        user_agent = http_request.headers.get("user-agent") if http_request and http_request.headers else None
 
         success = await kb_service.delete_knowledge_base(
             kb_id=kb_id,
