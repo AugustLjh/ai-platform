@@ -332,6 +332,7 @@ class DocumentRepository:
         query_embedding: List[float],
         user_id: Optional[str] = None,
         top_k: int = 5,
+        knowledge_base_id: Optional[str] = None,
         access_level: Optional[AccessLevel] = None,
         source_type: Optional[SourceType] = None,
     ) -> List[tuple[Document, float]]:
@@ -343,6 +344,7 @@ class DocumentRepository:
             query_embedding: 查询向量
             user_id: 用户ID
             top_k: 返回结果数量
+            knowledge_base_id: 筛选知识库ID
             access_level: 筛选访问级别
             source_type: 筛选来源类型
 
@@ -367,6 +369,12 @@ class DocumentRepository:
         if source_type:
             conditions.append(f"source_type = ${param_idx}")
             params.append(source_type.value)
+            param_idx += 1
+
+        # 知识库过滤
+        if knowledge_base_id:
+            conditions.append(f"knowledge_base_id = ${param_idx}")
+            params.append(knowledge_base_id)
             param_idx += 1
 
         where_clause = " AND ".join(conditions)

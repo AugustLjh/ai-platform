@@ -1,7 +1,5 @@
 <template>
   <div class="models-container">
-    <Navbar />
-
     <div class="models-layout">
       <div class="models-header">
         <div class="header-content">
@@ -259,7 +257,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useModelsStore } from '@/store/models'
-import Navbar from '@/components/Navbar.vue'
 
 const modelsStore = useModelsStore()
 
@@ -420,8 +417,11 @@ const closeModal = () => {
 .models-container {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   background: var(--gray-50);
+  overflow: auto;
 }
 
 .models-layout {

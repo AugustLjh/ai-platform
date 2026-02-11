@@ -195,15 +195,17 @@ class DocumentService:
         self,
         tenant_id: str,
         user_id: Optional[str],
+        knowledge_base_id: Optional[str] = None,
         access_level: Optional[AccessLevel] = None,
         source_type: Optional[SourceType] = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[List[Document], int]:
-        """列出文档（分页）"""
+        """列出文档（分页，可选筛选知识库）"""
         return await self.repository.list_documents(
             tenant_id=tenant_id,
             user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
             access_level=access_level,
             source_type=source_type,
             page=page,
@@ -216,6 +218,7 @@ class DocumentService:
         user_id: Optional[str],
         query: str,
         top_k: int = 5,
+        knowledge_base_id: Optional[str] = None,
         access_level: Optional[AccessLevel] = None,
         source_type: Optional[SourceType] = None,
     ) -> List[tuple[Document, float]]:
@@ -242,6 +245,7 @@ class DocumentService:
             query_embedding=query_embedding,
             user_id=user_id,
             top_k=top_k,
+            knowledge_base_id=knowledge_base_id,
             access_level=access_level,
             source_type=source_type,
         )
@@ -251,6 +255,7 @@ class DocumentService:
         tenant_id: str,
         user_id: Optional[str],
         file: UploadFile,
+        knowledge_base_id: str,
         access_level: AccessLevel = AccessLevel.TENANT,
         auto_index: bool = True,
     ) -> Document:
@@ -261,6 +266,7 @@ class DocumentService:
             tenant_id: 租户ID
             user_id: 用户ID
             file: 上传的文件
+            knowledge_base_id: 所属知识库ID
             access_level: 访问级别
             auto_index: 是否自动索引
 
@@ -293,6 +299,7 @@ class DocumentService:
 
         # 创建文档
         request = CreateDocumentRequest(
+            knowledge_base_id=knowledge_base_id,
             title=title,
             content=parsed_content,
             source=file.filename,
@@ -312,6 +319,7 @@ class DocumentService:
         tenant_id: str,
         user_id: Optional[str],
         url: str,
+        knowledge_base_id: str,
         access_level: AccessLevel = AccessLevel.TENANT,
         auto_index: bool = True,
     ) -> Document:
@@ -322,6 +330,7 @@ class DocumentService:
             tenant_id: 租户ID
             user_id: 用户ID
             url: 目标URL
+            knowledge_base_id: 所属知识库ID
             access_level: 访问级别
             auto_index: 是否自动索引
 
@@ -339,6 +348,7 @@ class DocumentService:
 
         # 创建文档
         request = CreateDocumentRequest(
+            knowledge_base_id=knowledge_base_id,
             title=title,
             content=content,
             source=url,

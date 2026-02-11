@@ -1,6 +1,5 @@
 <template>
   <div class="knowledge-create-wrapper">
-    <Navbar />
     <div class="knowledge-create-container">
     <div class="header">
       <button @click="goBack" class="btn-back">← 返回</button>
@@ -62,7 +61,6 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useKnowledgeStore } from '@/store/knowledge'
-import Navbar from '@/components/Navbar.vue'
 
 const router = useRouter()
 const knowledgeStore = useKnowledgeStore()
@@ -112,8 +110,13 @@ const goBack = () => {
 
 <style scoped>
 .knowledge-create-wrapper {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   background: linear-gradient(180deg, #f8f9ff 0%, #ffffff 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
 }
 
 .knowledge-create-container {

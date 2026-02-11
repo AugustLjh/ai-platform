@@ -20,9 +20,14 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY conf.d/ /etc/nginx/conf.d/
 COPY ssl/options-ssl-nginx.conf /etc/nginx/ssl/options-ssl-nginx.conf
 
-# Copy certificate renewal script
+# Copy scripts
 COPY scripts/renew-certs.sh /usr/local/bin/renew-certs.sh
-RUN chmod +x /usr/local/bin/renew-certs.sh
+COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/renew-certs.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
+
+# Backup original nginx config (will be restored after cert acquisition)
+RUN cp /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.ssl
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
@@ -30,4 +35,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 EXPOSE 80 443
 
-CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

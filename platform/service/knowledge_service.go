@@ -12,7 +12,6 @@ import (
 var (
 	ErrKnowledgeBaseNotFound = errors.New("知识库不存在")
 	ErrDocumentNotFound      = errors.New("文档不存在")
-	ErrUnauthorized          = errors.New("无权访问此知识库")
 )
 
 // KnowledgeService handles knowledge base operations

@@ -37,6 +37,35 @@ export const chatAPI = {
     })
   },
 
+  // List chat sessions
+  getSessions(limit = 50, offset = 0, query = '') {
+    const params = { limit, offset }
+    if (query) {
+      params.q = query
+    }
+    return api.get('/api/v1/chat/sessions', { params })
+  },
+
+  // Create chat session
+  createSession(data = {}) {
+    return api.post('/api/v1/chat/sessions', {
+      session_id: data.session_id,
+      title: data.title
+    })
+  },
+
+  // Get chat history
+  getHistory(sessionId, limit = 200, offset = 0) {
+    return api.get(`/api/v1/chat/history/${sessionId}`, {
+      params: { limit, offset }
+    })
+  },
+
+  // Delete chat session
+  deleteSession(sessionId) {
+    return api.delete(`/api/v1/chat/session/${sessionId}`)
+  },
+
   // Send message with SSE (streaming)
   async sendMessageSSE(sessionId, message, config = {}, onChunk) {
     const token = localStorage.getItem('access_token')
@@ -60,29 +89,56 @@ export const chatAPI = {
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
+    let buffer = ''
+    let dataLines = []
 
     try {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
 
-        const chunk = decoder.decode(value)
-        const lines = chunk.split('\n')
+        buffer += decoder.decode(value, { stream: true })
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.substring(6)
-            if (data === '[DONE]') {
-              return
-            }
-            try {
-              const json = JSON.parse(data)
-              if (json.content) {
-                onChunk(json.content)
+        let newlineIndex = buffer.indexOf('\n')
+        while (newlineIndex !== -1) {
+          let line = buffer.slice(0, newlineIndex)
+          buffer = buffer.slice(newlineIndex + 1)
+          newlineIndex = buffer.indexOf('\n')
+
+          if (line.endsWith('\r')) {
+            line = line.slice(0, -1)
+          }
+
+          if (line === '') {
+            if (dataLines.length > 0) {
+              const data = dataLines.join('\n')
+              dataLines = []
+              if (data === '[DONE]') {
+                return
               }
-            } catch (e) {
-              console.error('Parse SSE error:', e)
+              try {
+                const json = JSON.parse(data)
+                const content = json.content ?? json.Content
+                if (content) {
+                  onChunk(content)
+                }
+                const errMsg = json.error ?? json.Error
+                if (errMsg) {
+                  console.error('SSE error payload:', errMsg)
+                }
+              } catch (e) {
+                console.error('Parse SSE error:', e, data)
+              }
             }
+            continue
+          }
+
+          if (line.startsWith('data:')) {
+            let dataPart = line.slice(5)
+            if (dataPart.startsWith(' ')) {
+              dataPart = dataPart.slice(1)
+            }
+            dataLines.push(dataPart)
           }
         }
       }

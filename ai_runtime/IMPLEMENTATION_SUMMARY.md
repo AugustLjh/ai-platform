@@ -103,9 +103,12 @@ cp .env.example .env
 
 ### 2. 运行迁移
 ```bash
+psql -U postgres -d ai_platform < ../db/migrations/001_initial_schema.sql
 psql -U postgres -d ai_platform < ../db/migrations/002_knowledge_base_enhancements.sql
+psql -U postgres -d ai_platform < ../db/migrations/004_add_knowledge_bases.sql
+psql -U postgres -d ai_platform < ../db/migrations/005_migrate_existing_documents.sql
 # 可选：pgvector优化
-# psql -U postgres -d ai_platform < ../db/migrations/003_enable_pgvector.sql
+psql -U postgres -d ai_platform < ../db/migrations/003_enable_pgvector.sql
 ```
 
 ### 3. 安装依赖

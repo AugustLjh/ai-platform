@@ -159,6 +159,8 @@ services:
     volumes:
       - letsencrypt_data:/etc/letsencrypt
       - certbot_webroot:/var/www/certbot
+    env_file:
+      - .env
     networks:
       - ai-platform
     depends_on:

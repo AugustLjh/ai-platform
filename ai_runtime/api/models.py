@@ -5,7 +5,9 @@ Provides endpoints for managing LLM model configurations
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
+from collections.abc import Mapping
 from uuid import UUID
+import json
 import logging
 
 from core.dependencies import get_db_manager, get_current_tenant_id, get_current_user_id
@@ -14,6 +16,31 @@ from core.database import DatabaseManager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/models", tags=["models"])
+
+
+def _deserialize_config(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(f"Failed to parse model config JSON: {exc}")
+            return {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
+def _serialize_config(value: Any) -> str:
+    if value is None:
+        return json.dumps({})
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value)
+    except TypeError:
+        return json.dumps({})
 
 
 # Request/Response Models
@@ -116,7 +143,7 @@ async def list_models(
                 model_id=row['model_id'],
                 api_base=row['api_base'],
                 has_api_key=bool(row['api_key_encrypted']),
-                config=row['config'] or {},
+                config=_deserialize_config(row['config']),
                 enabled=row['enabled'],
                 is_default=row['is_default'],
                 created_at=row['created_at'].isoformat(),
@@ -176,7 +203,7 @@ async def get_model(
             model_id=row['model_id'],
             api_base=row['api_base'],
             has_api_key=bool(row['api_key_encrypted']),
-            config=row['config'] or {},
+            config=_deserialize_config(row['config']),
             enabled=row['enabled'],
             is_default=row['is_default'],
             created_at=row['created_at'].isoformat(),
@@ -233,6 +260,8 @@ async def create_model(
                 created_at, updated_at
         """
 
+        config_payload = _serialize_config(model.config.dict() if model.config else {})
+
         row = await db.pool.fetchrow(
             query,
             model.name,
@@ -241,7 +270,7 @@ async def create_model(
             model.model_id,
             model.api_base,
             api_key_encrypted,
-            model.config.dict() if model.config else {},
+            config_payload,
             model.enabled,
             model.is_default,
             tenant_id,
@@ -256,7 +285,7 @@ async def create_model(
             model_id=row['model_id'],
             api_base=row['api_base'],
             has_api_key=bool(row['api_key_encrypted']),
-            config=row['config'] or {},
+            config=_deserialize_config(row['config']),
             enabled=row['enabled'],
             is_default=row['is_default'],
             created_at=row['created_at'].isoformat(),
@@ -314,7 +343,7 @@ async def update_model(
 
         if model.config is not None:
             updates.append(f"config = ${param_count}")
-            params.append(model.config.dict())
+            params.append(_serialize_config(model.config.dict()))
             param_count += 1
 
         if model.enabled is not None:
@@ -363,7 +392,7 @@ async def update_model(
             model_id=row['model_id'],
             api_base=row['api_base'],
             has_api_key=bool(row['api_key_encrypted']),
-            config=row['config'] or {},
+            config=_deserialize_config(row['config']),
             enabled=row['enabled'],
             is_default=row['is_default'],
             created_at=row['created_at'].isoformat(),

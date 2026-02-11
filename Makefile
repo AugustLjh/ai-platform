@@ -94,6 +94,12 @@ test:
 db-migrate:
 	@echo "运行数据库迁移..."
 	docker-compose exec postgres psql -U ai_platform -d ai_platform -f /docker-entrypoint-initdb.d/001_initial_schema.sql
+	docker-compose exec postgres psql -U ai_platform -d ai_platform -f /docker-entrypoint-initdb.d/002_knowledge_base_enhancements.sql
+	docker-compose exec postgres psql -U ai_platform -d ai_platform -f /docker-entrypoint-initdb.d/004_add_knowledge_bases.sql
+	docker-compose exec postgres psql -U ai_platform -d ai_platform -f /docker-entrypoint-initdb.d/005_migrate_existing_documents.sql
+	docker-compose exec postgres psql -U ai_platform -d ai_platform -f /docker-entrypoint-initdb.d/006_llm_models.sql
+	# 可选：启用pgvector
+	docker-compose exec postgres psql -U ai_platform -d ai_platform -f /docker-entrypoint-initdb.d/003_enable_pgvector.sql
 
 db-shell:
 	@echo "连接到 PostgreSQL..."

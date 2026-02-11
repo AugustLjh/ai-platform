@@ -1,7 +1,5 @@
 <template>
   <div class="knowledge-list-container">
-    <Navbar />
-
     <div class="content-wrapper">
       <div class="header">
         <div class="header-left">
@@ -102,7 +100,6 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useKnowledgeStore } from '@/store/knowledge'
-import Navbar from '@/components/Navbar.vue'
 
 const router = useRouter()
 const knowledgeStore = useKnowledgeStore()
@@ -200,8 +197,13 @@ const formatDate = (dateString) => {
 
 <style scoped>
 .knowledge-list-container {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   background: linear-gradient(180deg, #f8f9ff 0%, #ffffff 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
 }
 
 .content-wrapper {

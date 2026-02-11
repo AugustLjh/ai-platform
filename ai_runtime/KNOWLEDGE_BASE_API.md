@@ -377,7 +377,12 @@ docs = await retriever.retrieve("查询内容", top_k=5)
 
 ```bash
 # 应用迁移
+psql -U postgres -d ai_platform < db/migrations/001_initial_schema.sql
 psql -U postgres -d ai_platform < db/migrations/002_knowledge_base_enhancements.sql
+psql -U postgres -d ai_platform < db/migrations/004_add_knowledge_bases.sql
+psql -U postgres -d ai_platform < db/migrations/005_migrate_existing_documents.sql
+# 可选：pgvector优化（需要先安装pgvector扩展）
+# psql -U postgres -d ai_platform < db/migrations/003_enable_pgvector.sql
 ```
 
 ### 2. 安装依赖
@@ -492,7 +497,12 @@ asyncpg.exceptions.UndefinedColumnError: column "embedding" does not exist
 **解决**: 运行数据库迁移
 
 ```bash
+psql -U postgres -d ai_platform < db/migrations/001_initial_schema.sql
 psql -U postgres -d ai_platform < db/migrations/002_knowledge_base_enhancements.sql
+psql -U postgres -d ai_platform < db/migrations/004_add_knowledge_bases.sql
+psql -U postgres -d ai_platform < db/migrations/005_migrate_existing_documents.sql
+# 可选：pgvector优化（需要先安装pgvector扩展）
+# psql -U postgres -d ai_platform < db/migrations/003_enable_pgvector.sql
 ```
 
 ### 问题3: PDF解析失败

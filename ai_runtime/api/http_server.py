@@ -14,6 +14,7 @@ import logging
 from .chat_service import ChatServiceImpl
 from .documents import router as documents_router
 from .knowledge_bases import router as kb_router
+from .models import router as models_router
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class ChatConfig(BaseModel):
     use_agent: bool = Field(default=False, description="Enable Agent")
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=2000, ge=1, le=8000)
+    knowledge_base_id: Optional[str] = Field(default=None, description="Knowledge base ID for RAG")
 
 
 class ChatRequest(BaseModel):
@@ -73,11 +75,12 @@ class InternalChatRequest:
 
 class InternalChatConfig:
     """Internal config object for chat service"""
-    def __init__(self, use_rag: bool, use_agent: bool, temperature: float, max_tokens: int):
+    def __init__(self, use_rag: bool, use_agent: bool, temperature: float, max_tokens: int, knowledge_base_id: Optional[str] = None):
         self.use_rag = use_rag
         self.use_agent = use_agent
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.knowledge_base_id = knowledge_base_id
 
 
 def create_http_app() -> FastAPI:
@@ -106,6 +109,7 @@ def create_http_app() -> FastAPI:
     # Include routers
     app.include_router(kb_router)
     app.include_router(documents_router)
+    app.include_router(models_router)
 
     @app.get("/", response_model=Dict[str, str])
     async def root():
@@ -148,7 +152,8 @@ def create_http_app() -> FastAPI:
                     use_rag=request.config.use_rag,
                     use_agent=request.config.use_agent,
                     temperature=request.config.temperature,
-                    max_tokens=request.config.max_tokens
+                    max_tokens=request.config.max_tokens,
+                    knowledge_base_id=request.config.knowledge_base_id
                 )
             )
 
@@ -178,13 +183,14 @@ def create_http_app() -> FastAPI:
                 internal_request = InternalChatRequest(
                     session_id=request.session_id,
                     message=request.message,
-                    config=InternalChatConfig(
-                        use_rag=request.config.use_rag,
-                        use_agent=request.config.use_agent,
-                        temperature=request.config.temperature,
-                        max_tokens=request.config.max_tokens
-                    )
+                config=InternalChatConfig(
+                    use_rag=request.config.use_rag,
+                    use_agent=request.config.use_agent,
+                    temperature=request.config.temperature,
+                    max_tokens=request.config.max_tokens,
+                    knowledge_base_id=request.config.knowledge_base_id
                 )
+            )
 
                 # Stream responses
                 async for chunk in chat_service.stream_chat(internal_request):
@@ -223,7 +229,8 @@ def create_http_app() -> FastAPI:
                     use_rag=False,
                     use_agent=False,
                     temperature=0.7,
-                    max_tokens=2000
+                    max_tokens=2000,
+                    knowledge_base_id=None
                 )
             )
 

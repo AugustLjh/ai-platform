@@ -365,11 +365,12 @@ class KnowledgeBaseService:
         from core.dependencies import get_container
 
         container = get_container()
-        doc_service = container.get_document_service()
+        doc_service = container.document_service
 
         return await doc_service.search_documents(
             tenant_id=tenant_id,
             user_id=user_id,
             query=query,
             top_k=top_k,
+            knowledge_base_id=knowledge_base_id,
         )

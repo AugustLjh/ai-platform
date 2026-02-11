@@ -1,7 +1,5 @@
 import { defineStore } from 'pinia'
-import axios from 'axios'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
+import api from '@/api/axios'
 
 export const useModelsStore = defineStore('models', {
   state: () => ({
@@ -31,14 +29,18 @@ export const useModelsStore = defineStore('models', {
       this.error = null
 
       try {
-        const response = await axios.get(`${API_BASE_URL}/api/v1/models`, {
+        const response = await api.get('/api/v1/models', {
           params: { enabled_only: false }
         })
 
         this.models = response.data.models || []
 
-        // Set default model if none selected
-        if (!this.selectedModelId && this.defaultModel) {
+        const selectedModel = this.models.find(
+          (model) => model.id === this.selectedModelId && model.enabled
+        )
+
+        // Set default model if none selected or selected is invalid
+        if ((!this.selectedModelId || !selectedModel) && this.defaultModel) {
           this.selectedModelId = this.defaultModel.id
           localStorage.setItem('selected_model_id', this.selectedModelId)
         }
@@ -66,7 +68,7 @@ export const useModelsStore = defineStore('models', {
       this.error = null
 
       try {
-        const response = await axios.post(`${API_BASE_URL}/api/v1/models`, modelData)
+        const response = await api.post('/api/v1/models', modelData)
         this.models.push(response.data)
         return response.data
       } catch (error) {
@@ -83,7 +85,7 @@ export const useModelsStore = defineStore('models', {
       this.error = null
 
       try {
-        const response = await axios.put(`${API_BASE_URL}/api/v1/models/${modelId}`, modelData)
+        const response = await api.put(`/api/v1/models/${modelId}`, modelData)
         const index = this.models.findIndex(m => m.id === modelId)
         if (index !== -1) {
           this.models[index] = response.data
@@ -103,7 +105,7 @@ export const useModelsStore = defineStore('models', {
       this.error = null
 
       try {
-        await axios.delete(`${API_BASE_URL}/api/v1/models/${modelId}`)
+        await api.delete(`/api/v1/models/${modelId}`)
         this.models = this.models.filter(m => m.id !== modelId)
 
         // If deleted model was selected, select default

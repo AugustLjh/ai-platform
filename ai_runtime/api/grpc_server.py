@@ -40,12 +40,14 @@ class ChatServiceGRPC(chat_service_pb2_grpc.ChatServiceServicer):
         """
         try:
             # Convert protobuf request to dict for internal processing
+            metadata = dict(request.metadata)
+            knowledge_base_id = metadata.get('knowledge_base_id')
             internal_request = {
                 'session_id': request.session_id,
                 'user_id': request.user_id,
                 'tenant_id': request.tenant_id,
                 'message': request.message,
-                'metadata': dict(request.metadata),
+                'metadata': metadata,
                 'config': {
                     'model': request.config.model,
                     'temperature': request.config.temperature,
@@ -53,6 +55,7 @@ class ChatServiceGRPC(chat_service_pb2_grpc.ChatServiceServicer):
                     'use_rag': request.config.use_rag,
                     'use_agent': request.config.use_agent,
                     'tools': list(request.config.tools),
+                    'knowledge_base_id': knowledge_base_id,
                 }
             }
 

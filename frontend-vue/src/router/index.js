@@ -2,6 +2,11 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Login from '../views/Login.vue'
 import Register from '../views/Register.vue'
 import Chat from '../views/Chat.vue'
+import History from '../views/History.vue'
+import ModelsManage from '../views/ModelsManage.vue'
+import Profile from '../views/Profile.vue'
+import Settings from '../views/Settings.vue'
+import AgentPlaceholder from '../views/AgentPlaceholder.vue'
 import KnowledgeBaseList from '../views/KnowledgeBaseList.vue'
 import KnowledgeBaseCreate from '../views/KnowledgeBaseCreate.vue'
 import KnowledgeBaseDetail from '../views/KnowledgeBaseDetail.vue'
@@ -16,6 +21,36 @@ const routes = [
     path: '/chat',
     name: 'Chat',
     component: Chat,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/history',
+    name: 'History',
+    component: History,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/models',
+    name: 'ModelsManage',
+    component: ModelsManage,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/profile',
+    name: 'Profile',
+    component: Profile,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/settings',
+    name: 'Settings',
+    component: Settings,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/:agent',
+    name: 'AgentPlaceholder',
+    component: AgentPlaceholder,
     meta: { requiresAuth: true }
   },
   {

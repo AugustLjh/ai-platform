@@ -14,6 +14,7 @@ from core.models.knowledge_base import (
     KnowledgeBaseWithStats,
     ListKnowledgeBasesResponse,
     ListDocumentsResponse,
+    DocumentResponse,
     AccessLevel,
 )
 from core.services.knowledge_base_service import KnowledgeBaseService
@@ -221,7 +222,7 @@ async def list_knowledge_base_documents(
     返回指定知识库中的所有文档
     """
     try:
-        result = await document_service.list_documents(
+        docs, total = await document_service.list_documents(
             tenant_id=tenant_id,
             user_id=user_id,
             knowledge_base_id=kb_id,
@@ -229,7 +230,12 @@ async def list_knowledge_base_documents(
             page_size=page_size,
         )
 
-        return result
+        return ListDocumentsResponse(
+            documents=[DocumentResponse(**doc.to_dict()) for doc in docs],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
 
     except Exception as e:
         logger.error(f"Failed to list documents: {e}")

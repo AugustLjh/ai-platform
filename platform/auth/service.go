@@ -78,7 +78,7 @@ func (s *AuthService) Register(req *RegisterRequest) (*AuthResponse, error) {
 
 	// Default values
 	if user.TenantID == "" {
-		user.TenantID = "tenant_" + uuid.New().String()
+		user.TenantID = uuid.New().String()
 	}
 	if user.Role == "" {
 		user.Role = "user"

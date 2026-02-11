@@ -1,6 +1,5 @@
 <template>
   <div class="knowledge-detail-wrapper">
-    <Navbar />
     <div class="knowledge-detail-container">
     <div v-if="loading" class="loading">加载中...</div>
 
@@ -94,7 +93,6 @@
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useKnowledgeStore } from '@/store/knowledge'
-import Navbar from '@/components/Navbar.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -153,7 +151,7 @@ const handleDeleteDocument = async (documentId) => {
   }
 
   try {
-    await knowledgeStore.deleteDocument(knowledgeBaseId, documentId)
+    await knowledgeStore.deleteDocument(documentId)
     await loadDocuments()
   } catch (err) {
     uploadError.value = err.response?.data?.error || '删除文档失败'
@@ -207,8 +205,13 @@ const formatFileSize = (bytes) => {
 
 <style scoped>
 .knowledge-detail-wrapper {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   background: linear-gradient(180deg, #f8f9ff 0%, #ffffff 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
 }
 
 .knowledge-detail-container {

@@ -33,7 +33,9 @@ ai_runtime/
 └── KNOWLEDGE_BASE_API.md              # API使用文档（新增）
 
 db/migrations/
-└── 002_knowledge_base_enhancements.sql  # 数据库迁移脚本（新增）
+├── 002_knowledge_base_enhancements.sql  # 数据库迁移脚本（新增）
+├── 004_add_knowledge_bases.sql          # 知识库表与关联（新增）
+└── 005_migrate_existing_documents.sql   # 迁移已有文档（新增）
 ```
 
 ## 核心组件说明
@@ -101,7 +103,12 @@ Database  Model    File/URL
 
 1. **运行数据库迁移**
 ```bash
+psql -U postgres -d ai_platform < db/migrations/001_initial_schema.sql
 psql -U postgres -d ai_platform < db/migrations/002_knowledge_base_enhancements.sql
+psql -U postgres -d ai_platform < db/migrations/004_add_knowledge_bases.sql
+psql -U postgres -d ai_platform < db/migrations/005_migrate_existing_documents.sql
+# 可选：pgvector优化（需要先安装pgvector扩展）
+# psql -U postgres -d ai_platform < db/migrations/003_enable_pgvector.sql
 ```
 
 2. **安装Python依赖**

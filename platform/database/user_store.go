@@ -28,6 +28,16 @@ func (s *PostgresUserStore) Create(user *auth.User) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if user.TenantID != "" {
+		tenantName := fmt.Sprintf("Tenant %s", user.TenantID)
+		if user.Email != "" {
+			tenantName = user.Email
+		}
+		if err := s.ensureTenant(ctx, user.TenantID, tenantName); err != nil {
+			return err
+		}
+	}
+
 	query := `
 		INSERT INTO users (id, email, password_hash, tenant_id, role, active, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -57,6 +67,23 @@ func (s *PostgresUserStore) Create(user *auth.User) error {
 			return auth.ErrUserAlreadyExists
 		}
 		return fmt.Errorf("failed to create user: %w", err)
+	}
+
+	return nil
+}
+
+func (s *PostgresUserStore) ensureTenant(ctx context.Context, tenantID, name string) error {
+	query := `
+		INSERT INTO tenants (id, name, slug, active, created_at, updated_at)
+		VALUES ($1, $2, $3, true, $4, $4)
+		ON CONFLICT (id) DO NOTHING
+	`
+
+	now := time.Now()
+	slug := "tenant-" + tenantID
+	_, err := s.pool.Exec(ctx, query, tenantID, name, slug, now)
+	if err != nil {
+		return fmt.Errorf("failed to ensure tenant: %w", err)
 	}
 
 	return nil

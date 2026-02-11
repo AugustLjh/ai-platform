@@ -62,7 +62,7 @@ class SimpleVectorStore(VectorStore):
 class DatabaseVectorStore(VectorStore):
     """Database-backed vector store using knowledge base repository"""
 
-    def __init__(self, kb_service, tenant_id: str, user_id: Optional[str] = None):
+    def __init__(self, kb_service, tenant_id: str, user_id: Optional[str] = None, knowledge_base_id: Optional[str] = None):
         """
         Initialize database vector store
 
@@ -70,10 +70,12 @@ class DatabaseVectorStore(VectorStore):
             kb_service: KnowledgeBaseService instance
             tenant_id: Tenant ID for multi-tenancy
             user_id: User ID for filtering
+            knowledge_base_id: Optional knowledge base scope
         """
         self.kb_service = kb_service
         self.tenant_id = tenant_id
         self.user_id = user_id
+        self.knowledge_base_id = knowledge_base_id
 
     async def search(self, query: str, top_k: int = 5) -> List[Document]:
         """
@@ -92,6 +94,7 @@ class DatabaseVectorStore(VectorStore):
             user_id=self.user_id,
             query=query,
             top_k=top_k,
+            knowledge_base_id=self.knowledge_base_id,
         )
 
         # Convert to RAG Document format

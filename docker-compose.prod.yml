@@ -81,6 +81,8 @@ services:
     volumes:
       - letsencrypt_data:/etc/letsencrypt:rw    # 仅保留 SSL 证书
       - certbot_webroot:/var/www/certbot:rw     # 仅保留 certbot 验证目录
+    env_file:
+      - .env
     environment:
       - DOMAIN=${DOMAIN}
       - EMAIL=${EMAIL}

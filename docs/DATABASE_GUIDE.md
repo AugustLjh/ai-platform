@@ -181,6 +181,11 @@ To run migrations manually:
 
 ```bash
 psql -U ai_platform -d ai_platform -f db/migrations/001_initial_schema.sql
+psql -U ai_platform -d ai_platform -f db/migrations/002_knowledge_base_enhancements.sql
+psql -U ai_platform -d ai_platform -f db/migrations/004_add_knowledge_bases.sql
+psql -U ai_platform -d ai_platform -f db/migrations/005_migrate_existing_documents.sql
+# Optional: pgvector optimization (requires pgvector extension)
+# psql -U ai_platform -d ai_platform -f db/migrations/003_enable_pgvector.sql
 ```
 
 ### Backup and Restore

@@ -12,9 +12,17 @@
             <span class="nav-icon">💬</span>
             <span>聊天</span>
           </router-link>
+          <router-link to="/history" class="nav-link">
+            <span class="nav-icon">🕘</span>
+            <span>历史记录</span>
+          </router-link>
           <router-link to="/knowledge" class="nav-link">
             <span class="nav-icon">📚</span>
             <span>知识库</span>
+          </router-link>
+          <router-link to="/models" class="nav-link">
+            <span class="nav-icon">🤖</span>
+            <span>模型管理</span>
           </router-link>
         </div>
       </div>
@@ -75,14 +83,12 @@ const getUserInitial = () => {
 
 const handleProfile = () => {
   showUserMenu.value = false
-  // TODO: 导航到个人信息页面
-  console.log('Navigate to profile')
+  router.push('/profile')
 }
 
 const handleSettings = () => {
   showUserMenu.value = false
-  // TODO: 导航到设置页面
-  console.log('Navigate to settings')
+  router.push('/settings')
 }
 
 const handleLogout = async () => {
@@ -109,16 +115,16 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 1000;
-  background: white;
-  border-bottom: 1px solid var(--gray-200);
-  box-shadow: var(--shadow-sm);
+  background: var(--gpt-panel);
+  border-bottom: 1px solid var(--gpt-border);
+  box-shadow: none;
 }
 
 .navbar-container {
-  max-width: 1400px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 0 24px;
-  height: 64px;
+  padding: 0 20px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -137,31 +143,28 @@ onUnmounted(() => {
   text-decoration: none;
   color: var(--gray-900);
   font-weight: 600;
-  font-size: 18px;
+  font-size: 16px;
   transition: all var(--transition-base);
 }
 
 .logo:hover {
-  transform: scale(1.05);
+  opacity: 0.85;
 }
 
 .logo-icon {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 24px;
-  background: var(--gradient-primary);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
+  font-size: 18px;
+  background: var(--primary-500);
+  border-radius: 10px;
+  color: #fff;
 }
 
 .logo-text {
-  background: var(--gradient-primary);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--gray-900);
 }
 
 .nav-links {
@@ -173,35 +176,28 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
-  border-radius: var(--radius-md);
+  padding: 6px 12px;
+  border-radius: 8px;
   text-decoration: none;
   color: var(--gray-600);
   font-weight: 500;
-  font-size: 14px;
+  font-size: 13px;
   transition: all var(--transition-base);
   position: relative;
 }
 
 .nav-link:hover {
-  color: var(--primary-600);
-  background: var(--primary-50);
+  color: var(--gray-900);
+  background: var(--gray-100);
 }
 
 .nav-link.router-link-active {
-  color: var(--primary-600);
-  background: var(--primary-50);
+  color: var(--gray-900);
+  background: var(--gray-100);
 }
 
 .nav-link.router-link-active::after {
-  content: '';
-  position: absolute;
-  bottom: -1px;
-  left: 16px;
-  right: 16px;
-  height: 2px;
-  background: var(--primary-600);
-  border-radius: var(--radius-full);
+  content: none;
 }
 
 .nav-icon {
@@ -219,8 +215,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 12px;
-  border-radius: var(--radius-lg);
+  padding: 4px 10px;
+  border-radius: 8px;
   cursor: pointer;
   transition: all var(--transition-base);
 }
@@ -230,17 +226,17 @@ onUnmounted(() => {
 }
 
 .user-avatar {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-full);
-  background: var(--gradient-primary);
+  background: var(--primary-500);
   color: white;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 600;
-  font-size: 14px;
-  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  box-shadow: none;
 }
 
 .user-name {

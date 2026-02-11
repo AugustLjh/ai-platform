@@ -109,19 +109,43 @@ func (s *SessionStore) GetSession(sessionID string) (*Session, error) {
 }
 
 // ListUserSessions lists all sessions for a user
-func (s *SessionStore) ListUserSessions(userID string, limit, offset int) ([]*Session, error) {
+func (s *SessionStore) ListUserSessions(userID, query string, limit, offset int) ([]*Session, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	query := `
+	baseQuery := `
 		SELECT id, user_id, tenant_id, title, created_at, updated_at, last_message_at
 		FROM sessions
 		WHERE user_id = $1
-		ORDER BY COALESCE(last_message_at, created_at) DESC
-		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := s.pool.Query(ctx, query, userID, limit, offset)
+	args := []interface{}{userID}
+
+	if query != "" {
+		args = append(args, "%"+query+"%")
+		searchPos := len(args)
+		baseQuery += fmt.Sprintf(`
+			AND (
+				title ILIKE $%d
+				OR EXISTS (
+					SELECT 1 FROM messages m
+					WHERE m.session_id = sessions.id
+					AND m.content ILIKE $%d
+				)
+			)
+		`, searchPos, searchPos)
+	}
+
+	args = append(args, limit, offset)
+	limitPos := len(args) - 1
+	offsetPos := len(args)
+
+	baseQuery += fmt.Sprintf(`
+		ORDER BY COALESCE(last_message_at, created_at) DESC
+		LIMIT $%d OFFSET $%d
+	`, limitPos, offsetPos)
+
+	rows, err := s.pool.Query(ctx, baseQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}

@@ -45,6 +45,12 @@ psql -U postgres -d ai_platform < ../db/migrations/001_initial_schema.sql
 # 知识库增强
 psql -U postgres -d ai_platform < ../db/migrations/002_knowledge_base_enhancements.sql
 
+# 知识库表与文档关联
+psql -U postgres -d ai_platform < ../db/migrations/004_add_knowledge_bases.sql
+
+# 迁移已有文档到默认知识库
+psql -U postgres -d ai_platform < ../db/migrations/005_migrate_existing_documents.sql
+
 # （可选）pgvector优化 - 需要先安装pgvector扩展
 # psql -U postgres -d ai_platform < ../db/migrations/003_enable_pgvector.sql
 ```

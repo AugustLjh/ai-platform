@@ -1,16 +1,20 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ai-platform/platform/api/grpc"
 	httphandler "github.com/ai-platform/platform/api/http"
 	"github.com/ai-platform/platform/auth"
+	"github.com/ai-platform/platform/database"
 	"github.com/ai-platform/platform/middleware"
 	"github.com/ai-platform/platform/service"
 )
@@ -22,11 +26,36 @@ func main() {
 	aiRuntimeAddr := getEnv("AI_RUNTIME_ADDR", "localhost:50051")
 	aiRuntimeHttpAddr := getEnv("AI_RUNTIME_HTTP_ADDR", "http://localhost:8000")
 	platformPort := getEnv("PLATFORM_PORT", ":8080")
+	chatTransport := strings.ToLower(getEnv("AI_RUNTIME_CHAT_TRANSPORT", "grpc"))
+	if chatTransport != "http" && chatTransport != "grpc" {
+		chatTransport = "grpc"
+	}
 	jwtSecret := getEnv("JWT_SECRET", "2f7a48d9e6b3c1a5f8e2b9c4d6a7f3e5b8d2e1c6a9f3d5b7e2c4a6f8d9e3b5c1")
 
+	// Initialize PostgreSQL
+	pgConfig := &database.PostgresConfig{
+		Host:     getEnv("POSTGRES_HOST", "localhost"),
+		Port:     getEnvInt("POSTGRES_PORT", 5432),
+		Database: getEnv("POSTGRES_DB", "ai_platform"),
+		User:     getEnv("POSTGRES_USER", "ai_platform"),
+		Password: getEnv("POSTGRES_PASSWORD", ""),
+		SSLMode:  getEnv("POSTGRES_SSLMODE", "disable"),
+		MaxConns: int32(getEnvInt("POSTGRES_MAX_CONNS", 25)),
+		MinConns: int32(getEnvInt("POSTGRES_MIN_CONNS", 5)),
+	}
+	pgPool, err := database.NewPostgresDB(pgConfig)
+	if err != nil {
+		log.Fatalf("Failed to connect to Postgres: %v", err)
+	}
+	defer pgPool.Close()
+
 	// Initialize AI client
-	log.Printf("Connecting to AI Runtime at %s...", aiRuntimeAddr)
-	aiClient, err := grpc.NewAIClient(aiRuntimeAddr)
+	chatHTTPAddr := ""
+	if chatTransport == "http" {
+		chatHTTPAddr = aiRuntimeHttpAddr
+	}
+	log.Printf("Connecting to AI Runtime at %s (chat transport: %s)...", aiRuntimeAddr, chatTransport)
+	aiClient, err := grpc.NewAIClient(aiRuntimeAddr, chatHTTPAddr)
 	if err != nil {
 		log.Printf("Warning: Failed to connect to AI Runtime: %v", err)
 		log.Println("Chat service will not be available until AI Runtime is ready")
@@ -42,7 +71,7 @@ func main() {
 		24*time.Hour,   // Access token TTL: 24 hours
 		24*time.Hour*7, // Refresh token TTL: 7 days
 	)
-	userStore := auth.NewInMemoryUserStore()
+	userStore := database.NewPostgresUserStore(pgPool)
 	authService := auth.NewAuthService(userStore, tokenManager)
 
 	// Create a demo user for testing
@@ -55,13 +84,16 @@ func main() {
 		Role:         "user",
 		Active:       true,
 	}
-	userStore.Create(demoUser)
+	if err := userStore.Create(demoUser); err != nil && !errors.Is(err, auth.ErrUserAlreadyExists) {
+		log.Printf("Failed to create demo user: %v", err)
+	}
 	log.Printf("Created demo user: %s / demo123456", demoUser.Email)
 
 	// Initialize services
 	var chatService *service.ChatService
+	sessionStore := database.NewSessionStore(pgPool)
 	if aiClient != nil {
-		chatService = service.NewChatService(aiClient)
+		chatService = service.NewChatService(aiClient, sessionStore)
 	}
 
 	// Initialize middleware (with real JWT auth)
@@ -132,6 +164,30 @@ func main() {
 				guardMiddleware.Handler,
 				costTracker.Handler,
 			))
+
+		mux.Handle("/api/v1/chat/sessions",
+			chain(
+				http.HandlerFunc(chatHandler.HandleSessions),
+				authMiddleware.Handler,
+				rateLimiter.Handler,
+				guardMiddleware.Handler,
+			))
+
+		mux.Handle("/api/v1/chat/history/",
+			chain(
+				http.HandlerFunc(chatHandler.HandleGetHistory),
+				authMiddleware.Handler,
+				rateLimiter.Handler,
+				guardMiddleware.Handler,
+			))
+
+		mux.Handle("/api/v1/chat/session/",
+			chain(
+				http.HandlerFunc(chatHandler.HandleDeleteSession),
+				authMiddleware.Handler,
+				rateLimiter.Handler,
+				guardMiddleware.Handler,
+			))
 	} else {
 		// Return service unavailable for chat endpoints
 		unavailableHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -158,22 +214,53 @@ func main() {
 	}
 
 	// Add knowledge base routes with middleware
-	mux.Handle("/api/v1/knowledge/",
-		chain(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Get user from context
-				user, ok := middleware.GetUser(r.Context())
-				if ok {
-					// Add user info to request headers
-					r.Header.Set("X-User-ID", user.ID)
-					r.Header.Set("X-Tenant-ID", user.TenantID)
-				}
-				kbProxy.ServeHTTP(w, r)
-			}),
-			authMiddleware.Handler,
-			rateLimiter.Handler,
-			guardMiddleware.Handler,
-		))
+	// Support both /api/v1/knowledge-bases/ and /api/v1/knowledge/ paths
+	kbHandler := chain(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Get user from context
+			user, ok := middleware.GetUser(r.Context())
+			if ok {
+				// Add user info to request headers
+				r.Header.Set("X-User-ID", user.ID)
+				r.Header.Set("X-Tenant-ID", user.TenantID)
+			}
+			kbProxy.ServeHTTP(w, r)
+		}),
+		authMiddleware.Handler,
+		rateLimiter.Handler,
+		guardMiddleware.Handler,
+	)
+
+	mux.Handle("/api/v1/knowledge-bases/", kbHandler)
+	mux.Handle("/api/v1/knowledge-bases", kbHandler)
+	mux.Handle("/api/v1/knowledge/", kbHandler)
+
+	// Models endpoints - proxy to AI Runtime HTTP server
+	modelsProxy := httputil.NewSingleHostReverseProxy(aiRuntimeUrl)
+	modelsProxy.Director = func(req *http.Request) {
+		req.URL.Scheme = aiRuntimeUrl.Scheme
+		req.URL.Host = aiRuntimeUrl.Host
+		req.URL.Path = req.URL.Path
+		req.Header.Set("X-Forwarded-Host", req.Host)
+		req.Header.Set("X-Origin-Host", aiRuntimeUrl.Host)
+	}
+
+	modelsHandler := chain(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := middleware.GetUser(r.Context())
+			if ok {
+				r.Header.Set("X-User-ID", user.ID)
+				r.Header.Set("X-Tenant-ID", user.TenantID)
+			}
+			modelsProxy.ServeHTTP(w, r)
+		}),
+		authMiddleware.Handler,
+		rateLimiter.Handler,
+		guardMiddleware.Handler,
+	)
+
+	mux.Handle("/api/v1/models/", modelsHandler)
+	mux.Handle("/api/v1/models", modelsHandler)
 
 	// Start server
 	log.Println("============================================================")
@@ -209,6 +296,13 @@ func main() {
 	log.Println("  - POST   /api/v1/knowledge/documents/batch")
 	log.Println("  - GET    /api/v1/knowledge/stats")
 	log.Println("")
+	log.Println("Models Endpoints (proxied to AI Runtime):")
+	log.Println("  - GET    /api/v1/models")
+	log.Println("  - POST   /api/v1/models")
+	log.Println("  - GET    /api/v1/models/{id}")
+	log.Println("  - PUT    /api/v1/models/{id}")
+	log.Println("  - DELETE /api/v1/models/{id}")
+	log.Println("")
 	log.Println("Demo User:")
 	log.Printf("  Email: %s", demoUser.Email)
 	log.Println("  Password: demo123456")
@@ -236,4 +330,16 @@ func getEnv(key, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
