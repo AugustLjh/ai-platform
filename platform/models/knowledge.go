@@ -24,6 +24,7 @@ type Document struct {
 	Content         string    `json:"content,omitempty"`
 	Size            int64     `json:"size"`
 	Type            string    `json:"type"` // file extension
+	Status          string    `json:"status"`
 	UploadedAt      time.Time `json:"uploaded_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }

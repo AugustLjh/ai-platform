@@ -69,26 +69,23 @@
           class="knowledge-card"
           @click="goToDetail(kb.id)"
         >
-          <div class="card-icon">
-            📚
+          <div class="folder-tab"></div>
+          <div class="card-top">
+            <div class="card-icon">📁</div>
+            <div class="card-actions" @click.stop>
+              <button @click="goToEdit(kb.id)" class="action-btn" title="编辑">
+                <span>✏️</span>
+              </button>
+              <button @click="handleDelete(kb.id)" class="action-btn danger" title="删除">
+                <span>🗑️</span>
+              </button>
+            </div>
           </div>
-          <div class="card-content">
-            <div class="card-header">
-              <h3>{{ kb.name }}</h3>
-              <div class="card-actions" @click.stop>
-                <button @click="goToEdit(kb.id)" class="action-btn" title="编辑">
-                  <span>✏️</span>
-                </button>
-                <button @click="handleDelete(kb.id)" class="action-btn danger" title="删除">
-                  <span>🗑️</span>
-                </button>
-              </div>
-            </div>
-            <p class="description">{{ kb.description || '暂无描述' }}</p>
-            <div class="card-footer">
-              <div class="badge">{{ kb.document_count || 0 }} 个文档</div>
-              <span class="meta">{{ formatDate(kb.created_at) }}</span>
-            </div>
+          <h3 class="card-title">{{ kb.name }}</h3>
+          <p class="description">{{ kb.description || '暂无描述' }}</p>
+          <div class="card-footer">
+            <div class="badge">{{ kb.document_count || 0 }} 个文档</div>
+            <span class="meta">{{ formatDate(kb.created_at) }}</span>
           </div>
         </div>
       </div>
@@ -200,16 +197,19 @@ const formatDate = (dateString) => {
   flex: 1;
   min-height: 0;
   width: 100%;
-  background: linear-gradient(180deg, #f8f9ff 0%, #ffffff 100%);
+  background: #f3f6fb;
   display: flex;
   flex-direction: column;
   overflow: auto;
 }
 
 .content-wrapper {
-  max-width: 1400px;
-  margin: 0 auto;
+  flex: 1;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
   padding: 40px 24px;
+  box-sizing: border-box;
 }
 
 .header {
@@ -222,13 +222,13 @@ const formatDate = (dateString) => {
 .header-left h1 {
   font-size: 36px;
   font-weight: 700;
-  color: var(--gray-900);
+  color: #0f172a;
   margin: 0 0 8px 0;
 }
 
 .subtitle {
   font-size: 16px;
-  color: var(--gray-600);
+  color: #64748b;
   margin: 0;
 }
 
@@ -237,7 +237,7 @@ const formatDate = (dateString) => {
   align-items: center;
   gap: 8px;
   padding: 14px 24px;
-  background: var(--gradient-primary);
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   color: white;
   border: none;
   border-radius: var(--radius-lg);
@@ -258,12 +258,12 @@ const formatDate = (dateString) => {
 }
 
 .search-bar {
-  background: white;
+  background: #ffffff;
   border-radius: var(--radius-xl);
   padding: 24px;
   margin-bottom: 32px;
-  box-shadow: var(--shadow-sm);
-  border: 1px solid var(--gray-200);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  border: 1px solid #e2e8f0;
 }
 
 .search-input-wrapper {
@@ -277,23 +277,25 @@ const formatDate = (dateString) => {
   top: 50%;
   transform: translateY(-50%);
   font-size: 20px;
-  color: var(--gray-400);
+  color: #94a3b8;
 }
 
 .search-input {
   width: 100%;
   padding: 14px 16px 14px 48px;
-  border: 2px solid var(--gray-200);
+  border: 1px solid #dbe2ec;
   border-radius: var(--radius-lg);
   font-size: 15px;
   font-family: inherit;
   transition: all var(--transition-base);
+  background: #ffffff;
+  color: #0f172a;
 }
 
 .search-input:focus {
   outline: none;
-  border-color: var(--primary-500);
-  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+  border-color: #93a4b8;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.14);
 }
 
 .filter-buttons {
@@ -307,9 +309,9 @@ const formatDate = (dateString) => {
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  background: var(--gray-100);
-  color: var(--gray-700);
-  border: 2px solid transparent;
+  background: #f8fafc;
+  color: #64748b;
+  border: 1px solid #dbe2ec;
   border-radius: var(--radius-lg);
   font-size: 14px;
   font-weight: 500;
@@ -318,13 +320,14 @@ const formatDate = (dateString) => {
 }
 
 .filter-btn:hover {
-  background: var(--gray-200);
+  background: #f1f5f9;
+  color: #334155;
 }
 
 .filter-btn.active {
-  background: var(--primary-50);
-  color: var(--primary-700);
-  border-color: var(--primary-500);
+  background: #eef2ff;
+  color: #1e293b;
+  border-color: #93a4b8;
 }
 
 .filter-icon {
@@ -337,14 +340,14 @@ const formatDate = (dateString) => {
   align-items: center;
   justify-content: center;
   padding: 80px 20px;
-  color: var(--gray-500);
+  color: #64748b;
 }
 
 .spinner-large {
   width: 48px;
   height: 48px;
-  border: 4px solid var(--gray-200);
-  border-top-color: var(--primary-600);
+  border: 4px solid #e2e8f0;
+  border-top-color: #3b82f6;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-bottom: 16px;
@@ -355,12 +358,12 @@ const formatDate = (dateString) => {
   align-items: center;
   gap: 12px;
   padding: 16px 20px;
-  background: #FEE2E2;
-  color: #991B1B;
+  background: #fee2e2;
+  color: #b91c1c;
   border-radius: var(--radius-lg);
   margin-bottom: 24px;
   font-size: 14px;
-  border: 1px solid #FCA5A5;
+  border: 1px solid #fca5a5;
 }
 
 .error-icon {
@@ -385,13 +388,13 @@ const formatDate = (dateString) => {
 .empty-state h2 {
   font-size: 24px;
   font-weight: 700;
-  color: var(--gray-900);
+  color: #0f172a;
   margin: 0 0 12px 0;
 }
 
 .empty-state p {
   font-size: 16px;
-  color: var(--gray-600);
+  color: #64748b;
   margin: 0 0 32px 0;
 }
 
@@ -400,7 +403,7 @@ const formatDate = (dateString) => {
   align-items: center;
   gap: 10px;
   padding: 16px 32px;
-  background: var(--gradient-primary);
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   color: white;
   border: none;
   border-radius: var(--radius-xl);
@@ -422,74 +425,66 @@ const formatDate = (dateString) => {
 
 .knowledge-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
 }
 
 .knowledge-card {
-  background: white;
-  border-radius: var(--radius-xl);
-  padding: 24px;
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 22px 14px 14px;
   cursor: pointer;
   transition: all var(--transition-base);
-  border: 2px solid var(--gray-200);
+  border: 1px solid #e2e8f0;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
+  min-height: 150px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
 }
 
-.knowledge-card::before {
-  content: '';
+.folder-tab {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 4px;
-  background: var(--gradient-primary);
-  transform: scaleX(0);
-  transition: transform var(--transition-base);
+  top: -10px;
+  left: 14px;
+  width: 74px;
+  height: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
 }
 
 .knowledge-card:hover {
-  transform: translateY(-4px);
-  box-shadow: var(--shadow-xl);
-  border-color: var(--primary-300);
-}
-
-.knowledge-card:hover::before {
-  transform: scaleX(1);
+  transform: translateY(-3px);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.14);
+  border-color: #93a4b8;
 }
 
 .card-icon {
-  width: 56px;
-  height: 56px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
-  background: var(--gradient-primary);
-  border-radius: var(--radius-lg);
-  margin-bottom: 16px;
-  box-shadow: var(--shadow-md);
-}
-
-.card-content {
-  flex: 1;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 12px;
-  gap: 12px;
-}
-
-.card-header h3 {
   font-size: 18px;
+  background: #eef2ff;
+  border-radius: 10px;
+  color: #1e293b;
+}
+
+.card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 8px;
+}
+
+.card-title {
+  font-size: 15px;
   font-weight: 600;
-  color: var(--gray-900);
-  margin: 0;
-  flex: 1;
+  color: #0f172a;
+  margin: 0 0 8px 0;
   line-height: 1.4;
 }
 
@@ -505,35 +500,35 @@ const formatDate = (dateString) => {
 }
 
 .action-btn {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gray-100);
+  background: #f1f5f9;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: 8px;
   cursor: pointer;
   transition: all var(--transition-base);
-  font-size: 16px;
+  font-size: 14px;
 }
 
 .action-btn:hover {
-  background: var(--gray-200);
+  background: #e2e8f0;
   transform: scale(1.1);
 }
 
 .action-btn.danger:hover {
-  background: #FEE2E2;
+  background: #fee2e2;
 }
 
 .description {
-  font-size: 14px;
-  color: var(--gray-600);
+  font-size: 12px;
+  color: #64748b;
   line-height: 1.6;
-  margin: 0 0 16px 0;
+  margin: 0 0 12px 0;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -542,16 +537,16 @@ const formatDate = (dateString) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-top: 16px;
-  border-top: 1px solid var(--gray-200);
+  padding-top: 10px;
+  border-top: 1px dashed #dbe2ec;
 }
 
 .badge {
   display: inline-flex;
   align-items: center;
   padding: 4px 12px;
-  background: var(--primary-100);
-  color: var(--primary-700);
+  background: #eef2ff;
+  color: #334155;
   border-radius: var(--radius-full);
   font-size: 12px;
   font-weight: 600;
@@ -559,14 +554,14 @@ const formatDate = (dateString) => {
 
 .meta {
   font-size: 12px;
-  color: var(--gray-500);
+  color: #64748b;
 }
 
 /* 响应式设计 */
 @media (max-width: 1024px) {
   .knowledge-grid {
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 20px;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 14px;
   }
 }
 
@@ -602,6 +597,10 @@ const formatDate = (dateString) => {
 
   .filter-btn {
     white-space: nowrap;
+  }
+
+  .card-actions {
+    opacity: 1;
   }
 }
 </style>

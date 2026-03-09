@@ -157,6 +157,7 @@ func (s *KnowledgeService) AddDocument(kbID, name, content string, size int64, u
 		Content:         content,
 		Size:            size,
 		Type:            getFileExtension(name),
+		Status:          "available",
 		UploadedAt:      time.Now(),
 		UpdatedAt:       time.Now(),
 	}

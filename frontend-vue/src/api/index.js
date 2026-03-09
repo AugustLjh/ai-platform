@@ -66,6 +66,26 @@ export const chatAPI = {
     return api.delete(`/api/v1/chat/session/${sessionId}`)
   },
 
+  getUsageStats(knowledgeBaseId = '') {
+    const params = {}
+    if (knowledgeBaseId) {
+      params.knowledge_base_id = knowledgeBaseId
+    }
+    return api.get('/api/v1/chat/usage/stats', { params })
+  },
+
+  getLowQualitySamples({ knowledgeBaseId = '', limit = 20 } = {}) {
+    const params = { limit }
+    if (knowledgeBaseId) {
+      params.knowledge_base_id = knowledgeBaseId
+    }
+    return api.get('/api/v1/chat/feedback/low-quality', { params })
+  },
+
+  saveMessageFeedback(messageId, payload) {
+    return api.post(`/api/v1/chat/messages/${messageId}/feedback`, payload)
+  },
+
   // Send message with SSE (streaming)
   async sendMessageSSE(sessionId, message, config = {}, onChunk) {
     const token = localStorage.getItem('access_token')
@@ -118,10 +138,13 @@ export const chatAPI = {
               }
               try {
                 const json = JSON.parse(data)
-                const content = json.content ?? json.Content
-                if (content) {
-                  onChunk(content)
-                }
+                onChunk({
+                  messageId: json.message_id ?? json.MessageID ?? '',
+                  type: json.type ?? json.Type,
+                  content: json.content ?? json.Content ?? '',
+                  metadata: json.metadata ?? json.Metadata ?? {},
+                  error: json.error ?? json.Error ?? ''
+                })
                 const errMsg = json.error ?? json.Error
                 if (errMsg) {
                   console.error('SSE error payload:', errMsg)
@@ -195,6 +218,92 @@ export const knowledgeBaseAPI = {
   // Get knowledge base stats
   getKnowledgeBaseStats(id) {
     return api.get(`/api/v1/knowledge-bases/${id}/stats`)
+  },
+
+  // Get indexing settings
+  getIndexingSettings(id) {
+    return api.get(`/api/v1/knowledge-bases/${id}/indexing-settings`)
+  },
+
+  // Update indexing settings
+  updateIndexingSettings(id, data) {
+    return api.put(`/api/v1/knowledge-bases/${id}/indexing-settings`, {
+      indexing_method: data.indexing_method,
+      chunk_size: data.chunk_size,
+      chunk_overlap: data.chunk_overlap,
+      embedding_model_id: data.embedding_model_id || null
+    })
+  },
+
+  // Get retrieval settings
+  getRetrievalSettings(id) {
+    return api.get(`/api/v1/knowledge-bases/${id}/retrieval-settings`)
+  },
+
+  // Update retrieval settings
+  updateRetrievalSettings(id, data) {
+    return api.put(`/api/v1/knowledge-bases/${id}/retrieval-settings`, {
+      retrieval_method: data.retrieval_method,
+      top_k: data.top_k,
+      score_threshold: data.score_threshold,
+      enable_rerank: data.enable_rerank,
+      rerank_model_id: data.rerank_model_id || null
+    })
+  },
+
+  getGovernanceSettings(id) {
+    return api.get(`/api/v1/knowledge-bases/${id}/governance-settings`)
+  },
+
+  updateGovernanceSettings(id, data) {
+    return api.put(`/api/v1/knowledge-bases/${id}/governance-settings`, data)
+  },
+
+  // Retrieval test
+  testRetrieval(id, data) {
+    return api.post(`/api/v1/knowledge-bases/${id}/retrieval-test`, {
+      query: data.query,
+      top_k: data.top_k ?? null,
+      score_threshold: data.score_threshold ?? null
+    })
+  },
+
+  listEvaluationDatasets(id) {
+    return api.get(`/api/v1/knowledge-bases/${id}/evaluation-datasets`)
+  },
+
+  createEvaluationDataset(id, data) {
+    return api.post(`/api/v1/knowledge-bases/${id}/evaluation-datasets`, data)
+  },
+
+  updateEvaluationDataset(id, datasetId, data) {
+    return api.put(`/api/v1/knowledge-bases/${id}/evaluation-datasets/${datasetId}`, data)
+  },
+
+  deleteEvaluationDataset(id, datasetId) {
+    return api.delete(`/api/v1/knowledge-bases/${id}/evaluation-datasets/${datasetId}`)
+  },
+
+  listEvaluationRuns(id, limit = 20) {
+    return api.get(`/api/v1/knowledge-bases/${id}/evaluation-runs`, {
+      params: { limit }
+    })
+  },
+
+  runEvaluation(id, data) {
+    return api.post(`/api/v1/knowledge-bases/${id}/evaluation-runs`, data)
+  },
+
+  getEvaluationRun(id, runId) {
+    return api.get(`/api/v1/knowledge-bases/${id}/evaluation-runs/${runId}`)
+  },
+
+  updateEvaluationFeedback(id, runId, data) {
+    return api.post(`/api/v1/knowledge-bases/${id}/evaluation-runs/${runId}/feedback`, data)
+  },
+
+  applyEvaluationRunConfig(id, runId) {
+    return api.post(`/api/v1/knowledge-bases/${id}/evaluation-runs/${runId}/apply-config`)
   }
 }
 
@@ -209,6 +318,18 @@ export const documentAPI = {
     return api.get(`/api/v1/knowledge/documents/${id}`)
   },
 
+  // Get document preview
+  getDocumentPreview(id, maxChars = 4000) {
+    return api.get(`/api/v1/knowledge/documents/${id}/preview`, {
+      params: { max_chars: maxChars }
+    })
+  },
+
+  // Get document segments
+  getDocumentSegments(id, params = {}) {
+    return api.get(`/api/v1/knowledge/documents/${id}/segments`, { params })
+  },
+
   // Create document
   createDocument(data) {
     return api.post('/api/v1/knowledge/documents', {
@@ -219,7 +340,8 @@ export const documentAPI = {
       source_type: data.source_type || 'manual',
       access_level: data.access_level || 'tenant',
       metadata: data.metadata || {},
-      auto_index: data.auto_index !== false
+      auto_index: data.auto_index !== false,
+      skip_duplicate_check: data.skip_duplicate_check === true
     })
   },
 
@@ -240,12 +362,15 @@ export const documentAPI = {
   },
 
   // Upload file as document
-  uploadDocument(knowledgeBaseId, file, accessLevel = 'tenant') {
+  uploadDocument(knowledgeBaseId, file, options = {}) {
+    const accessLevel = options.accessLevel || 'tenant'
+    const skipDuplicateCheck = options.skipDuplicateCheck === true
     const formData = new FormData()
     formData.append('file', file)
     formData.append('knowledge_base_id', knowledgeBaseId)
     formData.append('access_level', accessLevel)
     formData.append('auto_index', 'true')
+    formData.append('skip_duplicate_check', skipDuplicateCheck ? 'true' : 'false')
     return api.post('/api/v1/knowledge/documents/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
@@ -254,12 +379,15 @@ export const documentAPI = {
   },
 
   // Create document from URL
-  createFromUrl(knowledgeBaseId, url, accessLevel = 'tenant') {
+  createFromUrl(knowledgeBaseId, url, options = {}) {
+    const accessLevel = options.accessLevel || 'tenant'
+    const skipDuplicateCheck = options.skipDuplicateCheck === true
     const formData = new FormData()
     formData.append('url', url)
     formData.append('knowledge_base_id', knowledgeBaseId)
     formData.append('access_level', accessLevel)
     formData.append('auto_index', 'true')
+    formData.append('skip_duplicate_check', skipDuplicateCheck ? 'true' : 'false')
     return api.post('/api/v1/knowledge/documents/from-url', formData)
   },
 

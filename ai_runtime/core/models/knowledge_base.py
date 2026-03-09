@@ -183,6 +183,7 @@ class CreateDocumentRequest(BaseModel):
     access_level: AccessLevel = Field(AccessLevel.TENANT, description="访问权限")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="额外元数据")
     auto_index: bool = Field(True, description="是否自动生成向量索引")
+    skip_duplicate_check: bool = Field(False, description="是否跳过重复/相似文档检测")
 
 
 class UpdateDocumentRequest(BaseModel):
@@ -221,6 +222,70 @@ class ListDocumentsResponse(BaseModel):
     page_size: int
 
 
+# Knowledge Base Settings Schemas
+class IndexingSettings(BaseModel):
+    """知识库索引设置"""
+    indexing_method: str = Field(default="chunk", description="Indexing method: chunk/full")
+    chunk_size: int = Field(default=500, ge=50, le=2000)
+    chunk_overlap: int = Field(default=50, ge=0, le=500)
+    embedding_model_id: Optional[str] = None
+
+
+class IndexingSettingsUpdate(BaseModel):
+    """更新索引设置"""
+    indexing_method: Optional[str] = None
+    chunk_size: Optional[int] = Field(default=None, ge=50, le=2000)
+    chunk_overlap: Optional[int] = Field(default=None, ge=0, le=500)
+    embedding_model_id: Optional[str] = None
+
+
+class RetrievalSettings(BaseModel):
+    """知识库检索设置"""
+    retrieval_method: str = Field(default="vector", description="Retrieval method: vector/keyword/hybrid")
+    top_k: int = Field(default=5, ge=1, le=50)
+    score_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    enable_rerank: bool = Field(default=False)
+    rerank_model_id: Optional[str] = None
+
+
+class RetrievalSettingsUpdate(BaseModel):
+    """更新检索设置"""
+    retrieval_method: Optional[str] = None
+    top_k: Optional[int] = Field(default=None, ge=1, le=50)
+    score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    enable_rerank: Optional[bool] = None
+    rerank_model_id: Optional[str] = None
+
+
+class GovernanceRouteSettings(BaseModel):
+    """单个场景的模型路由配置"""
+    enabled: bool = Field(default=True)
+    primary_model_id: Optional[str] = None
+    fallback_model_id: Optional[str] = None
+
+
+class GovernanceRouteSettingsUpdate(BaseModel):
+    """更新单个场景的模型路由配置"""
+    enabled: Optional[bool] = None
+    primary_model_id: Optional[str] = None
+    fallback_model_id: Optional[str] = None
+
+
+class AIGovernanceSettings(BaseModel):
+    """知识库级 AI 运营与治理配置"""
+    config_version: int = Field(default=1, ge=1)
+    budget_alert_usd: Optional[float] = Field(default=None, ge=0.0)
+    low_quality_threshold: float = Field(default=2.0, ge=0.0, le=5.0)
+    routes: Dict[str, GovernanceRouteSettings] = Field(default_factory=dict)
+
+
+class AIGovernanceSettingsUpdate(BaseModel):
+    """更新知识库级 AI 运营与治理配置"""
+    budget_alert_usd: Optional[float] = Field(default=None, ge=0.0)
+    low_quality_threshold: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    routes: Optional[Dict[str, GovernanceRouteSettingsUpdate]] = None
+
+
 class BatchCreateRequest(BaseModel):
     """批量创建文档请求"""
     documents: List[CreateDocumentRequest] = Field(..., max_items=100)
@@ -237,6 +302,7 @@ class SearchDocumentsRequest(BaseModel):
     """搜索文档请求"""
     query: str = Field(..., min_length=1, description="搜索查询")
     top_k: int = Field(5, ge=1, le=50, description="返回结果数量")
+    knowledge_base_id: Optional[str] = Field(None, description="知识库ID（可选）")
     access_level: Optional[AccessLevel] = Field(None, description="筛选访问权限")
     source_type: Optional[SourceType] = Field(None, description="筛选来源类型")
 
@@ -261,3 +327,172 @@ class FileUploadResponse(BaseModel):
     file_type: str
     content_length: int
     indexed: bool
+
+
+class DocumentPreviewResponse(BaseModel):
+    """文档预览响应"""
+    document_id: str
+    title: str
+    source: Optional[str]
+    total_chars: int
+    preview_chars: int
+    truncated: bool
+    preview: str
+    indexed: bool
+    indexed_at: Optional[str]
+    updated_at: str
+
+
+class DocumentSegment(BaseModel):
+    """文档分段信息"""
+    segment_index: int = Field(..., ge=1)
+    start_offset: int = Field(..., ge=0)
+    end_offset: int = Field(..., ge=0)
+    char_count: int = Field(..., ge=0)
+    content: str
+    match_score: Optional[float] = None
+
+
+class DocumentSegmentsResponse(BaseModel):
+    """文档分段详情响应"""
+    document_id: str
+    title: str
+    chunk_size: int
+    chunk_overlap: int
+    total_segments: int
+    returned_segments: int
+    truncated: bool
+    segments: List[DocumentSegment]
+
+
+class RetrievalTestRequest(BaseModel):
+    """召回测试请求"""
+    query: str = Field(..., min_length=1, description="测试查询")
+    top_k: Optional[int] = Field(None, ge=1, le=50, description="可选覆盖 Top K")
+    score_threshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="可选覆盖阈值")
+
+
+class RetrievalTestResult(BaseModel):
+    """召回测试结果项"""
+    document: DocumentResponse
+    score: float = Field(..., ge=0, le=1)
+    matched_segments: List[DocumentSegment] = Field(default_factory=list)
+
+
+class RetrievalTestResponse(BaseModel):
+    """召回测试响应"""
+    query: str
+    retrieval_method: str
+    top_k: int
+    score_threshold: float
+    total: int
+    results: List[RetrievalTestResult]
+
+
+class RetrievalEvaluationCase(BaseModel):
+    """评测样本"""
+    id: Optional[str] = None
+    query: str = Field(..., min_length=1, description="测试问题")
+    expected_document_ids: List[str] = Field(default_factory=list, description="期望命中文档 ID 列表")
+    expected_documents: List[Dict[str, Any]] = Field(default_factory=list, description="期望文档摘要")
+    notes: Optional[str] = Field(None, description="样本备注")
+
+
+class RetrievalTestSetCreateRequest(BaseModel):
+    """创建检索测试集"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    cases: List[RetrievalEvaluationCase] = Field(..., min_items=1, max_items=200)
+
+
+class RetrievalTestSetUpdateRequest(BaseModel):
+    """更新检索测试集"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    cases: List[RetrievalEvaluationCase] = Field(..., min_items=1, max_items=200)
+
+
+class RetrievalTestSetResponse(BaseModel):
+    """检索测试集响应"""
+    id: str
+    tenant_id: str
+    knowledge_base_id: str
+    user_id: Optional[str]
+    name: str
+    description: Optional[str]
+    cases: List[RetrievalEvaluationCase]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class RetrievalEvaluationConfig(BaseModel):
+    """评测时使用的检索配置"""
+    retrieval_method: Optional[str] = None
+    top_k: Optional[int] = Field(default=None, ge=1, le=50)
+    score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    enable_rerank: Optional[bool] = None
+    rerank_model_id: Optional[str] = None
+
+
+class RetrievalEvaluationRunRequest(BaseModel):
+    """发起评测运行"""
+    test_set_id: str
+    name: Optional[str] = Field(None, max_length=255)
+    config: RetrievalEvaluationConfig = Field(default_factory=RetrievalEvaluationConfig)
+
+
+class RetrievalEvaluationResultItem(BaseModel):
+    """单条样本评测结果"""
+    case_id: str
+    query: str
+    notes: Optional[str] = None
+    expected_document_ids: List[str] = Field(default_factory=list)
+    expected_documents: List[Dict[str, Any]] = Field(default_factory=list)
+    matched_document_ids: List[str] = Field(default_factory=list)
+    top_result_document_id: Optional[str] = None
+    hit: bool
+    top_hit: bool
+    manual_score: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    manual_comment: Optional[str] = None
+    results: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class RetrievalEvaluationSummary(BaseModel):
+    """评测汇总"""
+    total_cases: int
+    hit_count: int
+    top_hit_count: int
+    hit_rate: float
+    top_hit_rate: float
+    avg_manual_score: Optional[float] = None
+    manual_score_count: int = 0
+
+
+class RetrievalEvaluationRunResponse(BaseModel):
+    """评测运行响应"""
+    id: str
+    tenant_id: str
+    knowledge_base_id: str
+    test_set_id: Optional[str]
+    user_id: Optional[str]
+    name: Optional[str]
+    config: Dict[str, Any] = Field(default_factory=dict)
+    summary: RetrievalEvaluationSummary
+    results: List[RetrievalEvaluationResultItem] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class RetrievalEvaluationFeedbackRequest(BaseModel):
+    """更新人工评分"""
+    case_id: str
+    manual_score: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    manual_comment: Optional[str] = None
+
+
+class RetrievalEvaluationApplyConfigResponse(BaseModel):
+    """应用评测配置响应"""
+    retrieval_settings: RetrievalSettings
+    run_id: str

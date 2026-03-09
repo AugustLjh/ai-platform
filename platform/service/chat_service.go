@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ai-platform/platform/api/grpc"
 	"github.com/ai-platform/platform/database"
@@ -14,22 +16,23 @@ import (
 
 // ChatService handles chat business logic
 type ChatService struct {
-	aiClient *grpc.AIClient
-	sessions *SessionManager
+	aiClient     *grpc.AIClient
+	sessions     *SessionManager
 	sessionStore *database.SessionStore
 }
 
 // NewChatService creates a new chat service
 func NewChatService(aiClient *grpc.AIClient, sessionStore *database.SessionStore) *ChatService {
 	return &ChatService{
-		aiClient: aiClient,
-		sessions: NewSessionManager(),
+		aiClient:     aiClient,
+		sessions:     NewSessionManager(),
 		sessionStore: sessionStore,
 	}
 }
 
 var (
 	ErrSessionNotFound = errors.New("session not found")
+	ErrMessageNotFound = errors.New("message not found")
 	ErrUnauthorized    = errors.New("unauthorized")
 )
 
@@ -55,7 +58,7 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 			log.Printf("[ChatService] Failed to ensure session: %v", err)
 		} else {
 			dbSession = session
-			if err := s.persistMessage(req.SessionID, "user", req.Message, modelName); err != nil {
+			if err := s.persistMessage(req.SessionID, "user", req.Message, modelName, req.Metadata); err != nil {
 				log.Printf("[ChatService] Failed to persist user message: %v", err)
 			}
 			s.maybeUpdateTitle(dbSession, req.Message)
@@ -76,12 +79,13 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 		Message:   req.Message,
 		Metadata:  req.Metadata,
 		Config: &grpc.ChatConfig{
-			Model:       req.Config.Model,
-			Temperature: req.Config.Temperature,
-			MaxTokens:   req.Config.MaxTokens,
-			UseRAG:      req.Config.UseRAG,
-			UseAgent:    req.Config.UseAgent,
-			Tools:       req.Config.Tools,
+			Model:           req.Config.Model,
+			Temperature:     req.Config.Temperature,
+			MaxTokens:       req.Config.MaxTokens,
+			UseRAG:          req.Config.UseRAG,
+			UseAgent:        req.Config.UseAgent,
+			Tools:           req.Config.Tools,
+			KnowledgeBaseID: req.Config.KnowledgeBaseID,
 		},
 	}
 
@@ -120,7 +124,7 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 			if msg.Type == 4 { // COMPLETE
 				session.AddMessage("assistant", fullResponse)
 				if s.sessionStore != nil {
-					if err := s.persistMessage(req.SessionID, "assistant", fullResponse, modelName); err != nil {
+					if err := s.persistMessage(req.SessionID, "assistant", fullResponse, modelName, msg.Metadata); err != nil {
 						log.Printf("[ChatService] Failed to persist assistant message: %v", err)
 					}
 				}
@@ -174,18 +178,28 @@ func (s *ChatService) ensureDBSession(req *ChatRequest) (*database.Session, erro
 	return session, nil
 }
 
-func (s *ChatService) persistMessage(sessionID, role, content, model string) error {
+func (s *ChatService) persistMessage(sessionID, role, content, model string, metadata map[string]string) error {
 	if s.sessionStore == nil {
 		return nil
 	}
 
+	tokenCount := 0
+	if metadata != nil {
+		if rawTotalTokens := metadata["total_tokens"]; rawTotalTokens != "" {
+			if parsed, err := strconv.Atoi(rawTotalTokens); err == nil {
+				tokenCount = parsed
+			}
+		}
+	}
+
 	message := &database.Message{
-		ID:        uuid.NewString(),
-		SessionID: sessionID,
-		Role:      role,
-		Content:   content,
-		TokenCount: 0,
-		Model:     model,
+		ID:         uuid.NewString(),
+		SessionID:  sessionID,
+		Role:       role,
+		Content:    content,
+		TokenCount: tokenCount,
+		Model:      model,
+		Metadata:   metadata,
 	}
 
 	return s.sessionStore.AddMessage(message)
@@ -311,6 +325,47 @@ func isSessionNotFound(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "session not found")
 }
 
+func (s *ChatService) SaveMessageFeedback(userID, messageID string, rating float64, label, comment string) (*database.Message, error) {
+	if s.sessionStore == nil {
+		return nil, fmt.Errorf("session store not configured")
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	lowQuality := label == "dislike" || rating > 0 && rating <= 2
+	updates := map[string]string{
+		"feedback_label":   label,
+		"feedback_comment": comment,
+		"feedback_at":      now,
+		"low_quality":      strconv.FormatBool(lowQuality),
+	}
+	if rating > 0 {
+		updates["feedback_rating"] = strconv.FormatFloat(rating, 'f', -1, 64)
+	}
+
+	message, err := s.sessionStore.SaveMessageFeedback(userID, messageID, updates)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "message not found") {
+			return nil, ErrMessageNotFound
+		}
+		return nil, err
+	}
+	return message, nil
+}
+
+func (s *ChatService) ListLowQualitySamples(userID, knowledgeBaseID string, limit int) ([]*database.LowQualitySample, error) {
+	if s.sessionStore == nil {
+		return nil, fmt.Errorf("session store not configured")
+	}
+	return s.sessionStore.ListLowQualitySamples(userID, knowledgeBaseID, limit)
+}
+
+func (s *ChatService) GetUsageStats(userID, tenantID, knowledgeBaseID string) (*database.UsageStats, error) {
+	if s.sessionStore == nil {
+		return nil, fmt.Errorf("session store not configured")
+	}
+	return s.sessionStore.GetUsageStats(userID, tenantID, knowledgeBaseID)
+}
+
 // ChatRequest represents a chat request
 type ChatRequest struct {
 	SessionID string
@@ -323,21 +378,21 @@ type ChatRequest struct {
 
 // ChatConfig holds chat configuration
 type ChatConfig struct {
-	Model       string
-	Temperature float32
-	MaxTokens   int32
-	UseRAG      bool
-	UseAgent    bool
-	Tools       []string
+	Model           string
+	Temperature     float32
+	MaxTokens       int32
+	UseRAG          bool
+	UseAgent        bool
+	Tools           []string
 	KnowledgeBaseID string
 }
 
 // ChatMessage represents a chat message
 type ChatMessage struct {
-	SessionID string            
-	MessageID string            
-	Type      int32             
-	Content   string            
-	Error     string            
-	Metadata  map[string]string 
+	SessionID string
+	MessageID string
+	Type      int32
+	Content   string
+	Error     string
+	Metadata  map[string]string
 }

@@ -57,13 +57,9 @@ func main() {
 	log.Printf("Connecting to AI Runtime at %s (chat transport: %s)...", aiRuntimeAddr, chatTransport)
 	aiClient, err := grpc.NewAIClient(aiRuntimeAddr, chatHTTPAddr)
 	if err != nil {
-		log.Printf("Warning: Failed to connect to AI Runtime: %v", err)
-		log.Println("Chat service will not be available until AI Runtime is ready")
-		// Create a nil client to avoid panic
-		aiClient = nil
-	} else {
-		defer aiClient.Close()
+		log.Fatalf("Failed to initialize AI Runtime client: %v", err)
 	}
+	defer aiClient.Close()
 
 	// Initialize auth components
 	tokenManager := auth.NewTokenManager(
@@ -90,11 +86,8 @@ func main() {
 	log.Printf("Created demo user: %s / demo123456", demoUser.Email)
 
 	// Initialize services
-	var chatService *service.ChatService
 	sessionStore := database.NewSessionStore(pgPool)
-	if aiClient != nil {
-		chatService = service.NewChatService(aiClient, sessionStore)
-	}
+	chatService := service.NewChatService(aiClient, sessionStore)
 
 	// Initialize middleware (with real JWT auth)
 	authMiddleware := middleware.NewAuthMiddleware(authService)
@@ -104,10 +97,7 @@ func main() {
 	corsMiddleware := middleware.NewCORSMiddleware() // 添加这行
 
 	// Initialize HTTP handlers
-	var chatHandler *httphandler.ChatHandler
-	if chatService != nil {
-		chatHandler = httphandler.NewChatHandler(chatService, costTracker)
-	}
+	chatHandler := httphandler.NewChatHandler(chatService, costTracker)
 	authHandler := httphandler.NewAuthHandler(authService)
 
 	// Setup routes
@@ -136,68 +126,81 @@ func main() {
 			authMiddleware.Handler,
 		))
 
-	// Chat endpoints (with full middleware) - only if chat service is available
-	if chatHandler != nil {
-		mux.Handle("/api/v1/chat/sse",
-			chain(
-				http.HandlerFunc(chatHandler.HandleSSE),
-				authMiddleware.Handler,
-				rateLimiter.Handler,
-				guardMiddleware.Handler,
-				costTracker.Handler,
-			))
+	// Chat endpoints (with full middleware)
+	mux.Handle("/api/v1/chat/sse",
+		chain(
+			http.HandlerFunc(chatHandler.HandleSSE),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+			costTracker.Handler,
+		))
 
-		mux.Handle("/api/v1/chat/ws",
-			chain(
-				http.HandlerFunc(chatHandler.HandleWebSocket),
-				authMiddleware.Handler,
-				rateLimiter.Handler,
-				guardMiddleware.Handler,
-				costTracker.Handler,
-			))
+	mux.Handle("/api/v1/chat/ws",
+		chain(
+			http.HandlerFunc(chatHandler.HandleWebSocket),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+			costTracker.Handler,
+		))
 
-		mux.Handle("/api/v1/chat",
-			chain(
-				http.HandlerFunc(chatHandler.HandleChatSync),
-				authMiddleware.Handler,
-				rateLimiter.Handler,
-				guardMiddleware.Handler,
-				costTracker.Handler,
-			))
+	mux.Handle("/api/v1/chat",
+		chain(
+			http.HandlerFunc(chatHandler.HandleChatSync),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+			costTracker.Handler,
+		))
 
-		mux.Handle("/api/v1/chat/sessions",
-			chain(
-				http.HandlerFunc(chatHandler.HandleSessions),
-				authMiddleware.Handler,
-				rateLimiter.Handler,
-				guardMiddleware.Handler,
-			))
+	mux.Handle("/api/v1/chat/sessions",
+		chain(
+			http.HandlerFunc(chatHandler.HandleSessions),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
 
-		mux.Handle("/api/v1/chat/history/",
-			chain(
-				http.HandlerFunc(chatHandler.HandleGetHistory),
-				authMiddleware.Handler,
-				rateLimiter.Handler,
-				guardMiddleware.Handler,
-			))
+	mux.Handle("/api/v1/chat/history/",
+		chain(
+			http.HandlerFunc(chatHandler.HandleGetHistory),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
 
-		mux.Handle("/api/v1/chat/session/",
-			chain(
-				http.HandlerFunc(chatHandler.HandleDeleteSession),
-				authMiddleware.Handler,
-				rateLimiter.Handler,
-				guardMiddleware.Handler,
-			))
-	} else {
-		// Return service unavailable for chat endpoints
-		unavailableHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"error": "Chat service is not available. AI Runtime is not connected."}`))
-		})
-		mux.Handle("/api/v1/chat/sse", unavailableHandler)
-		mux.Handle("/api/v1/chat/ws", unavailableHandler)
-		mux.Handle("/api/v1/chat", unavailableHandler)
-	}
+	mux.Handle("/api/v1/chat/session/",
+		chain(
+			http.HandlerFunc(chatHandler.HandleDeleteSession),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/chat/usage/stats",
+		chain(
+			http.HandlerFunc(chatHandler.HandleUsageStats),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/chat/feedback/low-quality",
+		chain(
+			http.HandlerFunc(chatHandler.HandleLowQualitySamples),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/chat/messages/",
+		chain(
+			http.HandlerFunc(chatHandler.HandleMessageFeedback),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
 
 	// Knowledge Base endpoints - proxy to AI Runtime HTTP server
 	aiRuntimeUrl, err := url.Parse(aiRuntimeHttpAddr)
@@ -234,6 +237,7 @@ func main() {
 	mux.Handle("/api/v1/knowledge-bases/", kbHandler)
 	mux.Handle("/api/v1/knowledge-bases", kbHandler)
 	mux.Handle("/api/v1/knowledge/", kbHandler)
+	mux.Handle("/api/v1/knowledge", kbHandler)
 
 	// Models endpoints - proxy to AI Runtime HTTP server
 	modelsProxy := httputil.NewSingleHostReverseProxy(aiRuntimeUrl)
@@ -283,11 +287,26 @@ func main() {
 	log.Println("  - POST /api/v1/chat (sync)")
 	log.Println("  - POST /api/v1/chat/sse (streaming)")
 	log.Println("  - WS   /api/v1/chat/ws (websocket)")
+	log.Println("  - GET  /api/v1/chat/usage/stats")
+	log.Println("  - GET  /api/v1/chat/feedback/low-quality")
+	log.Println("  - POST /api/v1/chat/messages/{id}/feedback")
 	log.Println("")
 	log.Println("Knowledge Base Endpoints (proxied to AI Runtime):")
+	log.Println("  - GET    /api/v1/knowledge-bases")
+	log.Println("  - POST   /api/v1/knowledge-bases")
+	log.Println("  - GET    /api/v1/knowledge-bases/{id}")
+	log.Println("  - PUT    /api/v1/knowledge-bases/{id}")
+	log.Println("  - DELETE /api/v1/knowledge-bases/{id}")
+	log.Println("  - GET    /api/v1/knowledge-bases/{id}/indexing-settings")
+	log.Println("  - PUT    /api/v1/knowledge-bases/{id}/indexing-settings")
+	log.Println("  - GET    /api/v1/knowledge-bases/{id}/retrieval-settings")
+	log.Println("  - PUT    /api/v1/knowledge-bases/{id}/retrieval-settings")
+	log.Println("  - POST   /api/v1/knowledge-bases/{id}/retrieval-test")
 	log.Println("  - GET    /api/v1/knowledge/documents")
 	log.Println("  - POST   /api/v1/knowledge/documents")
 	log.Println("  - GET    /api/v1/knowledge/documents/{id}")
+	log.Println("  - GET    /api/v1/knowledge/documents/{id}/preview")
+	log.Println("  - GET    /api/v1/knowledge/documents/{id}/segments")
 	log.Println("  - PUT    /api/v1/knowledge/documents/{id}")
 	log.Println("  - DELETE /api/v1/knowledge/documents/{id}")
 	log.Println("  - POST   /api/v1/knowledge/documents/search")

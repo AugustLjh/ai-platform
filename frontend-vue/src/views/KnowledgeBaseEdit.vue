@@ -131,7 +131,7 @@ const goBack = () => {
   flex: 1;
   min-height: 0;
   width: 100%;
-  background: linear-gradient(180deg, #f8f9ff 0%, #ffffff 100%);
+  background: #f3f6fb;
   display: flex;
   flex-direction: column;
   overflow: auto;
@@ -152,34 +152,35 @@ const goBack = () => {
 
 .header h1 {
   font-size: 32px;
-  color: #111827;
+  color: #0f172a;
   margin: 0;
 }
 
 .btn-back {
   padding: 8px 16px;
-  background: #F3F4F6;
-  color: #374151;
-  border: none;
+  background: #ffffff;
+  color: #1e293b;
+  border: 1px solid #dbe2ec;
   border-radius: 8px;
   font-size: 14px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: all 0.2s ease;
 }
 
 .btn-back:hover {
-  background: #E5E7EB;
+  background: #f1f5f9;
+  border-color: #93a4b8;
 }
 
 .loading {
   text-align: center;
   padding: 40px;
-  color: #6B7280;
+  color: #64748b;
 }
 
 .form-card {
   background: white;
-  border: 1px solid #E5E7EB;
+  border: 1px solid #e2e8f0;
   border-radius: 12px;
   padding: 32px;
 }
@@ -192,7 +193,7 @@ const goBack = () => {
   display: block;
   margin-bottom: 8px;
   font-weight: 500;
-  color: #374151;
+  color: #1e293b;
 }
 
 .form-group input[type="text"],
@@ -200,19 +201,21 @@ const goBack = () => {
 .form-group select {
   width: 100%;
   padding: 12px 16px;
-  border: 1px solid #E5E7EB;
+  border: 1px solid #dbe2ec;
   border-radius: 8px;
   font-size: 14px;
   box-sizing: border-box;
   font-family: inherit;
+  background: #ffffff;
+  color: #0f172a;
 }
 
 .form-group input[type="text"]:focus,
 .form-group textarea:focus,
 .form-group select:focus {
   outline: none;
-  border-color: #4F46E5;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: #93a4b8;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
 
 .form-group input[type="checkbox"] {
@@ -228,10 +231,11 @@ const goBack = () => {
 
 .error {
   padding: 12px;
-  background: #FEE2E2;
-  color: #991B1B;
+  background: #fee2e2;
+  color: #b91c1c;
   border-radius: 8px;
   margin-bottom: 20px;
+  border: 1px solid #fca5a5;
 }
 
 .form-actions {
@@ -243,18 +247,18 @@ const goBack = () => {
 
 .btn-primary {
   padding: 12px 24px;
-  background: #4F46E5;
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   color: white;
   border: none;
   border-radius: 8px;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: filter 0.2s ease;
 }
 
 .btn-primary:hover {
-  background: #4338CA;
+  filter: brightness(1.05);
 }
 
 .btn-primary:disabled {
@@ -264,17 +268,18 @@ const goBack = () => {
 
 .btn-secondary {
   padding: 12px 24px;
-  background: #E5E7EB;
-  color: #374151;
-  border: none;
+  background: #ffffff;
+  color: #1e293b;
+  border: 1px solid #dbe2ec;
   border-radius: 8px;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: all 0.2s ease;
 }
 
 .btn-secondary:hover {
-  background: #D1D5DB;
+  background: #f1f5f9;
+  border-color: #93a4b8;
 }
 </style>

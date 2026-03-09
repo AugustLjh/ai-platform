@@ -96,12 +96,7 @@ class DeepseekLLM(BaseLLM):
                                         }
                                     )
 
-        except ImportError as e:
-            # Fallback if httpx is not installed
-            yield LLMResponse(content="[Mock DeepSeek Response] ")
-            yield LLMResponse(content="httpx library not installed. ")
-            yield LLMResponse(content="Please install: pip install httpx")
-            yield LLMResponse(content="", finish_reason="stop", usage={})
-
-        except Exception as e:
-            yield LLMResponse(content=f"Error: {str(e)}", finish_reason="error")
+        except ImportError as exc:
+            raise RuntimeError("httpx library not installed") from exc
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc

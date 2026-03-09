@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	pb "github.com/ai-platform/platform/proto/chat"
 	"google.golang.org/grpc"
@@ -39,12 +38,12 @@ type ChatRequest struct {
 
 // ChatConfig holds chat configuration
 type ChatConfig struct {
-	Model       string
-	Temperature float32
-	MaxTokens   int32
-	UseRAG      bool
-	UseAgent    bool
-	Tools       []string
+	Model           string
+	Temperature     float32
+	MaxTokens       int32
+	UseRAG          bool
+	UseAgent        bool
+	Tools           []string
 	KnowledgeBaseID string
 }
 
@@ -72,14 +71,10 @@ func NewAIClient(address, httpBaseURL string) (*AIClient, error) {
 		return nil, errors.New("AI runtime address is empty")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	conn, err := grpc.DialContext(
-		ctx,
+		context.Background(),
 		address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: Use TLS in production
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		return nil, err
@@ -179,17 +174,21 @@ func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *Ch
 }
 
 type httpChatRequest struct {
-	SessionID string         `json:"session_id"`
-	Message   string         `json:"message"`
-	Config    httpChatConfig `json:"config"`
+	SessionID string            `json:"session_id"`
+	UserID    string            `json:"user_id"`
+	TenantID  string            `json:"tenant_id"`
+	Message   string            `json:"message"`
+	Metadata  map[string]string `json:"metadata"`
+	Config    httpChatConfig    `json:"config"`
 }
 
 type httpChatConfig struct {
-	UseRAG      bool    `json:"use_rag"`
-	UseAgent    bool    `json:"use_agent"`
-	Temperature float32 `json:"temperature"`
-	MaxTokens   int32   `json:"max_tokens"`
-	KnowledgeBaseID string `json:"knowledge_base_id"`
+	Model           string  `json:"model"`
+	UseRAG          bool    `json:"use_rag"`
+	UseAgent        bool    `json:"use_agent"`
+	Temperature     float32 `json:"temperature"`
+	MaxTokens       int32   `json:"max_tokens"`
+	KnowledgeBaseID string  `json:"knowledge_base_id"`
 }
 
 type httpChatChunk struct {
@@ -216,12 +215,16 @@ func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan
 
 	payload := httpChatRequest{
 		SessionID: req.SessionID,
+		UserID:    req.UserID,
+		TenantID:  req.TenantID,
 		Message:   req.Message,
+		Metadata:  req.Metadata,
 		Config: httpChatConfig{
-			UseRAG:      config.UseRAG,
-			UseAgent:    config.UseAgent,
-			Temperature: config.Temperature,
-			MaxTokens:   config.MaxTokens,
+			Model:           config.Model,
+			UseRAG:          config.UseRAG,
+			UseAgent:        config.UseAgent,
+			Temperature:     config.Temperature,
+			MaxTokens:       config.MaxTokens,
 			KnowledgeBaseID: config.KnowledgeBaseID,
 		},
 	}

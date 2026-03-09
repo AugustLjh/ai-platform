@@ -130,7 +130,7 @@ ai_runtime服务现已支持完整的知识库增删改查接口，包括：
 - `access_level`: 访问权限（默认tenant）
 - `auto_index`: 是否自动索引（默认true）
 
-**支持格式**: .txt, .md, .pdf, .html, .htm
+**支持格式**: .txt, .text, .log, .md, .markdown, .pdf, .html, .htm, .csv, .tsv, .xlsx, .docx, .rtf, .pptx, .json, .jsonl, .yaml, .yml, .xml
 
 **响应**: `DocumentResponse` (201 Created)
 

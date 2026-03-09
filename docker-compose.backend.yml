@@ -1,0 +1,92 @@
+# ============================================
+# 后端编排
+# 包含 AI Runtime 与 Go Platform
+# 依赖 docker-compose.infra.yml 先创建共享网络和基础设施
+# 启动方式: docker compose -f docker-compose.backend.yml up -d
+# ============================================
+
+services:
+  ai-runtime:
+    build:
+      context: .
+      dockerfile: ./ai_runtime/Dockerfile
+    container_name: ai-platform-runtime
+    restart: always
+    ports:
+      - "8000:8000"
+      - "50051:50051"
+    env_file:
+      - ./ai_runtime/.env
+    environment:
+      - HF_ENDPOINT=https://hf-mirror.com
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_USER=ai_platform
+      - POSTGRES_PASSWORD=19980912
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health").read(); print("ok")
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ai-platform
+
+  platform:
+    build:
+      context: .
+      dockerfile: ./platform/Dockerfile
+    container_name: ai-platform-api
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      ai-runtime:
+        condition: service_healthy
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - AI_RUNTIME_ADDR=ai-runtime:50051
+      - AI_RUNTIME_HTTP_ADDR=http://ai-runtime:8000
+      - PLATFORM_PORT=:8080
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_USER=ai_platform
+      - POSTGRES_PASSWORD=19980912
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - ai-platform
+
+volumes:
+  huggingface_cache:
+    name: ai-platform_huggingface_cache
+    driver: local
+
+networks:
+  ai-platform:
+    external: true
+    name: ai-platform_ai-platform

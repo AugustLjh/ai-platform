@@ -72,6 +72,8 @@ make dev
 docker-compose -f docker-compose.yml -f docker-compose.dev.yml --profile full up -d
 ```
 
+For split orchestration, see [docs/DOCKER_COMPOSE_SPLIT.md](/mnt/ai-platform/docs/DOCKER_COMPOSE_SPLIT.md).
+
 **Access URLs:**
 - Frontend (Vite dev server): http://localhost:5173
 - Backend API: http://localhost:8080
@@ -95,6 +97,9 @@ make prod
 # Or use docker-compose
 docker-compose -f docker-compose.yml -f docker-compose.prod.yml --profile full up -d
 ```
+
+If you need to rebuild infra, backend, and frontend independently, use the split files documented in
+[docs/DOCKER_COMPOSE_SPLIT.md](/mnt/ai-platform/docs/DOCKER_COMPOSE_SPLIT.md).
 
 **Access URLs:**
 - HTTP: http://localhost
@@ -229,6 +234,9 @@ ai-platform/
 ├── docker-compose.yml         # Base configuration
 ├── docker-compose.dev.yml     # Development config
 ├── docker-compose.prod.yml    # Production config
+├── docker-compose.infra.yml   # Split infra orchestration
+├── docker-compose.backend.yml # Split backend orchestration
+├── docker-compose.frontend.yml# Split frontend orchestration
 ├── Makefile                   # Convenient commands
 ├── .env                       # Environment variables
 └── README.md                  # This document
@@ -286,13 +294,13 @@ frontend:
 
 ```bash
 # View specific service logs
-docker-compose logs -f platform
-docker-compose logs -f ai-runtime
-docker-compose logs -f frontend
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f platform
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f ai-runtime
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f frontend
 
 # Enter container
-docker-compose exec platform sh
-docker-compose exec ai-runtime bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec platform sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec ai-runtime bash
 
 # Connect to database
 make db-shell
@@ -308,13 +316,27 @@ make redis-cli
 ### Start Production Environment
 
 ```bash
-# Using Makefile (recommended)
-make prod
+# Recommended: start the split layers separately
+make infra-up
+make backend-up
+make frontend-up
 
 # View logs
-make prod-logs
+make infra-logs
+make backend-logs
+make frontend-logs
 
 # Stop
+make frontend-down
+make backend-down
+make infra-down
+```
+
+The compatibility stack commands are still available:
+
+```bash
+make prod
+make prod-build
 make prod-down
 ```
 
@@ -605,10 +627,18 @@ make dev-logs         # View logs
 make dev-down         # Stop
 
 # Production
-make prod             # Start production environment
-make prod-build       # Rebuild and start
-make prod-logs        # View logs
-make prod-down        # Stop
+make infra-up         # Start infra
+make backend-up       # Start backend
+make frontend-up      # Start frontend
+make infra-build      # Rebuild infra images
+make backend-build    # Rebuild backend images
+make frontend-build   # Rebuild frontend images
+make infra-logs       # View infra logs
+make backend-logs     # View backend logs
+make frontend-logs    # View frontend logs
+make prod             # Compatibility full-stack start
+make prod-build       # Compatibility full-stack rebuild
+make prod-down        # Compatibility full-stack stop
 
 # Database Management
 make db-migrate       # Run database migrations
@@ -628,27 +658,30 @@ make restart-frontend
 ### View Logs
 
 ```bash
-# All services
+# Full development logs
 make dev-logs
 
-# Specific service
-docker-compose logs -f platform
-docker-compose logs -f ai-runtime
+# Split production logs
+make infra-logs
+make backend-logs
+make frontend-logs
 ```
 
 ### Enter Container
 
 ```bash
-docker-compose exec platform sh
-docker-compose exec ai-runtime bash
-docker-compose exec postgres psql -U ai_platform -d ai_platform
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec platform sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec ai-runtime bash
+docker compose -f docker-compose.infra.yml exec postgres psql -U ai_platform -d ai_platform
 ```
 
 ### Restart Service
 
 ```bash
-docker-compose restart platform
-docker-compose restart ai-runtime
+make restart-platform
+make restart-ai-runtime
+make restart-frontend
+make restart-nginx
 ```
 
 ### Clean and Rebuild

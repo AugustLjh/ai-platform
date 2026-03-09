@@ -11,6 +11,8 @@ import KnowledgeBaseList from '../views/KnowledgeBaseList.vue'
 import KnowledgeBaseCreate from '../views/KnowledgeBaseCreate.vue'
 import KnowledgeBaseDetail from '../views/KnowledgeBaseDetail.vue'
 import KnowledgeBaseEdit from '../views/KnowledgeBaseEdit.vue'
+import KnowledgeBaseSettings from '../views/KnowledgeBaseSettings.vue'
+import KnowledgeBaseRetrievalTest from '../views/KnowledgeBaseRetrievalTest.vue'
 
 const routes = [
   {
@@ -86,6 +88,26 @@ const routes = [
     name: 'KnowledgeBaseEdit',
     component: KnowledgeBaseEdit,
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/knowledge/:id/settings',
+    name: 'KnowledgeBaseSettings',
+    component: KnowledgeBaseSettings,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/knowledge/:id/retrieval-test',
+    name: 'KnowledgeBaseRetrievalTest',
+    component: KnowledgeBaseRetrievalTest,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/knowledge/:id/indexing',
+    redirect: (to) => `/knowledge/${to.params.id}/settings`
+  },
+  {
+    path: '/knowledge/:id/retrieval',
+    redirect: (to) => `/knowledge/${to.params.id}/settings`
   }
 ]
 

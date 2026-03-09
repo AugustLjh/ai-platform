@@ -8,6 +8,7 @@ class OpenAILLM(BaseLLM):
     def __init__(self, model: str = "gpt-4", api_key: Optional[str] = None, **kwargs):
         super().__init__(model, **kwargs)
         self.api_key = api_key
+        self.api_base = kwargs.get("api_base")
 
     async def stream_chat(self, messages: List[Dict[str, str]], **kwargs) -> AsyncIterator[LLMResponse]:
         """
@@ -24,7 +25,10 @@ class OpenAILLM(BaseLLM):
             # Import OpenAI client (optional dependency)
             from openai import AsyncOpenAI
 
-            client = AsyncOpenAI(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            if self.api_base:
+                client_kwargs["base_url"] = self.api_base
+            client = AsyncOpenAI(**client_kwargs)
 
             # Merge config with kwargs
             params = {
@@ -58,12 +62,7 @@ class OpenAILLM(BaseLLM):
                             usage=usage
                         )
 
-        except ImportError:
-            # Fallback to mock implementation if OpenAI not installed
-            yield LLMResponse(content="[Mock OpenAI Response] ")
-            yield LLMResponse(content="OpenAI library not installed. ")
-            yield LLMResponse(content="Please install: pip install openai")
-            yield LLMResponse(content="", finish_reason="stop", usage={})
-
-        except Exception as e:
-            yield LLMResponse(content=f"Error: {str(e)}", finish_reason="error")
+        except ImportError as exc:
+            raise RuntimeError("OpenAI library not installed") from exc
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc

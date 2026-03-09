@@ -6,6 +6,12 @@ export const useKnowledgeStore = defineStore('knowledge', {
     knowledgeBases: [],
     currentKnowledgeBase: null,
     knowledgeBaseStats: null,
+    indexingSettings: null,
+    retrievalSettings: null,
+    governanceSettings: null,
+    evaluationDatasets: [],
+    evaluationRuns: [],
+    currentEvaluationRun: null,
     documents: [],
     currentDocument: null,
     loading: false,
@@ -128,6 +134,96 @@ export const useKnowledgeStore = defineStore('knowledge', {
       }
     },
 
+    async fetchIndexingSettings(id) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.getIndexingSettings(id)
+        this.indexingSettings = data
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to fetch indexing settings'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async updateIndexingSettings(id, settings) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.updateIndexingSettings(id, settings)
+        this.indexingSettings = data
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to update indexing settings'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async fetchRetrievalSettings(id) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.getRetrievalSettings(id)
+        this.retrievalSettings = data
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to fetch retrieval settings'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async updateRetrievalSettings(id, settings) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.updateRetrievalSettings(id, settings)
+        this.retrievalSettings = data
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to update retrieval settings'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async fetchGovernanceSettings(id) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.getGovernanceSettings(id)
+        this.governanceSettings = data
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to fetch governance settings'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async updateGovernanceSettings(id, settings) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.updateGovernanceSettings(id, settings)
+        this.governanceSettings = data
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to update governance settings'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
     // Document Actions
     async fetchDocuments(knowledgeBaseId, page = 1, pageSize = 20) {
       this.loading = true
@@ -170,6 +266,34 @@ export const useKnowledgeStore = defineStore('knowledge', {
       }
     },
 
+    async fetchDocumentPreview(id, maxChars = 4000) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await documentAPI.getDocumentPreview(id, maxChars)
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to fetch document preview'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async fetchDocumentSegments(id, params = {}) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await documentAPI.getDocumentSegments(id, params)
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to fetch document segments'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
     async createDocument(documentData) {
       this.loading = true
       this.error = null
@@ -206,11 +330,11 @@ export const useKnowledgeStore = defineStore('knowledge', {
       }
     },
 
-    async uploadDocument(knowledgeBaseId, file) {
+    async uploadDocument(knowledgeBaseId, file, options = {}) {
       this.loading = true
       this.error = null
       try {
-        const { data } = await documentAPI.uploadDocument(knowledgeBaseId, file)
+        const { data } = await documentAPI.uploadDocument(knowledgeBaseId, file, options)
         this.documents.push(data)
         return data
       } catch (error) {
@@ -252,6 +376,173 @@ export const useKnowledgeStore = defineStore('knowledge', {
       }
     },
 
+    async testKnowledgeRetrieval(id, payload) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.testRetrieval(id, payload)
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to test retrieval'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async fetchEvaluationDatasets(id) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.listEvaluationDatasets(id)
+        this.evaluationDatasets = data || []
+        return this.evaluationDatasets
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to fetch evaluation datasets'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async createEvaluationDataset(id, payload) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.createEvaluationDataset(id, payload)
+        const index = this.evaluationDatasets.findIndex(item => item.id === data.id)
+        if (index === -1) {
+          this.evaluationDatasets.unshift(data)
+        } else {
+          this.evaluationDatasets[index] = data
+        }
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to create evaluation dataset'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async updateEvaluationDataset(id, datasetId, payload) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.updateEvaluationDataset(id, datasetId, payload)
+        const index = this.evaluationDatasets.findIndex(item => item.id === data.id)
+        if (index === -1) {
+          this.evaluationDatasets.unshift(data)
+        } else {
+          this.evaluationDatasets[index] = data
+        }
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to update evaluation dataset'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async deleteEvaluationDataset(id, datasetId) {
+      this.loading = true
+      this.error = null
+      try {
+        await knowledgeBaseAPI.deleteEvaluationDataset(id, datasetId)
+        this.evaluationDatasets = this.evaluationDatasets.filter(item => item.id !== datasetId)
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to delete evaluation dataset'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async fetchEvaluationRuns(id, limit = 20) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.listEvaluationRuns(id, limit)
+        this.evaluationRuns = data || []
+        return this.evaluationRuns
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to fetch evaluation runs'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async runEvaluation(id, payload) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.runEvaluation(id, payload)
+        this.currentEvaluationRun = data
+        this.evaluationRuns.unshift(data)
+        this.evaluationRuns = this.evaluationRuns.slice(0, 20)
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to run evaluation'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async fetchEvaluationRun(id, runId) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.getEvaluationRun(id, runId)
+        this.currentEvaluationRun = data
+        const index = this.evaluationRuns.findIndex(item => item.id === data.id)
+        if (index !== -1) {
+          this.evaluationRuns[index] = data
+        }
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to fetch evaluation run'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async updateEvaluationFeedback(id, runId, payload) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.updateEvaluationFeedback(id, runId, payload)
+        this.currentEvaluationRun = data
+        const index = this.evaluationRuns.findIndex(item => item.id === data.id)
+        if (index !== -1) {
+          this.evaluationRuns[index] = data
+        }
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to update evaluation feedback'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async applyEvaluationRunConfig(id, runId) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await knowledgeBaseAPI.applyEvaluationRunConfig(id, runId)
+        return data
+      } catch (error) {
+        this.error = error.response?.data?.detail || 'Failed to apply evaluation config'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
     clearError() {
       this.error = null
     },
@@ -267,6 +558,12 @@ export const useKnowledgeStore = defineStore('knowledge', {
 
     clearDocuments() {
       this.documents = []
+    },
+
+    clearEvaluationState() {
+      this.evaluationDatasets = []
+      this.evaluationRuns = []
+      this.currentEvaluationRun = null
     }
   }
 })

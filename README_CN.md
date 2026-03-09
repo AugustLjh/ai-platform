@@ -72,6 +72,8 @@ make dev
 docker-compose -f docker-compose.yml -f docker-compose.dev.yml --profile full up -d
 ```
 
+拆分编排请参考 [docs/DOCKER_COMPOSE_SPLIT.md](/mnt/ai-platform/docs/DOCKER_COMPOSE_SPLIT.md)。
+
 **访问地址：**
 - 前端（Vite 开发服务器）: http://localhost:5173
 - 后端 API: http://localhost:8080
@@ -95,6 +97,9 @@ make prod
 # 或使用 docker-compose
 docker-compose -f docker-compose.yml -f docker-compose.prod.yml --profile full up -d
 ```
+
+如果需要让基础设施、后端、前端独立更新镜像，请改用拆分文件：
+[docs/DOCKER_COMPOSE_SPLIT.md](/mnt/ai-platform/docs/DOCKER_COMPOSE_SPLIT.md)
 
 **访问地址：**
 - HTTP: http://localhost
@@ -229,6 +234,9 @@ ai-platform/
 ├── docker-compose.yml         # 基础配置
 ├── docker-compose.dev.yml     # 开发环境配置
 ├── docker-compose.prod.yml    # 生产环境配置
+├── docker-compose.infra.yml   # 基础设施独立编排
+├── docker-compose.backend.yml # 后端独立编排
+├── docker-compose.frontend.yml# 前端独立编排
 ├── Makefile                   # 便捷命令
 ├── .env                       # 环境变量
 └── README_CN.md               # 本文档
@@ -286,13 +294,13 @@ frontend:
 
 ```bash
 # 查看特定服务日志
-docker-compose logs -f platform
-docker-compose logs -f ai-runtime
-docker-compose logs -f frontend
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f platform
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f ai-runtime
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f frontend
 
 # 进入容器
-docker-compose exec platform sh
-docker-compose exec ai-runtime bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec platform sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec ai-runtime bash
 
 # 连接数据库
 make db-shell
@@ -308,13 +316,27 @@ make redis-cli
 ### 启动生产环境
 
 ```bash
-# 使用 Makefile（推荐）
-make prod
+# 推荐：按拆分后的层级分别启动
+make infra-up
+make backend-up
+make frontend-up
 
 # 查看日志
-make prod-logs
+make infra-logs
+make backend-logs
+make frontend-logs
 
 # 停止
+make frontend-down
+make backend-down
+make infra-down
+```
+
+整栈兼容命令仍然保留：
+
+```bash
+make prod
+make prod-build
 make prod-down
 ```
 
@@ -605,10 +627,18 @@ make dev-logs         # 查看日志
 make dev-down         # 停止
 
 # 生产环境
-make prod             # 启动生产环境
-make prod-build       # 重新构建并启动
-make prod-logs        # 查看日志
-make prod-down        # 停止
+make infra-up         # 启动基础设施
+make backend-up       # 启动后端
+make frontend-up      # 启动前端
+make infra-build      # 重构基础设施镜像
+make backend-build    # 重构后端镜像
+make frontend-build   # 重构前端镜像
+make infra-logs       # 查看基础设施日志
+make backend-logs     # 查看后端日志
+make frontend-logs    # 查看前端日志
+make prod             # 兼容的整栈启动命令
+make prod-build       # 兼容的整栈重构命令
+make prod-down        # 兼容的整栈停止命令
 
 # 数据库管理
 make db-migrate       # 运行数据库迁移
@@ -628,27 +658,30 @@ make restart-frontend
 ### 查看日志
 
 ```bash
-# 所有服务
+# 开发环境全部日志
 make dev-logs
 
-# 特定服务
-docker-compose logs -f platform
-docker-compose logs -f ai-runtime
+# 生产环境拆分日志
+make infra-logs
+make backend-logs
+make frontend-logs
 ```
 
 ### 进入容器
 
 ```bash
-docker-compose exec platform sh
-docker-compose exec ai-runtime bash
-docker-compose exec postgres psql -U ai_platform -d ai_platform
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec platform sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec ai-runtime bash
+docker compose -f docker-compose.infra.yml exec postgres psql -U ai_platform -d ai_platform
 ```
 
 ### 重启服务
 
 ```bash
-docker-compose restart platform
-docker-compose restart ai-runtime
+make restart-platform
+make restart-ai-runtime
+make restart-frontend
+make restart-nginx
 ```
 
 ### 清理并重建

@@ -152,6 +152,7 @@ psql -U ai_platform -d ai_platform -f db/migrations/001_initial_schema.sql
 psql -U ai_platform -d ai_platform -f db/migrations/002_knowledge_base_enhancements.sql
 psql -U ai_platform -d ai_platform -f db/migrations/004_add_knowledge_bases.sql
 psql -U ai_platform -d ai_platform -f db/migrations/005_migrate_existing_documents.sql
+psql -U ai_platform -d ai_platform -f db/migrations/008_add_quota_periods.sql
 # 可选：pgvector优化（需要先安装pgvector扩展）
 # psql -U ai_platform -d ai_platform -f db/migrations/003_enable_pgvector.sql
 ```

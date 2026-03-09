@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Request/Response Models
 class ChatConfig(BaseModel):
     """Chat configuration"""
+    model: Optional[str] = Field(default=None, description="Requested model selector")
     use_rag: bool = Field(default=False, description="Enable RAG")
     use_agent: bool = Field(default=False, description="Enable Agent")
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
@@ -32,7 +33,10 @@ class ChatConfig(BaseModel):
 class ChatRequest(BaseModel):
     """Chat request model"""
     session_id: str = Field(..., description="Session ID")
+    user_id: Optional[str] = Field(default=None, description="User ID")
+    tenant_id: Optional[str] = Field(default=None, description="Tenant ID")
     message: str = Field(..., min_length=1, description="User message")
+    metadata: Dict[str, str] = Field(default_factory=dict)
     config: ChatConfig = Field(default_factory=ChatConfig)
 
 
@@ -67,15 +71,35 @@ class ErrorResponse(BaseModel):
 
 class InternalChatRequest:
     """Internal request object for chat service"""
-    def __init__(self, session_id: str, message: str, config):
+    def __init__(
+        self,
+        session_id: str,
+        message: str,
+        config,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+    ):
         self.session_id = session_id
         self.message = message
         self.config = config
+        self.user_id = user_id
+        self.tenant_id = tenant_id
+        self.metadata = metadata or {}
 
 
 class InternalChatConfig:
     """Internal config object for chat service"""
-    def __init__(self, use_rag: bool, use_agent: bool, temperature: float, max_tokens: int, knowledge_base_id: Optional[str] = None):
+    def __init__(
+        self,
+        model: Optional[str],
+        use_rag: bool,
+        use_agent: bool,
+        temperature: float,
+        max_tokens: int,
+        knowledge_base_id: Optional[str] = None,
+    ):
+        self.model = model
         self.use_rag = use_rag
         self.use_agent = use_agent
         self.temperature = temperature
@@ -148,7 +172,11 @@ def create_http_app() -> FastAPI:
             internal_request = InternalChatRequest(
                 session_id=request.session_id,
                 message=request.message,
+                user_id=request.user_id,
+                tenant_id=request.tenant_id,
+                metadata=request.metadata,
                 config=InternalChatConfig(
+                    model=request.config.model,
                     use_rag=request.config.use_rag,
                     use_agent=request.config.use_agent,
                     temperature=request.config.temperature,
@@ -183,14 +211,18 @@ def create_http_app() -> FastAPI:
                 internal_request = InternalChatRequest(
                     session_id=request.session_id,
                     message=request.message,
-                config=InternalChatConfig(
-                    use_rag=request.config.use_rag,
-                    use_agent=request.config.use_agent,
-                    temperature=request.config.temperature,
-                    max_tokens=request.config.max_tokens,
-                    knowledge_base_id=request.config.knowledge_base_id
+                    user_id=request.user_id,
+                    tenant_id=request.tenant_id,
+                    metadata=request.metadata,
+                    config=InternalChatConfig(
+                        model=request.config.model,
+                        use_rag=request.config.use_rag,
+                        use_agent=request.config.use_agent,
+                        temperature=request.config.temperature,
+                        max_tokens=request.config.max_tokens,
+                        knowledge_base_id=request.config.knowledge_base_id
+                    )
                 )
-            )
 
                 # Stream responses
                 async for chunk in chat_service.stream_chat(internal_request):

@@ -37,6 +37,7 @@
               <span v-if="model.provider === 'openai'">🟢</span>
               <span v-else-if="model.provider === 'deepseek'">🔵</span>
               <span v-else-if="model.provider === 'local'">💻</span>
+              <span v-else-if="model.provider === 'jina'">🟣</span>
               <span v-else>🤖</span>
             </div>
             <div class="model-info">
@@ -46,6 +47,7 @@
             <div class="model-badges">
               <span v-if="model.is_default" class="badge badge-default">默认</span>
               <span v-if="!model.enabled" class="badge badge-disabled">已禁用</span>
+              <span class="badge badge-type">{{ getModelTypeLabel(model.model_type) }}</span>
             </div>
           </div>
 
@@ -53,6 +55,10 @@
             <div class="detail-item">
               <span class="label">提供商:</span>
               <span class="value">{{ getProviderName(model.provider) }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="label">类型:</span>
+              <span class="value">{{ getModelTypeLabel(model.model_type) }}</span>
             </div>
             <div class="detail-item" v-if="model.api_base">
               <span class="label">API Base:</span>
@@ -135,11 +141,21 @@
           </div>
 
           <div class="form-group">
+            <label>模型类型 *</label>
+            <select v-model="formData.model_type" required>
+              <option value="llm">LLM</option>
+              <option value="embedding">Embedding</option>
+              <option value="rerank">Rerank</option>
+            </select>
+          </div>
+
+          <div class="form-group">
             <label>提供商 *</label>
             <select v-model="formData.provider" required :disabled="showEditModal">
               <option value="openai">OpenAI</option>
               <option value="deepseek">DeepSeek</option>
               <option value="local">本地模型</option>
+              <option value="jina">Jina</option>
               <option value="mock">Mock (测试)</option>
             </select>
           </div>
@@ -270,6 +286,7 @@ const modelToDelete = ref(null)
 const formData = ref({
   name: '',
   display_name: '',
+  model_type: 'llm',
   provider: 'openai',
   model_id: '',
   api_base: '',
@@ -299,9 +316,17 @@ const getProviderName = (provider) => {
     openai: 'OpenAI',
     deepseek: 'DeepSeek',
     local: '本地模型',
+    jina: 'Jina',
     mock: 'Mock (测试)'
   }
   return names[provider] || provider
+}
+
+const getModelTypeLabel = (type) => {
+  const label = type || 'llm'
+  if (label === 'embedding') return 'Embedding'
+  if (label === 'rerank') return 'Rerank'
+  return 'LLM'
 }
 
 const editModel = (model) => {
@@ -309,6 +334,7 @@ const editModel = (model) => {
   formData.value = {
     name: model.name,
     display_name: model.display_name,
+    model_type: model.model_type || 'llm',
     provider: model.provider,
     model_id: model.model_id,
     api_base: model.api_base || '',
@@ -399,6 +425,7 @@ const closeModal = () => {
   formData.value = {
     name: '',
     display_name: '',
+    model_type: 'llm',
     provider: 'openai',
     model_id: '',
     api_base: '',
@@ -612,6 +639,11 @@ const closeModal = () => {
 .badge-disabled {
   background: var(--gray-200);
   color: var(--gray-600);
+}
+
+.badge-type {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
 }
 
 /* Model Details */

@@ -10,8 +10,10 @@ from .database import DatabaseManager, get_db_manager
 from .embeddings import EmbeddingService, SentenceTransformerEmbedding, OpenAIEmbedding, JinaEmbedding
 from .repositories.document_repository import DocumentRepository
 from .repositories.knowledge_base_repository import KnowledgeBaseRepository
+from .repositories.retrieval_evaluation_repository import RetrievalEvaluationRepository
 from .services.document_service import DocumentService
 from .services.knowledge_base_service import KnowledgeBaseService
+from .services.retrieval_evaluation_service import RetrievalEvaluationService
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +25,10 @@ class ServiceContainer:
         self._embedding_service: Optional[EmbeddingService] = None
         self._kb_repository: Optional[KnowledgeBaseRepository] = None
         self._document_repository: Optional[DocumentRepository] = None
+        self._retrieval_eval_repository: Optional[RetrievalEvaluationRepository] = None
         self._kb_service: Optional[KnowledgeBaseService] = None
         self._document_service: Optional[DocumentService] = None
+        self._retrieval_eval_service: Optional[RetrievalEvaluationService] = None
 
     async def initialize(self, config: AppConfig, db_manager: DatabaseManager):
         """
@@ -79,6 +83,11 @@ class ServiceContainer:
         )
         logger.info(f"   ✅ Document repository initialized (pgvector={'enabled' if config.vector_search.use_pgvector else 'disabled'})")
 
+        self._retrieval_eval_repository = RetrievalEvaluationRepository(
+            db_pool=db_manager.pool,
+        )
+        logger.info("   ✅ Retrieval evaluation repository initialized")
+
         # Initialize audit logger
         from .audit import AuditLogger
         self._audit_logger = AuditLogger(
@@ -111,6 +120,13 @@ class ServiceContainer:
             quota_manager=self._quota_manager,
         )
         logger.info("   ✅ Document service initialized")
+
+        self._retrieval_eval_service = RetrievalEvaluationService(
+            repository=self._retrieval_eval_repository,
+            kb_service=self._kb_service,
+            document_service=self._document_service,
+        )
+        logger.info("   ✅ Retrieval evaluation service initialized")
 
         logger.info("✅ All services initialized successfully")
 
@@ -148,6 +164,13 @@ class ServiceContainer:
         if self._document_service is None:
             raise RuntimeError("Document service not initialized")
         return self._document_service
+
+    @property
+    def retrieval_eval_service(self) -> RetrievalEvaluationService:
+        """Get retrieval evaluation service"""
+        if self._retrieval_eval_service is None:
+            raise RuntimeError("Retrieval evaluation service not initialized")
+        return self._retrieval_eval_service
 
 
 # Global service container
@@ -191,6 +214,16 @@ async def get_document_service() -> DocumentService:
         DocumentService instance
     """
     return get_container().document_service
+
+
+async def get_retrieval_eval_service() -> RetrievalEvaluationService:
+    """
+    FastAPI dependency: Get retrieval evaluation service
+
+    Returns:
+        RetrievalEvaluationService instance
+    """
+    return get_container().retrieval_eval_service
 
 
 async def get_current_tenant_id(

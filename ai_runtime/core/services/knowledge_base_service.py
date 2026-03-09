@@ -19,6 +19,44 @@ from ..models.knowledge_base import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_INDEXING_SETTINGS = {
+    "indexing_method": "chunk",
+    "chunk_size": 500,
+    "chunk_overlap": 50,
+    "embedding_model_id": None,
+}
+
+DEFAULT_RETRIEVAL_SETTINGS = {
+    "retrieval_method": "vector",
+    "top_k": 5,
+    "score_threshold": 0.0,
+    "enable_rerank": False,
+    "rerank_model_id": None,
+}
+
+DEFAULT_GOVERNANCE_SETTINGS = {
+    "config_version": 1,
+    "budget_alert_usd": None,
+    "low_quality_threshold": 2.0,
+    "routes": {
+        "chat": {
+            "enabled": True,
+            "primary_model_id": None,
+            "fallback_model_id": None,
+        },
+        "rag_chat": {
+            "enabled": True,
+            "primary_model_id": None,
+            "fallback_model_id": None,
+        },
+        "agent_chat": {
+            "enabled": True,
+            "primary_model_id": None,
+            "fallback_model_id": None,
+        },
+    },
+}
+
 
 class KnowledgeBaseService:
     """知识库业务逻辑层"""
@@ -185,6 +223,207 @@ class KnowledgeBaseService:
             logger.error(f"Failed to update knowledge base: {e}")
             raise
 
+    async def get_indexing_settings(
+        self,
+        kb_id: str,
+        tenant_id: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            return None
+
+        return self._normalize_settings(kb.metadata, "indexing_settings", DEFAULT_INDEXING_SETTINGS)
+
+    async def update_indexing_settings(
+        self,
+        kb_id: str,
+        tenant_id: str,
+        updates: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            return None
+
+        metadata = dict(kb.metadata or {})
+        current_settings = metadata.get("indexing_settings")
+        if not isinstance(current_settings, dict):
+            current_settings = {}
+
+        for key, value in updates.items():
+            if value == "":
+                value = None
+            current_settings[key] = value
+
+        metadata["indexing_settings"] = current_settings
+
+        updated_kb = await self.kb_repository.update_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            metadata=metadata,
+        )
+
+        if not updated_kb:
+            return None
+
+        return self._normalize_settings(updated_kb.metadata, "indexing_settings", DEFAULT_INDEXING_SETTINGS)
+
+    async def get_retrieval_settings(
+        self,
+        kb_id: str,
+        tenant_id: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            return None
+
+        return self._normalize_settings(kb.metadata, "retrieval_settings", DEFAULT_RETRIEVAL_SETTINGS)
+
+    async def update_retrieval_settings(
+        self,
+        kb_id: str,
+        tenant_id: str,
+        updates: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            return None
+
+        metadata = dict(kb.metadata or {})
+        current_settings = metadata.get("retrieval_settings")
+        if not isinstance(current_settings, dict):
+            current_settings = {}
+
+        for key, value in updates.items():
+            if value == "":
+                value = None
+            current_settings[key] = value
+
+        metadata["retrieval_settings"] = current_settings
+
+        updated_kb = await self.kb_repository.update_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            metadata=metadata,
+        )
+
+        if not updated_kb:
+            return None
+
+        return self._normalize_settings(updated_kb.metadata, "retrieval_settings", DEFAULT_RETRIEVAL_SETTINGS)
+
+    async def get_governance_settings(
+        self,
+        kb_id: str,
+        tenant_id: str,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            return None
+
+        return self._normalize_governance_settings(kb.metadata)
+
+    async def update_governance_settings(
+        self,
+        kb_id: str,
+        tenant_id: str,
+        updates: Dict[str, Any],
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            return None
+
+        current_settings = self._normalize_governance_settings(kb.metadata)
+        next_settings = {
+            "config_version": current_settings.get("config_version", 1),
+            "budget_alert_usd": current_settings.get("budget_alert_usd"),
+            "low_quality_threshold": current_settings.get("low_quality_threshold", 2.0),
+            "routes": {
+                scene: dict(route or {})
+                for scene, route in (current_settings.get("routes") or {}).items()
+            },
+        }
+
+        if "budget_alert_usd" in updates:
+            next_settings["budget_alert_usd"] = updates.get("budget_alert_usd")
+
+        if updates.get("low_quality_threshold") is not None:
+            next_settings["low_quality_threshold"] = updates["low_quality_threshold"]
+
+        if isinstance(updates.get("routes"), dict):
+            for scene, route_updates in updates["routes"].items():
+                if not isinstance(route_updates, dict):
+                    continue
+                current_route = next_settings["routes"].get(scene)
+                if not isinstance(current_route, dict):
+                    current_route = {
+                        "enabled": True,
+                        "primary_model_id": None,
+                        "fallback_model_id": None,
+                    }
+                for key, value in route_updates.items():
+                    if value == "":
+                        value = None
+                    current_route[key] = value
+                if current_route.get("primary_model_id") == current_route.get("fallback_model_id"):
+                    current_route["fallback_model_id"] = None
+                next_settings["routes"][scene] = current_route
+
+        if next_settings != current_settings:
+            next_settings["config_version"] = int(current_settings.get("config_version", 1)) + 1
+
+        metadata = dict(kb.metadata or {})
+        metadata["ai_governance_settings"] = next_settings
+
+        updated_kb = await self.kb_repository.update_knowledge_base(
+            kb_id=kb_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            metadata=metadata,
+        )
+
+        if not updated_kb:
+            return None
+
+        return self._normalize_governance_settings(updated_kb.metadata)
+
     async def delete_knowledge_base(
         self,
         kb_id: str,
@@ -257,6 +496,50 @@ class KnowledgeBaseService:
         except Exception as e:
             logger.error(f"Failed to delete knowledge base: {e}")
             raise
+
+    def _normalize_settings(
+        self,
+        metadata: Optional[Dict[str, Any]],
+        key: str,
+        defaults: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        settings = {}
+        if isinstance(metadata, dict):
+            settings = metadata.get(key) if isinstance(metadata.get(key), dict) else {}
+        merged = dict(defaults)
+        merged.update(settings or {})
+        return merged
+
+    def _normalize_governance_settings(
+        self,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        settings = self._normalize_settings(
+            metadata=metadata,
+            key="ai_governance_settings",
+            defaults=DEFAULT_GOVERNANCE_SETTINGS,
+        )
+        default_routes = DEFAULT_GOVERNANCE_SETTINGS["routes"]
+        current_routes = settings.get("routes") if isinstance(settings.get("routes"), dict) else {}
+        normalized_routes: Dict[str, Dict[str, Any]] = {}
+        for scene, defaults in default_routes.items():
+            route = current_routes.get(scene) if isinstance(current_routes.get(scene), dict) else {}
+            merged_route = dict(defaults)
+            merged_route.update(route or {})
+            if merged_route.get("primary_model_id") == "":
+                merged_route["primary_model_id"] = None
+            if merged_route.get("fallback_model_id") == "":
+                merged_route["fallback_model_id"] = None
+            if merged_route.get("primary_model_id") == merged_route.get("fallback_model_id"):
+                merged_route["fallback_model_id"] = None
+            normalized_routes[scene] = merged_route
+
+        settings["routes"] = normalized_routes
+        settings["config_version"] = int(settings.get("config_version") or 1)
+        settings["low_quality_threshold"] = float(settings.get("low_quality_threshold") or 2.0)
+        if settings.get("budget_alert_usd") == "":
+            settings["budget_alert_usd"] = None
+        return settings
 
     async def list_knowledge_bases(
         self,

@@ -17,12 +17,58 @@ const normalizeSession = (raw) => ({
   lastMessageAt: raw.last_message_at || raw.lastMessageAt || null
 })
 
-const normalizeMessage = (raw) => ({
-  id: raw.id,
-  role: raw.role,
-  content: raw.content,
-  timestamp: raw.created_at || raw.createdAt || raw.timestamp || new Date().toISOString()
-})
+const parseCitations = (metadata = {}) => {
+  if (!metadata?.citations) return []
+  try {
+    const parsed = typeof metadata.citations === 'string'
+      ? JSON.parse(metadata.citations)
+      : metadata.citations
+    return Array.isArray(parsed) ? parsed : []
+  } catch (error) {
+    return []
+  }
+}
+
+const parseBoolean = (value) => {
+  if (typeof value === 'boolean') return value
+  return String(value).toLowerCase() === 'true'
+}
+
+const parseNumber = (value) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const parseFeedback = (metadata = {}) => {
+  if (!metadata) return null
+  const label = metadata.feedback_label || ''
+  const rating = parseNumber(metadata.feedback_rating)
+  const comment = metadata.feedback_comment || ''
+  const at = metadata.feedback_at || null
+  if (!label && rating === null && !comment) return null
+  return { label, rating, comment, at }
+}
+
+const normalizeMessage = (raw) => {
+  const metadata = raw.metadata || {}
+  return {
+    id: raw.id,
+    role: raw.role,
+    content: raw.content,
+    timestamp: raw.created_at || raw.createdAt || raw.timestamp || new Date().toISOString(),
+    metadata,
+    citations: parseCitations(metadata),
+    retrievalStatus: metadata?.retrieval_status || null,
+    knowledgeBaseName: metadata?.knowledge_base_name || null,
+    feedback: parseFeedback(metadata),
+    lowQuality: parseBoolean(metadata?.low_quality),
+    resolvedModelName: metadata?.resolved_model_name || metadata?.resolved_provider_model_id || null,
+    routeScene: metadata?.route_scene || null,
+    fallbackUsed: parseBoolean(metadata?.fallback_used),
+    totalTokens: parseNumber(metadata?.total_tokens),
+    costUsd: parseNumber(metadata?.cost_usd)
+  }
+}
 
 const buildTitle = (message) => {
   const text = (message || '').trim()
@@ -219,7 +265,11 @@ export const useChatStore = defineStore('chat', {
         role: 'assistant',
         content: '',
         streaming: true,
-        renderMarkdown
+        renderMarkdown,
+        metadata: {},
+        citations: [],
+        retrievalStatus: null,
+        knowledgeBaseName: null
       })
 
       this.touchSession(sessionId, message)
@@ -241,7 +291,25 @@ export const useChatStore = defineStore('chat', {
             const list = this.messagesBySession[sessionId] || []
             if (list.length === 0) return
             const lastMessage = list[list.length - 1]
-            lastMessage.content += chunk
+            if (chunk.content) {
+              lastMessage.content += chunk.content
+            }
+            if (chunk.messageId || chunk.message_id) {
+              lastMessage.id = chunk.messageId || chunk.message_id
+            }
+            if (chunk.metadata && Object.keys(chunk.metadata).length > 0) {
+              lastMessage.metadata = chunk.metadata
+              lastMessage.citations = parseCitations(chunk.metadata)
+              lastMessage.retrievalStatus = chunk.metadata.retrieval_status || null
+              lastMessage.knowledgeBaseName = chunk.metadata.knowledge_base_name || null
+              lastMessage.feedback = parseFeedback(chunk.metadata)
+              lastMessage.lowQuality = parseBoolean(chunk.metadata.low_quality)
+              lastMessage.resolvedModelName = chunk.metadata.resolved_model_name || chunk.metadata.resolved_provider_model_id || null
+              lastMessage.routeScene = chunk.metadata.route_scene || null
+              lastMessage.fallbackUsed = parseBoolean(chunk.metadata.fallback_used)
+              lastMessage.totalTokens = parseNumber(chunk.metadata.total_tokens)
+              lastMessage.costUsd = parseNumber(chunk.metadata.cost_usd)
+            }
             this.messagesBySession[sessionId] = list
           }
         )
@@ -252,6 +320,7 @@ export const useChatStore = defineStore('chat', {
           this.messagesBySession[sessionId] = list
         }
 
+        await this.fetchHistory(sessionId)
         await this.fetchSessions()
       } catch (error) {
         const list = this.messagesBySession[sessionId] || []

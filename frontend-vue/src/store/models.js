@@ -11,7 +11,15 @@ export const useModelsStore = defineStore('models', {
 
   getters: {
     enabledModels(state) {
-      return state.models.filter(m => m.enabled)
+      return state.models.filter(m => m.enabled && (m.model_type || 'llm') === 'llm')
+    },
+
+    enabledEmbeddingModels(state) {
+      return state.models.filter(m => m.enabled && (m.model_type || 'llm') === 'embedding')
+    },
+
+    enabledRerankModels(state) {
+      return state.models.filter(m => m.enabled && (m.model_type || 'llm') === 'rerank')
     },
 
     selectedModel(state) {
@@ -19,7 +27,7 @@ export const useModelsStore = defineStore('models', {
     },
 
     defaultModel(state) {
-      return state.models.find(m => m.is_default) || state.enabledModels[0] || null
+      return state.models.find(m => m.is_default && (m.model_type || 'llm') === 'llm') || this.enabledModels[0] || null
     }
   },
 

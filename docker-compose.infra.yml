@@ -1,0 +1,149 @@
+# ============================================
+# 基础设施编排
+# 包含数据库、缓存、搜索、网关与证书服务
+# 启动方式: docker compose -f docker-compose.infra.yml up -d
+# ============================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ai-platform-postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=ai_platform
+      - POSTGRES_PASSWORD=19980912
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    ports: []
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_connections=200
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=1310kB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-platform
+
+  redis:
+    image: docker.1ms.run/library/redis:alpine
+    container_name: ai-platform-redis
+    restart: always
+    ports: []
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-platform
+
+  elasticsearch:
+    image: docker.1ms.run/library/elasticsearch:8.13.0
+    container_name: ai-platform-elasticsearch
+    restart: always
+    ports: []
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - ai-platform
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: ai-platform-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file:
+      - .env
+    environment:
+      - DOMAIN=${DOMAIN}
+      - EMAIL=${EMAIL}
+      - LETSENCRYPT_STAGING=${LETSENCRYPT_STAGING:-0}
+    volumes:
+      - letsencrypt_data:/etc/letsencrypt:rw
+      - certbot_webroot:/var/www/certbot:rw
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-platform
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: ai-platform-certbot
+    restart: always
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done;'"
+    volumes:
+      - letsencrypt_data:/etc/letsencrypt:rw
+      - certbot_webroot:/var/www/certbot:rw
+    networks:
+      - ai-platform
+
+volumes:
+  postgres_data:
+    name: ai-platform_postgres_data
+    driver: local
+  redis_data:
+    name: ai-platform_redis_data
+    driver: local
+  es_data:
+    name: ai-platform_es_data
+    driver: local
+  letsencrypt_data:
+    name: ai-platform_letsencrypt_data
+    driver: local
+  certbot_webroot:
+    name: ai-platform_certbot_webroot
+    driver: local
+
+networks:
+  ai-platform:
+    name: ai-platform_ai-platform
+    driver: bridge

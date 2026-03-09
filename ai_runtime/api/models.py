@@ -57,13 +57,14 @@ class LLMModelCreate(BaseModel):
     """Create LLM model request"""
     name: str = Field(..., min_length=1, max_length=100)
     display_name: str = Field(..., min_length=1, max_length=255)
-    provider: str = Field(..., pattern="^(openai|deepseek|local|mock)$")
+    provider: str = Field(..., pattern="^(openai|deepseek|local|mock|jina)$")
     model_id: str = Field(..., min_length=1, max_length=100)
     api_base: Optional[str] = Field(None, max_length=500)
     api_key: Optional[str] = None
     config: Optional[LLMModelConfig] = Field(default_factory=LLMModelConfig)
     enabled: bool = Field(default=True)
     is_default: bool = Field(default=False)
+    model_type: str = Field(default="llm", pattern="^(llm|embedding|rerank)$")
 
 
 class LLMModelUpdate(BaseModel):
@@ -74,6 +75,7 @@ class LLMModelUpdate(BaseModel):
     config: Optional[LLMModelConfig] = None
     enabled: Optional[bool] = None
     is_default: Optional[bool] = None
+    model_type: Optional[str] = Field(None, pattern="^(llm|embedding|rerank)$")
 
 
 class LLMModelResponse(BaseModel):
@@ -83,6 +85,7 @@ class LLMModelResponse(BaseModel):
     display_name: str
     provider: str
     model_id: str
+    model_type: str
     api_base: Optional[str]
     has_api_key: bool
     config: Dict[str, Any]
@@ -118,7 +121,7 @@ async def list_models(
     try:
         query = """
             SELECT
-                id, name, display_name, provider, model_id,
+                id, name, display_name, provider, model_id, model_type,
                 api_base, api_key_encrypted, config, enabled, is_default,
                 created_at, updated_at
             FROM llm_models
@@ -141,6 +144,7 @@ async def list_models(
                 display_name=row['display_name'],
                 provider=row['provider'],
                 model_id=row['model_id'],
+                model_type=row.get('model_type') or 'llm',
                 api_base=row['api_base'],
                 has_api_key=bool(row['api_key_encrypted']),
                 config=_deserialize_config(row['config']),
@@ -180,7 +184,7 @@ async def get_model(
     try:
         query = """
             SELECT
-                id, name, display_name, provider, model_id,
+                id, name, display_name, provider, model_id, model_type,
                 api_base, api_key_encrypted, config, enabled, is_default,
                 created_at, updated_at
             FROM llm_models
@@ -201,6 +205,7 @@ async def get_model(
             display_name=row['display_name'],
             provider=row['provider'],
             model_id=row['model_id'],
+            model_type=row.get('model_type') or 'llm',
             api_base=row['api_base'],
             has_api_key=bool(row['api_key_encrypted']),
             config=_deserialize_config(row['config']),
@@ -250,12 +255,12 @@ async def create_model(
 
         query = """
             INSERT INTO llm_models (
-                name, display_name, provider, model_id,
+                name, display_name, provider, model_id, model_type,
                 api_base, api_key_encrypted, config, enabled, is_default,
                 tenant_id, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING
-                id, name, display_name, provider, model_id,
+                id, name, display_name, provider, model_id, model_type,
                 api_base, api_key_encrypted, config, enabled, is_default,
                 created_at, updated_at
         """
@@ -268,6 +273,7 @@ async def create_model(
             model.display_name,
             model.provider,
             model.model_id,
+            model.model_type,
             model.api_base,
             api_key_encrypted,
             config_payload,
@@ -283,6 +289,7 @@ async def create_model(
             display_name=row['display_name'],
             provider=row['provider'],
             model_id=row['model_id'],
+            model_type=row.get('model_type') or 'llm',
             api_base=row['api_base'],
             has_api_key=bool(row['api_key_encrypted']),
             config=_deserialize_config(row['config']),
@@ -356,6 +363,11 @@ async def update_model(
             params.append(model.is_default)
             param_count += 1
 
+        if model.model_type is not None:
+            updates.append(f"model_type = ${param_count}")
+            params.append(model.model_type)
+            param_count += 1
+
         if not updates:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -371,7 +383,7 @@ async def update_model(
             SET {', '.join(updates)}
             WHERE id = ${param_count} AND (tenant_id = ${param_count + 1} OR tenant_id IS NULL)
             RETURNING
-                id, name, display_name, provider, model_id,
+                id, name, display_name, provider, model_id, model_type,
                 api_base, api_key_encrypted, config, enabled, is_default,
                 created_at, updated_at
         """
@@ -390,6 +402,7 @@ async def update_model(
             display_name=row['display_name'],
             provider=row['provider'],
             model_id=row['model_id'],
+            model_type=row.get('model_type') or 'llm',
             api_base=row['api_base'],
             has_api_key=bool(row['api_key_encrypted']),
             config=_deserialize_config(row['config']),

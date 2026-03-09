@@ -431,6 +431,149 @@ class DocumentRepository:
 
         return results
 
+    async def search_by_keyword(
+        self,
+        tenant_id: str,
+        query: str,
+        user_id: Optional[str] = None,
+        top_k: int = 5,
+        knowledge_base_id: Optional[str] = None,
+        access_level: Optional[AccessLevel] = None,
+        source_type: Optional[SourceType] = None,
+    ) -> List[tuple[Document, float]]:
+        """
+        基于关键词搜索文档
+
+        Args:
+            tenant_id: 租户ID
+            query: 查询关键词
+            user_id: 用户ID
+            top_k: 返回结果数量
+            knowledge_base_id: 筛选知识库ID
+            access_level: 筛选访问级别
+            source_type: 筛选来源类型
+
+        Returns:
+            [(文档, 相似度分数), ...]
+        """
+        conditions = ["tenant_id = $1"]
+        params = [tenant_id]
+        param_idx = 2
+
+        # 权限过滤
+        if access_level:
+            conditions.append(f"access_level = ${param_idx}")
+            params.append(access_level.value)
+            param_idx += 1
+        else:
+            conditions.append(f"(access_level = 'tenant' OR (access_level = 'user' AND user_id = ${param_idx}))")
+            params.append(user_id)
+            param_idx += 1
+
+        # 来源类型过滤
+        if source_type:
+            conditions.append(f"source_type = ${param_idx}")
+            params.append(source_type.value)
+            param_idx += 1
+
+        # 知识库过滤
+        if knowledge_base_id:
+            conditions.append(f"knowledge_base_id = ${param_idx}")
+            params.append(knowledge_base_id)
+            param_idx += 1
+
+        # 查询条件
+        query_param_index = param_idx
+        conditions.append(f"(title ILIKE ${query_param_index} OR content ILIKE ${query_param_index})")
+        params.append(f"%{query}%")
+        param_idx += 1
+
+        where_clause = " AND ".join(conditions)
+
+        query_sql = f"""
+            SELECT *,
+                CASE
+                    WHEN title ILIKE ${query_param_index} THEN 1.0
+                    WHEN content ILIKE ${query_param_index} THEN 0.6
+                    ELSE 0.0
+                END AS similarity
+            FROM documents
+            WHERE {where_clause}
+            ORDER BY similarity DESC, updated_at DESC
+            LIMIT ${param_idx}
+        """
+
+        params.append(top_k)
+
+        async with self.db_pool.acquire() as conn:
+            rows = await conn.fetch(query_sql, *params)
+
+        results = []
+        for row in rows:
+            doc = self._row_to_document(row)
+            score = float(row['similarity']) if row['similarity'] is not None else 0.0
+            results.append((doc, min(score, 1.0)))
+
+        return results
+
+    async def find_exact_duplicate_documents(
+        self,
+        tenant_id: str,
+        knowledge_base_id: str,
+        content_hash: str,
+        content: str,
+        user_id: Optional[str] = None,
+        limit: int = 5,
+    ) -> List[Document]:
+        """查询知识库内内容完全相同的文档。"""
+        query = """
+            SELECT *
+            FROM documents
+            WHERE tenant_id = $1
+              AND knowledge_base_id = $2
+              AND (
+                    access_level = 'tenant'
+                    OR (access_level = 'user' AND user_id = $3)
+              )
+              AND (
+                    ($4 <> '' AND metadata->>'ai_content_hash' = $4)
+                    OR content = $5
+              )
+            ORDER BY updated_at DESC
+            LIMIT $6
+        """
+
+        async with self.db_pool.acquire() as conn:
+            rows = await conn.fetch(query, tenant_id, knowledge_base_id, user_id, content_hash, content, limit)
+
+        return [self._row_to_document(row) for row in rows]
+
+    async def list_documents_for_duplicate_check(
+        self,
+        tenant_id: str,
+        knowledge_base_id: str,
+        user_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Document]:
+        """获取知识库内用于相似文档检测的候选文档。"""
+        query = """
+            SELECT *
+            FROM documents
+            WHERE tenant_id = $1
+              AND knowledge_base_id = $2
+              AND (
+                    access_level = 'tenant'
+                    OR (access_level = 'user' AND user_id = $3)
+              )
+            ORDER BY updated_at DESC
+            LIMIT $4
+        """
+
+        async with self.db_pool.acquire() as conn:
+            rows = await conn.fetch(query, tenant_id, knowledge_base_id, user_id, limit)
+
+        return [self._row_to_document(row) for row in rows]
+
     def _row_to_document(self, row) -> Document:
         """将数据库行转换为Document对象"""
         metadata = row['metadata']

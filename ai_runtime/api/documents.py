@@ -10,6 +10,8 @@ from core.models.knowledge_base import (
     UpdateDocumentRequest,
     DocumentResponse,
     ListDocumentsResponse,
+    DocumentPreviewResponse,
+    DocumentSegmentsResponse,
     BatchCreateRequest,
     BatchCreateResponse,
     SearchDocumentsRequest,
@@ -19,6 +21,7 @@ from core.models.knowledge_base import (
     AccessLevel,
 )
 from core.services.document_service import DocumentService
+from core.services.document_service import DuplicateDocumentError
 from core.services.knowledge_base_service import KnowledgeBaseService
 from core.dependencies import (
     get_document_service,
@@ -64,6 +67,8 @@ async def create_document(
         return DocumentResponse(**doc.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except DuplicateDocumentError as e:
+        raise HTTPException(status_code=409, detail=e.payload)
     except QuotaError as e:
         raise convert_quota_error_to_http_exception(e)
     except Exception as e:
@@ -89,6 +94,50 @@ async def get_document(
         raise HTTPException(status_code=404, detail="Document not found or access denied")
 
     return DocumentResponse(**doc.to_dict())
+
+
+@router.get("/documents/{document_id}/preview", response_model=DocumentPreviewResponse)
+async def get_document_preview(
+    document_id: str,
+    max_chars: int = Query(4000, ge=100, le=20000, description="预览字符数上限"),
+    doc_service: DocumentService = Depends(get_document_service),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    """获取文档预览内容"""
+    result = await doc_service.get_document_preview(
+        document_id=document_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        max_chars=max_chars,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Document not found or access denied")
+    return DocumentPreviewResponse(**result)
+
+
+@router.get("/documents/{document_id}/segments", response_model=DocumentSegmentsResponse)
+async def get_document_segments(
+    document_id: str,
+    chunk_size: Optional[int] = Query(None, ge=50, le=2000, description="覆盖分段大小"),
+    chunk_overlap: Optional[int] = Query(None, ge=0, le=500, description="覆盖重叠大小"),
+    max_segments: int = Query(200, ge=1, le=1000, description="最多返回分段数"),
+    doc_service: DocumentService = Depends(get_document_service),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    """获取文档分段详情"""
+    result = await doc_service.get_document_segments(
+        document_id=document_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        max_segments=max_segments,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Document not found or access denied")
+    return DocumentSegmentsResponse(**result)
 
 
 @router.put("/documents/{document_id}", response_model=DocumentResponse)
@@ -195,6 +244,7 @@ async def search_documents(
         user_id=user_id,
         query=request.query,
         top_k=request.top_k,
+        knowledge_base_id=request.knowledge_base_id,
         access_level=request.access_level,
         source_type=request.source_type,
     )
@@ -218,6 +268,7 @@ async def upload_file(
     knowledge_base_id: str = Form(..., description="所属知识库ID"),
     access_level: AccessLevel = Form(AccessLevel.TENANT, description="访问权限"),
     auto_index: bool = Form(True, description="是否自动索引"),
+    skip_duplicate_check: bool = Form(False, description="是否跳过重复检测"),
     doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
@@ -226,10 +277,14 @@ async def upload_file(
     上传文件并创建文档
 
     支持的文件类型：
-    - 文本文件：.txt
-    - Markdown：.md
+    - 文本/日志：.txt, .text, .log
+    - Markdown：.md, .markdown
     - PDF：.pdf
     - HTML：.html, .htm
+    - 表格：.csv, .tsv, .xlsx
+    - 文档：.docx, .rtf
+    - 演示：.pptx
+    - 数据：.json, .jsonl, .yaml, .yml, .xml
 
     - **file**: 上传的文件
     - **knowledge_base_id**: 所属知识库ID
@@ -244,10 +299,13 @@ async def upload_file(
             knowledge_base_id=knowledge_base_id,
             access_level=access_level,
             auto_index=auto_index,
+            skip_duplicate_check=skip_duplicate_check,
         )
         return DocumentResponse(**doc.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except DuplicateDocumentError as e:
+        raise HTTPException(status_code=409, detail=e.payload)
     except Exception as e:
         logger.error(f"Failed to upload file: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -259,6 +317,7 @@ async def create_from_url(
     knowledge_base_id: str = Form(..., description="所属知识库ID"),
     access_level: AccessLevel = Form(AccessLevel.TENANT, description="访问权限"),
     auto_index: bool = Form(True, description="是否自动索引"),
+    skip_duplicate_check: bool = Form(False, description="是否跳过重复检测"),
     doc_service: DocumentService = Depends(get_document_service),
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
@@ -279,10 +338,13 @@ async def create_from_url(
             knowledge_base_id=knowledge_base_id,
             access_level=access_level,
             auto_index=auto_index,
+            skip_duplicate_check=skip_duplicate_check,
         )
         return DocumentResponse(**doc.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except DuplicateDocumentError as e:
+        raise HTTPException(status_code=409, detail=e.payload)
     except Exception as e:
         logger.error(f"Failed to create from URL: {e}")
         raise HTTPException(status_code=500, detail=str(e))

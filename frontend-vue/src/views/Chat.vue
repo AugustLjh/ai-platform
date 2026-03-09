@@ -46,6 +46,35 @@
         </div>
       </div>
 
+      <div class="governance-strip" v-if="usageStats || lowQualitySamples.length > 0">
+        <div class="governance-card" v-if="usageStats">
+          <div class="governance-card-label">当前范围成本</div>
+          <div class="governance-card-value">${{ formatCurrency(usageStats.current_user?.total_cost) }}</div>
+          <div class="governance-card-meta">
+            <span>{{ formatTokenCount(usageStats.current_user?.total_tokens) }} tokens</span>
+            <span>{{ usageStats.current_user?.request_count || 0 }} 次回答</span>
+          </div>
+        </div>
+        <div class="governance-card" v-if="usageStats">
+          <div class="governance-card-label">租户累计成本</div>
+          <div class="governance-card-value">${{ formatCurrency(usageStats.current_tenant?.total_cost) }}</div>
+          <div class="governance-card-meta">
+            <span>{{ formatTokenCount(usageStats.current_tenant?.total_tokens) }} tokens</span>
+            <span>{{ usageStats.current_tenant?.request_count || 0 }} 次回答</span>
+          </div>
+        </div>
+        <div class="governance-card governance-samples" v-if="lowQualitySamples.length > 0">
+          <div class="governance-card-label">低质量样本</div>
+          <div class="sample-item" v-for="sample in lowQualitySamples.slice(0, 3)" :key="sample.message_id">
+            <div class="sample-head">
+              <span>{{ sample.feedback_label === 'dislike' ? '差评' : '低分' }}</span>
+              <span>{{ formatTime(sample.created_at) }}</span>
+            </div>
+            <div class="sample-content">{{ sample.content }}</div>
+          </div>
+        </div>
+      </div>
+
       <div class="messages-container" ref="messagesContainer" @click="handleMessageClick">
         <div v-if="!canChat" class="model-alert">
           <div class="alert-icon">⚠️</div>
@@ -123,9 +152,66 @@
                 </template>
                 <span v-if="message.streaming" class="stream-cursor">▍</span>
               </div>
+              <div
+                v-if="message.role === 'assistant' && message.retrievalStatus === 'no_hits'"
+                class="retrieval-banner"
+              >
+                <span class="retrieval-banner-label">知识库未命中</span>
+                <span v-if="message.knowledgeBaseName">{{ message.knowledgeBaseName }}</span>
+              </div>
+              <div
+                v-if="message.role === 'assistant' && message.citations && message.citations.length > 0"
+                class="citation-list"
+              >
+                <div class="citation-title">引用来源</div>
+                <div
+                  v-for="(citation, citationIndex) in message.citations"
+                  :key="`${message.id || index}-${citation.document_id || citationIndex}`"
+                  class="citation-card"
+                >
+                  <div class="citation-head">
+                    <strong>{{ citation.title || '未命名文档' }}</strong>
+                    <span v-if="Number.isFinite(citation.score)">相关度 {{ citation.score.toFixed(4) }}</span>
+                  </div>
+                  <div v-if="citation.source" class="citation-source">{{ citation.source }}</div>
+                  <div
+                    v-for="segment in citation.matched_segments || []"
+                    :key="`${citation.document_id}-${segment.segment_index}`"
+                    class="citation-segment"
+                  >
+                    <div class="citation-segment-meta">
+                      <span>#{{ segment.segment_index }}</span>
+                      <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
+                    </div>
+                    <div class="citation-segment-content">{{ segment.content }}</div>
+                  </div>
+                </div>
+              </div>
               <div v-if="!message.streaming && message.role === 'assistant'" class="message-footer">
-                <div class="message-time">{{ formatTime(message.timestamp) }}</div>
+                <div class="message-metrics">
+                  <span v-if="message.routeScene" class="meta-chip">{{ message.routeScene }}</span>
+                  <span v-if="message.resolvedModelName" class="meta-chip">{{ message.resolvedModelName }}</span>
+                  <span v-if="message.fallbackUsed" class="meta-chip warning">已回退</span>
+                  <span v-if="message.totalTokens" class="meta-chip">{{ formatTokenCount(message.totalTokens) }} tokens</span>
+                  <span v-if="message.costUsd !== null && message.costUsd !== undefined" class="meta-chip">${{ formatCurrency(message.costUsd) }}</span>
+                </div>
                 <div class="message-actions">
+                  <button
+                    class="action-btn"
+                    :class="{ active: message.feedback?.label === 'like' }"
+                    @click="submitMessageFeedback(message, 'like')"
+                    title="有帮助"
+                  >
+                    <span>👍</span>
+                  </button>
+                  <button
+                    class="action-btn"
+                    :class="{ active: message.feedback?.label === 'dislike' }"
+                    @click="submitMessageFeedback(message, 'dislike')"
+                    title="质量较差"
+                  >
+                    <span>👎</span>
+                  </button>
                   <button class="action-btn" @click="copyMessage(message.content)" title="复制">
                     <span>📋</span>
                   </button>
@@ -133,6 +219,10 @@
                     <span>🔄</span>
                   </button>
                 </div>
+                <div class="message-time">{{ formatTime(message.timestamp) }}</div>
+              </div>
+              <div v-if="message.feedback?.comment" class="feedback-note">
+                反馈备注：{{ message.feedback.comment }}
               </div>
             </div>
           </div>
@@ -185,6 +275,7 @@
 <script setup>
 import { ref, nextTick, onMounted, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { chatAPI } from '@/api'
 import { useChatStore } from '@/store/chat'
 import { useModelsStore } from '@/store/models'
 import { useKnowledgeStore } from '@/store/knowledge'
@@ -202,6 +293,8 @@ const isComposing = ref(false)
 const error = ref('')
 const messagesContainer = ref(null)
 const textareaRef = ref(null)
+const usageStats = ref(null)
+const lowQualitySamples = ref([])
 
 const messages = computed(() => chatStore.currentSession?.messages || [])
 
@@ -227,6 +320,20 @@ const selectedKnowledgeBaseId = computed({
     })
   }
 })
+
+const refreshGovernanceData = async () => {
+  try {
+    const knowledgeBaseId = selectedKnowledgeBaseId.value || ''
+    const [{ data: statsData }, { data: sampleData }] = await Promise.all([
+      chatAPI.getUsageStats(knowledgeBaseId),
+      chatAPI.getLowQualitySamples({ knowledgeBaseId, limit: 10 })
+    ])
+    usageStats.value = statsData
+    lowQualitySamples.value = sampleData.samples || []
+  } catch (err) {
+    console.error('Failed to load governance data:', err)
+  }
+}
 
 onMounted(async () => {
   try {
@@ -260,6 +367,8 @@ onMounted(async () => {
   if (requestedSession && chatStore.sessions.some((session) => session.id === requestedSession)) {
     chatStore.loadSession(requestedSession)
   }
+
+  await refreshGovernanceData()
 })
 
 watch(
@@ -278,6 +387,13 @@ watch(
     if (sessionId && chatStore.sessions.some((session) => session.id === sessionId)) {
       chatStore.loadSession(sessionId)
     }
+  }
+)
+
+watch(
+  () => selectedKnowledgeBaseId.value,
+  () => {
+    refreshGovernanceData()
   }
 )
 
@@ -301,8 +417,9 @@ const handleSendMessage = async () => {
 
   try {
     await chatStore.sendMessage(userMessage, {
-      model: selectedModel.value?.model_id
+      model: selectedModel.value?.id
     })
+    await refreshGovernanceData()
     scrollToBottom()
   } catch (err) {
     error.value = err.response?.data?.error || '发送消息失败，请重试'
@@ -356,6 +473,27 @@ const regenerateMessage = (index) => {
   console.log('Regenerate message at index:', index)
 }
 
+const submitMessageFeedback = async (message, label) => {
+  if (!message?.id) {
+    return
+  }
+
+  try {
+    const comment = label === 'dislike'
+      ? (window.prompt('记录本次回答的问题（可选）：', message.feedback?.comment || '') || '')
+      : ''
+    await chatAPI.saveMessageFeedback(message.id, {
+      label,
+      rating: label === 'like' ? 5 : 1,
+      comment
+    })
+    await chatStore.fetchHistory(chatStore.currentSessionId)
+    await refreshGovernanceData()
+  } catch (err) {
+    error.value = err.response?.data?.error || err.response?.data?.detail || '保存反馈失败'
+  }
+}
+
 const autoResize = () => {
   if (textareaRef.value) {
     textareaRef.value.style.height = 'auto'
@@ -379,6 +517,19 @@ const formatTime = (date) => {
   return `${hours}:${minutes}`
 }
 
+const formatCurrency = (value) => {
+  const parsed = Number(value || 0)
+  return parsed.toFixed(4)
+}
+
+const formatTokenCount = (value) => {
+  const parsed = Number(value || 0)
+  if (parsed >= 1000) {
+    return `${(parsed / 1000).toFixed(1)}k`
+  }
+  return `${parsed}`
+}
+
 </script>
 
 <style scoped>
@@ -392,11 +543,159 @@ const formatTime = (date) => {
   overflow: hidden;
 }
 
+.governance-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 12px 18px 0;
+  background: var(--gpt-bg);
+}
+
+.governance-card {
+  border: 1px solid #dbe4ee;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.governance-card-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.governance-card-value {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.governance-card-meta {
+  margin-top: 8px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.governance-samples {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sample-item {
+  padding-top: 10px;
+  border-top: 1px dashed #dbe4ee;
+}
+
+.sample-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.sample-content {
+  margin-top: 6px;
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .message-text {
   display: flex;
   flex-direction: column;
   white-space: normal;
   word-break: break-word;
+}
+
+.retrieval-banner {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #9a3412;
+  font-size: 12px;
+  width: fit-content;
+}
+
+.retrieval-banner-label {
+  font-weight: 700;
+}
+
+.citation-list {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.citation-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.citation-card {
+  background: #f8fafc;
+  border: 1px solid #dbe4ee;
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.citation-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.citation-source {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.citation-segment {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #cbd5e1;
+}
+
+.citation-segment-meta {
+  display: flex;
+  gap: 10px;
+  color: #64748b;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.citation-segment-content {
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .plain-text {
@@ -411,6 +710,37 @@ const formatTime = (date) => {
   border-radius: 10px;
   border: 1px solid #e5e7eb;
   margin: 0;
+}
+
+.message-metrics {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.meta-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.meta-chip.warning {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.feedback-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .markdown {
@@ -1073,6 +1403,11 @@ const formatTime = (date) => {
 .action-btn:hover {
   background: #e5e7eb;
   color: #111827;
+}
+
+.action-btn.active {
+  background: #e0f2fe;
+  color: #0369a1;
 }
 
 /* 打字指示器 */
