@@ -3,6 +3,7 @@ import Login from '../views/Login.vue'
 import Register from '../views/Register.vue'
 import Chat from '../views/Chat.vue'
 import History from '../views/History.vue'
+import CostStats from '../views/CostStats.vue'
 import ModelsManage from '../views/ModelsManage.vue'
 import Profile from '../views/Profile.vue'
 import Settings from '../views/Settings.vue'
@@ -29,6 +30,12 @@ const routes = [
     path: '/history',
     name: 'History',
     component: History,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/costs',
+    name: 'CostStats',
+    component: CostStats,
     meta: { requiresAuth: true }
   },
   {

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { chatAPI } from '@/api'
-import { isPlainMarkdownRequest } from '@/utils/markdown'
+import { isPlainMarkdownRequest, renderMarkdown } from '@/utils/markdown'
 
 try {
   localStorage.removeItem('chat_sessions')
@@ -49,13 +49,23 @@ const parseFeedback = (metadata = {}) => {
   return { label, rating, comment, at }
 }
 
+const buildMessageHtml = (role, content, shouldRenderMarkdown = true) => {
+  if (role !== 'assistant' || shouldRenderMarkdown === false) {
+    return ''
+  }
+  return renderMarkdown(content || '')
+}
+
 const normalizeMessage = (raw) => {
   const metadata = raw.metadata || {}
+  const shouldRenderMarkdown = raw.role === 'assistant' ? raw.renderMarkdown !== false : false
   return {
     id: raw.id,
     role: raw.role,
     content: raw.content,
     timestamp: raw.created_at || raw.createdAt || raw.timestamp || new Date().toISOString(),
+    renderMarkdown: shouldRenderMarkdown,
+    htmlContent: buildMessageHtml(raw.role, raw.content, shouldRenderMarkdown),
     metadata,
     citations: parseCitations(metadata),
     retrievalStatus: metadata?.retrieval_status || null,
@@ -78,6 +88,111 @@ const buildTitle = (message) => {
     return chars.slice(0, 30).join('') + '...'
   }
   return text
+}
+
+const streamControllers = new Map()
+
+const getStreamController = (sessionId) => {
+  let controller = streamControllers.get(sessionId)
+  if (!controller) {
+    controller = {
+      queue: '',
+      pumping: false,
+      timer: null,
+      waiters: []
+    }
+    streamControllers.set(sessionId, controller)
+  }
+  return controller
+}
+
+const resolveStreamWaiters = (controller) => {
+  if (controller.queue || controller.pumping) return
+  const waiters = controller.waiters.splice(0)
+  waiters.forEach((resolve) => resolve())
+}
+
+const getStreamSliceSize = (pendingLength) => {
+  if (pendingLength > 1200) return 96
+  if (pendingLength > 600) return 64
+  if (pendingLength > 240) return 32
+  if (pendingLength > 80) return 16
+  return 6
+}
+
+const pumpStreamContent = (store, sessionId) => {
+  const controller = getStreamController(sessionId)
+  if (controller.pumping) return
+
+  const step = () => {
+    const current = streamControllers.get(sessionId)
+    if (!current) return
+
+    const list = store.messagesBySession[sessionId] || []
+    const lastMessage = list[list.length - 1]
+
+    if (!lastMessage) {
+      current.queue = ''
+      current.pumping = false
+      current.timer = null
+      resolveStreamWaiters(current)
+      return
+    }
+
+    if (!current.queue) {
+      current.pumping = false
+      current.timer = null
+      resolveStreamWaiters(current)
+      return
+    }
+
+    const sliceSize = getStreamSliceSize(current.queue.length)
+    lastMessage.content += current.queue.slice(0, sliceSize)
+    current.queue = current.queue.slice(sliceSize)
+
+    if (!current.queue) {
+      current.pumping = false
+      current.timer = null
+      resolveStreamWaiters(current)
+      return
+    }
+
+    current.timer = setTimeout(step, 16)
+  }
+
+  controller.pumping = true
+  controller.timer = setTimeout(step, 0)
+}
+
+const enqueueStreamContent = (store, sessionId, content) => {
+  if (!content) return
+  const controller = getStreamController(sessionId)
+  controller.queue += content
+  pumpStreamContent(store, sessionId)
+}
+
+const waitForStreamDrain = (sessionId) => {
+  const controller = getStreamController(sessionId)
+  if (!controller.queue && !controller.pumping) {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    controller.waiters.push(resolve)
+  })
+}
+
+const resetStreamController = (sessionId) => {
+  const controller = streamControllers.get(sessionId)
+  if (!controller) return
+  if (controller.timer) {
+    clearTimeout(controller.timer)
+  }
+  controller.queue = ''
+  controller.pumping = false
+  controller.timer = null
+  resolveStreamWaiters(controller)
+  streamControllers.delete(sessionId)
 }
 
 export const useChatStore = defineStore('chat', {
@@ -266,6 +381,7 @@ export const useChatStore = defineStore('chat', {
         content: '',
         streaming: true,
         renderMarkdown,
+        htmlContent: '',
         metadata: {},
         citations: [],
         retrievalStatus: null,
@@ -292,7 +408,7 @@ export const useChatStore = defineStore('chat', {
             if (list.length === 0) return
             const lastMessage = list[list.length - 1]
             if (chunk.content) {
-              lastMessage.content += chunk.content
+              enqueueStreamContent(this, sessionId, chunk.content)
             }
             if (chunk.messageId || chunk.message_id) {
               lastMessage.id = chunk.messageId || chunk.message_id
@@ -314,20 +430,30 @@ export const useChatStore = defineStore('chat', {
           }
         )
 
+        await waitForStreamDrain(sessionId)
+
         const list = this.messagesBySession[sessionId] || []
         if (list.length > 0) {
           list[list.length - 1].streaming = false
+          list[list.length - 1].htmlContent = buildMessageHtml(
+            list[list.length - 1].role,
+            list[list.length - 1].content,
+            list[list.length - 1].renderMarkdown
+          )
           this.messagesBySession[sessionId] = list
         }
+        resetStreamController(sessionId)
 
         await this.fetchHistory(sessionId)
         await this.fetchSessions()
       } catch (error) {
+        resetStreamController(sessionId)
         const list = this.messagesBySession[sessionId] || []
         if (list.length > 0) {
           list[list.length - 1].content = 'Error: ' + error.message
           list[list.length - 1].streaming = false
           list[list.length - 1].error = true
+          list[list.length - 1].htmlContent = ''
           this.messagesBySession[sessionId] = list
         }
         throw error

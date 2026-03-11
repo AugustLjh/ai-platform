@@ -46,35 +46,6 @@
         </div>
       </div>
 
-      <div class="governance-strip" v-if="usageStats || lowQualitySamples.length > 0">
-        <div class="governance-card" v-if="usageStats">
-          <div class="governance-card-label">当前范围成本</div>
-          <div class="governance-card-value">${{ formatCurrency(usageStats.current_user?.total_cost) }}</div>
-          <div class="governance-card-meta">
-            <span>{{ formatTokenCount(usageStats.current_user?.total_tokens) }} tokens</span>
-            <span>{{ usageStats.current_user?.request_count || 0 }} 次回答</span>
-          </div>
-        </div>
-        <div class="governance-card" v-if="usageStats">
-          <div class="governance-card-label">租户累计成本</div>
-          <div class="governance-card-value">${{ formatCurrency(usageStats.current_tenant?.total_cost) }}</div>
-          <div class="governance-card-meta">
-            <span>{{ formatTokenCount(usageStats.current_tenant?.total_tokens) }} tokens</span>
-            <span>{{ usageStats.current_tenant?.request_count || 0 }} 次回答</span>
-          </div>
-        </div>
-        <div class="governance-card governance-samples" v-if="lowQualitySamples.length > 0">
-          <div class="governance-card-label">低质量样本</div>
-          <div class="sample-item" v-for="sample in lowQualitySamples.slice(0, 3)" :key="sample.message_id">
-            <div class="sample-head">
-              <span>{{ sample.feedback_label === 'dislike' ? '差评' : '低分' }}</span>
-              <span>{{ formatTime(sample.created_at) }}</span>
-            </div>
-            <div class="sample-content">{{ sample.content }}</div>
-          </div>
-        </div>
-      </div>
-
       <div class="messages-container" ref="messagesContainer" @click="handleMessageClick">
         <div v-if="!canChat" class="model-alert">
           <div class="alert-icon">⚠️</div>
@@ -137,7 +108,12 @@
               </div>
               <div class="message-text">
                 <template v-if="message.role === 'assistant' && message.renderMarkdown !== false">
-                  <div class="markdown prose markdown-new-styling wrap-break-word light" v-html="renderMarkdown(message.content)"></div>
+                  <div v-if="message.streaming" class="streaming-text">{{ message.content }}</div>
+                  <div
+                    v-else
+                    class="markdown prose markdown-new-styling wrap-break-word light"
+                    v-html="message.htmlContent"
+                  ></div>
                 </template>
                 <template v-else-if="message.role === 'assistant' && message.renderMarkdown === false">
                   <pre class="plain-markdown">{{ message.content }}</pre>
@@ -279,7 +255,6 @@ import { chatAPI } from '@/api'
 import { useChatStore } from '@/store/chat'
 import { useModelsStore } from '@/store/models'
 import { useKnowledgeStore } from '@/store/knowledge'
-import { renderMarkdown } from '@/utils/markdown'
 
 const router = useRouter()
 const route = useRoute()
@@ -293,10 +268,13 @@ const isComposing = ref(false)
 const error = ref('')
 const messagesContainer = ref(null)
 const textareaRef = ref(null)
-const usageStats = ref(null)
-const lowQualitySamples = ref([])
 
 const messages = computed(() => chatStore.currentSession?.messages || [])
+const latestMessageSignature = computed(() => {
+  const lastMessage = messages.value[messages.value.length - 1]
+  if (!lastMessage) return ''
+  return `${messages.value.length}:${lastMessage.role}:${lastMessage.streaming ? 1 : 0}:${lastMessage.content?.length || 0}`
+})
 
 const enabledModels = computed(() => modelsStore.enabledModels)
 const selectedModelId = computed({
@@ -320,20 +298,6 @@ const selectedKnowledgeBaseId = computed({
     })
   }
 })
-
-const refreshGovernanceData = async () => {
-  try {
-    const knowledgeBaseId = selectedKnowledgeBaseId.value || ''
-    const [{ data: statsData }, { data: sampleData }] = await Promise.all([
-      chatAPI.getUsageStats(knowledgeBaseId),
-      chatAPI.getLowQualitySamples({ knowledgeBaseId, limit: 10 })
-    ])
-    usageStats.value = statsData
-    lowQualitySamples.value = sampleData.samples || []
-  } catch (err) {
-    console.error('Failed to load governance data:', err)
-  }
-}
 
 onMounted(async () => {
   try {
@@ -368,7 +332,6 @@ onMounted(async () => {
     chatStore.loadSession(requestedSession)
   }
 
-  await refreshGovernanceData()
 })
 
 watch(
@@ -377,7 +340,7 @@ watch(
 )
 
 watch(
-  () => messages.value.map((msg) => msg.content).join(''),
+  () => latestMessageSignature.value,
   () => scrollToBottom()
 )
 
@@ -387,13 +350,6 @@ watch(
     if (sessionId && chatStore.sessions.some((session) => session.id === sessionId)) {
       chatStore.loadSession(sessionId)
     }
-  }
-)
-
-watch(
-  () => selectedKnowledgeBaseId.value,
-  () => {
-    refreshGovernanceData()
   }
 )
 
@@ -419,7 +375,6 @@ const handleSendMessage = async () => {
     await chatStore.sendMessage(userMessage, {
       model: selectedModel.value?.id
     })
-    await refreshGovernanceData()
     scrollToBottom()
   } catch (err) {
     error.value = err.response?.data?.error || '发送消息失败，请重试'
@@ -488,7 +443,6 @@ const submitMessageFeedback = async (message, label) => {
       comment
     })
     await chatStore.fetchHistory(chatStore.currentSessionId)
-    await refreshGovernanceData()
   } catch (err) {
     error.value = err.response?.data?.error || err.response?.data?.detail || '保存反馈失败'
   }
@@ -543,82 +497,18 @@ const formatTokenCount = (value) => {
   overflow: hidden;
 }
 
-.governance-strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  padding: 12px 18px 0;
-  background: var(--gpt-bg);
-}
-
-.governance-card {
-  border: 1px solid #dbe4ee;
-  border-radius: 16px;
-  padding: 14px 16px;
-  background: #ffffff;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
-}
-
-.governance-card-label {
-  font-size: 12px;
-  font-weight: 700;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.governance-card-value {
-  margin-top: 8px;
-  font-size: 24px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.governance-card-meta {
-  margin-top: 8px;
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.governance-samples {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.sample-item {
-  padding-top: 10px;
-  border-top: 1px dashed #dbe4ee;
-}
-
-.sample-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.sample-content {
-  margin-top: 6px;
-  color: #1e293b;
-  font-size: 13px;
-  line-height: 1.6;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
 .message-text {
   display: flex;
   flex-direction: column;
   white-space: normal;
   word-break: break-word;
+}
+
+.streaming-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.75;
+  color: #1e293b;
 }
 
 .retrieval-banner {
@@ -1340,7 +1230,7 @@ const formatTokenCount = (value) => {
   color: #111827;
   border-radius: 18px;
   padding: 8px 14px;
-  max-width: var(--user-chat-width, 70%);
+  max-width: 100%;
   border: none;
 }
 

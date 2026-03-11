@@ -40,24 +40,6 @@ services:
     networks:
       - ai-platform
 
-  # Elasticsearch
-  elasticsearch:
-    image: docker.1ms.run/library/elasticsearch:8.13.0
-    container_name: ai-platform-elasticsearch
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    volumes:
-      - es_data:/usr/share/elasticsearch/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    networks:
-      - ai-platform
-
   # Python AI Runtime
   ai-runtime:
     build:
@@ -76,7 +58,6 @@ services:
       - POSTGRES_PASSWORD=19980912
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
     env_file:
       - ./ai_runtime/.env
     depends_on:
@@ -84,9 +65,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-    
     healthcheck:
       test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request\nurllib.request.urlopen('http://127.0.0.1:8000/health').read()\nprint('ok')\nPY"]
       interval: 10s
@@ -118,14 +96,11 @@ services:
       - POSTGRES_PASSWORD=19980912
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
       - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      elasticsearch:
         condition: service_healthy
       ai-runtime:
         condition: service_healthy
@@ -188,8 +163,6 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
-    driver: local
-  es_data:
     driver: local
   huggingface_cache:
     driver: local

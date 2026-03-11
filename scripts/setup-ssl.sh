@@ -38,7 +38,7 @@ fi
 
 # Start services (except nginx)
 echo "Starting services..."
-docker-compose up -d postgres redis elasticsearch ai-runtime platform frontend
+docker-compose up -d postgres redis ai-runtime platform frontend
 
 # Wait for services to be healthy
 echo "Waiting for services to be ready..."

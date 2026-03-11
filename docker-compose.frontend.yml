@@ -5,6 +5,8 @@
 # 启动方式: docker compose -f docker-compose.frontend.yml up -d
 # ============================================
 
+name: ai-platform-frontend
+
 services:
   frontend:
     build:
@@ -12,6 +14,8 @@ services:
       dockerfile: Dockerfile
     container_name: ai-platform-frontend
     restart: always
+    cpus: ${FRONTEND_CPU_LIMIT:-0.5}
+    mem_limit: ${FRONTEND_MEMORY_LIMIT:-256m}
     environment:
       - NODE_ENV=production
     healthcheck:

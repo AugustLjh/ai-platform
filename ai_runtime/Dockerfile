@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY ai_runtime/requirements.txt requirements.txt
 
 RUN pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir --no-compile -r requirements.txt
 
 # ---------- Proto 文件生成 ----------
 # 复制 proto 文件并生成 stubs
@@ -46,9 +46,7 @@ COPY ai_runtime/ .
 EXPOSE 8000 50051
 
 # ---------- 启动 ----------
-COPY ai_runtime/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "-m", "main", "--mode", "both", "--http-port", "8000", "--grpc-port", "50051"]
-

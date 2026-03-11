@@ -47,7 +47,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "Step 1: Starting base services..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-docker-compose up -d postgres redis elasticsearch ai-runtime platform frontend
+docker-compose up -d postgres redis ai-runtime platform frontend
 
 echo "✅ Base services started"
 echo ""

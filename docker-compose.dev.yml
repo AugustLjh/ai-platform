@@ -79,12 +79,6 @@ services:
     ports:
       - "6379:6379"                             # 暴露端口便于本地连接
 
-  # Elasticsearch - 开发模式
-  elasticsearch:
-    ports:
-      - "9200:9200"                             # 暴露端口便于本地连接
-      - "9300:9300"
-
 volumes:
   platform_build_cache:
     driver: local
@@ -93,6 +87,4 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
-    driver: local
-  es_data:
     driver: local

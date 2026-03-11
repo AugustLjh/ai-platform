@@ -15,7 +15,7 @@ fi
 
 # Start only database services
 echo "Starting database services..."
-docker-compose up -d postgres redis elasticsearch
+docker-compose up -d postgres redis
 
 echo ""
 echo "Waiting for databases to be ready..."
@@ -39,20 +39,11 @@ else
     echo "✗ Redis is not ready"
 fi
 
-# Check Elasticsearch
-echo "Checking Elasticsearch..."
-docker-compose exec -T elasticsearch curl -s http://localhost:9200/_cluster/health > /dev/null
-if [ $? -eq 0 ]; then
-    echo "✓ Elasticsearch is ready"
-else
-    echo "✗ Elasticsearch is not ready"
-fi
-
 echo ""
 echo "======================================"
 echo "Database Services Status:"
 echo "======================================"
-docker-compose ps postgres redis elasticsearch
+docker-compose ps postgres redis
 
 echo ""
 echo "======================================"
@@ -71,15 +62,6 @@ echo "Redis:"
 echo "  Host: localhost (or 'redis' within Docker network)"
 echo "  Port: 6379 (only accessible from other containers)"
 echo "  Connection String: redis://redis:6379/0"
-echo ""
-echo "Elasticsearch:"
-echo "  Host: localhost (or 'elasticsearch' within Docker network)"
-echo "  Port: 9200 (only accessible from other containers)"
-echo "  URL: http://elasticsearch:9200"
-echo ""
-echo "Kibana (optional):"
-echo "  To start: docker-compose --profile observability up -d kibana"
-echo "  URL: http://localhost:5601"
 echo ""
 echo "======================================"
 echo "Setup Complete!"

@@ -39,7 +39,9 @@ class DocumentRepository:
         source_type: SourceType = SourceType.MANUAL,
         embedding_model: Optional[str] = None,
         embedding: Optional[List[float]] = None,
+        search_terms: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        conn: Optional[asyncpg.Connection] = None,
     ) -> Document:
         """
         创建文档
@@ -68,13 +70,35 @@ class DocumentRepository:
         query = """
             INSERT INTO documents (
                 id, tenant_id, user_id, knowledge_base_id, access_level, title, content,
-                source, source_type, embedding_model, embedding,
+                source, source_type, embedding_model, embedding, search_terms,
                 indexed, indexed_at, created_at, updated_at, metadata
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING *
         """
 
-        async with self.db_pool.acquire() as conn:
+        if conn is None:
+            async with self.db_pool.acquire() as pool_conn:
+                row = await pool_conn.fetchrow(
+                    query,
+                    doc_id,
+                    tenant_id,
+                    user_id,
+                    knowledge_base_id,
+                    access_level.value,
+                    title,
+                    content,
+                    source,
+                    source_type.value,
+                    embedding_model,
+                    embedding,
+                    search_terms or "",
+                    indexed,
+                    indexed_at,
+                    now,
+                    now,
+                    json.dumps(metadata or {}),
+                )
+        else:
             row = await conn.fetchrow(
                 query,
                 doc_id,
@@ -88,6 +112,7 @@ class DocumentRepository:
                 source_type.value,
                 embedding_model,
                 embedding,  # PostgreSQL 支持存储数组
+                search_terms or "",
                 indexed,
                 indexed_at,
                 now,
@@ -139,6 +164,8 @@ class DocumentRepository:
         metadata: Optional[Dict[str, Any]] = None,
         embedding: Optional[List[float]] = None,
         embedding_model: Optional[str] = None,
+        search_terms: Optional[str] = None,
+        conn: Optional[asyncpg.Connection] = None,
     ) -> Optional[Document]:
         """
         更新文档
@@ -182,6 +209,11 @@ class DocumentRepository:
             params.append(json.dumps(metadata))
             param_idx += 1
 
+        if search_terms is not None:
+            updates.append(f"search_terms = ${param_idx}")
+            params.append(search_terms)
+            param_idx += 1
+
         if embedding is not None:
             updates.append(f"embedding = ${param_idx}")
             params.append(embedding)
@@ -214,10 +246,77 @@ class DocumentRepository:
             RETURNING *
         """
 
-        async with self.db_pool.acquire() as conn:
+        if conn is None:
+            async with self.db_pool.acquire() as pool_conn:
+                row = await pool_conn.fetchrow(query, *params)
+        else:
             row = await conn.fetchrow(query, *params)
 
         return self._row_to_document(row) if row else None
+
+    async def replace_document_chunks(
+        self,
+        document: Document,
+        chunks: List[Dict[str, Any]],
+        embedding_model: Optional[str] = None,
+        conn: Optional[asyncpg.Connection] = None,
+    ) -> None:
+        delete_query = "DELETE FROM document_chunks WHERE document_id = $1"
+        insert_query = """
+            INSERT INTO document_chunks (
+                document_id, tenant_id, knowledge_base_id, user_id, access_level,
+                chunk_index, start_offset, end_offset, char_count, title, content,
+                source, source_type, embedding_model, embedding, search_terms,
+                metadata, created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5,
+                $6, $7, $8, $9, $10, $11,
+                $12, $13, $14, $15, $16,
+                $17, $18, $19
+            )
+        """
+
+        target_conn = conn
+        owned_conn = False
+        if target_conn is None:
+            target_conn = await self.db_pool.acquire()
+            owned_conn = True
+
+        try:
+            await target_conn.execute(delete_query, document.id)
+
+            if not chunks:
+                return
+
+            now = datetime.utcnow()
+            rows = [
+                (
+                    document.id,
+                    document.tenant_id,
+                    document.knowledge_base_id,
+                    document.user_id,
+                    document.access_level.value,
+                    int(chunk["chunk_index"]),
+                    int(chunk["start_offset"]),
+                    int(chunk["end_offset"]),
+                    int(chunk["char_count"]),
+                    document.title,
+                    chunk["content"],
+                    document.source,
+                    document.source_type.value,
+                    embedding_model,
+                    chunk.get("embedding"),
+                    chunk.get("search_terms") or "",
+                    json.dumps(chunk.get("metadata") or {}),
+                    now,
+                    now,
+                )
+                for chunk in chunks
+            ]
+            await target_conn.executemany(insert_query, rows)
+        finally:
+            if owned_conn and target_conn is not None:
+                await self.db_pool.release(target_conn)
 
     async def delete_document(
         self,
@@ -351,68 +450,137 @@ class DocumentRepository:
         Returns:
             [(文档, 相似度分数), ...]，按分数降序排列
         """
-        conditions = ["tenant_id = $1", "indexed = true", "embedding IS NOT NULL"]
+        conditions = ["dc.tenant_id = $1"]
         params = [tenant_id]
         param_idx = 2
 
+        if self.use_pgvector:
+            conditions.append("dc.embedding_vector IS NOT NULL")
+        else:
+            conditions.append("dc.embedding IS NOT NULL")
+
         # 权限过滤
         if access_level:
-            conditions.append(f"access_level = ${param_idx}")
+            conditions.append(f"dc.access_level = ${param_idx}")
             params.append(access_level.value)
             param_idx += 1
         else:
-            conditions.append(f"(access_level = 'tenant' OR (access_level = 'user' AND user_id = ${param_idx}))")
+            conditions.append(f"(dc.access_level = 'tenant' OR (dc.access_level = 'user' AND dc.user_id = ${param_idx}))")
             params.append(user_id)
             param_idx += 1
 
         # 来源类型过滤
         if source_type:
-            conditions.append(f"source_type = ${param_idx}")
+            conditions.append(f"dc.source_type = ${param_idx}")
             params.append(source_type.value)
             param_idx += 1
 
         # 知识库过滤
         if knowledge_base_id:
-            conditions.append(f"knowledge_base_id = ${param_idx}")
+            conditions.append(f"dc.knowledge_base_id = ${param_idx}")
             params.append(knowledge_base_id)
             param_idx += 1
 
         where_clause = " AND ".join(conditions)
+        query_embedding_param_idx = param_idx
+        candidate_limit_param_idx = param_idx + 1
+        result_limit_param_idx = param_idx + 2
+        candidate_limit = max(top_k * 8, top_k)
 
         # 根据是否使用pgvector选择不同的查询方法
         if self.use_pgvector:
-            # 使用 pgvector 的余弦距离操作符（更快）
-            # 余弦距离 = 1 - 余弦相似度
             query = f"""
-                SELECT *,
-                    1 - (embedding <=> ${param_idx}::vector) AS similarity
-                FROM documents
-                WHERE {where_clause}
-                ORDER BY embedding <=> ${param_idx}::vector
-                LIMIT ${param_idx + 1}
+                WITH ranked_chunks AS (
+                    SELECT
+                        dc.document_id,
+                        dc.chunk_index,
+                        dc.start_offset,
+                        dc.end_offset,
+                        dc.char_count,
+                        dc.content AS matched_content,
+                        1 - (dc.embedding_vector <=> ${query_embedding_param_idx}::float[]::vector) AS similarity
+                    FROM document_chunks dc
+                    WHERE {where_clause}
+                    ORDER BY dc.embedding_vector <=> ${query_embedding_param_idx}::float[]::vector
+                    LIMIT ${candidate_limit_param_idx}
+                ),
+                best_chunks AS (
+                    SELECT DISTINCT ON (document_id)
+                        document_id,
+                        similarity,
+                        chunk_index,
+                        start_offset,
+                        end_offset,
+                        char_count,
+                        matched_content
+                    FROM ranked_chunks
+                    ORDER BY document_id, similarity DESC
+                )
+                SELECT
+                    d.*,
+                    bc.similarity,
+                    bc.chunk_index AS matched_chunk_index,
+                    bc.start_offset AS matched_start_offset,
+                    bc.end_offset AS matched_end_offset,
+                    bc.char_count AS matched_char_count,
+                    bc.matched_content
+                FROM best_chunks bc
+                JOIN documents d ON d.id = bc.document_id
+                ORDER BY bc.similarity DESC
+                LIMIT ${result_limit_param_idx}
             """
         else:
-            # 使用原生数组计算余弦相似度（兼容模式）
-            # 使用点积和范数计算
             query = f"""
-                SELECT *,
-                    (
+                WITH ranked_chunks AS (
+                    SELECT
+                        dc.document_id,
+                        dc.chunk_index,
+                        dc.start_offset,
+                        dc.end_offset,
+                        dc.char_count,
+                        dc.content AS matched_content,
                         (
-                            SELECT SUM(a * b)
-                            FROM unnest(embedding, ${param_idx}::float[]) AS t(a, b)
-                        ) /
-                        (
-                            sqrt((SELECT SUM(a * a) FROM unnest(embedding) AS t(a))) *
-                            sqrt((SELECT SUM(b * b) FROM unnest(${param_idx}::float[]) AS t(b)))
-                        )
-                    ) AS similarity
-                FROM documents
-                WHERE {where_clause}
-                ORDER BY similarity DESC NULLS LAST
-                LIMIT ${param_idx + 1}
+                            (
+                                SELECT SUM(a * b)
+                                FROM unnest(dc.embedding, ${query_embedding_param_idx}::float[]) AS t(a, b)
+                            ) /
+                            (
+                                sqrt((SELECT SUM(a * a) FROM unnest(dc.embedding) AS t(a))) *
+                                sqrt((SELECT SUM(b * b) FROM unnest(${query_embedding_param_idx}::float[]) AS t(b)))
+                            )
+                        ) AS similarity
+                    FROM document_chunks dc
+                    WHERE {where_clause}
+                    ORDER BY similarity DESC NULLS LAST
+                    LIMIT ${candidate_limit_param_idx}
+                ),
+                best_chunks AS (
+                    SELECT DISTINCT ON (document_id)
+                        document_id,
+                        similarity,
+                        chunk_index,
+                        start_offset,
+                        end_offset,
+                        char_count,
+                        matched_content
+                    FROM ranked_chunks
+                    ORDER BY document_id, similarity DESC NULLS LAST
+                )
+                SELECT
+                    d.*,
+                    bc.similarity,
+                    bc.chunk_index AS matched_chunk_index,
+                    bc.start_offset AS matched_start_offset,
+                    bc.end_offset AS matched_end_offset,
+                    bc.char_count AS matched_char_count,
+                    bc.matched_content
+                FROM best_chunks bc
+                JOIN documents d ON d.id = bc.document_id
+                ORDER BY bc.similarity DESC NULLS LAST
+                LIMIT ${result_limit_param_idx}
             """
 
-        params.extend([query_embedding, top_k])
+        params.extend([query_embedding, candidate_limit, top_k])
 
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
@@ -456,54 +624,87 @@ class DocumentRepository:
         Returns:
             [(文档, 相似度分数), ...]
         """
-        conditions = ["tenant_id = $1"]
+        normalized_query = query.strip()
+        if not normalized_query:
+            return []
+
+        conditions = ["dc.tenant_id = $1"]
         params = [tenant_id]
         param_idx = 2
 
         # 权限过滤
         if access_level:
-            conditions.append(f"access_level = ${param_idx}")
+            conditions.append(f"dc.access_level = ${param_idx}")
             params.append(access_level.value)
             param_idx += 1
         else:
-            conditions.append(f"(access_level = 'tenant' OR (access_level = 'user' AND user_id = ${param_idx}))")
+            conditions.append(f"(dc.access_level = 'tenant' OR (dc.access_level = 'user' AND dc.user_id = ${param_idx}))")
             params.append(user_id)
             param_idx += 1
 
         # 来源类型过滤
         if source_type:
-            conditions.append(f"source_type = ${param_idx}")
+            conditions.append(f"dc.source_type = ${param_idx}")
             params.append(source_type.value)
             param_idx += 1
 
         # 知识库过滤
         if knowledge_base_id:
-            conditions.append(f"knowledge_base_id = ${param_idx}")
+            conditions.append(f"dc.knowledge_base_id = ${param_idx}")
             params.append(knowledge_base_id)
             param_idx += 1
 
-        # 查询条件
         query_param_index = param_idx
-        conditions.append(f"(title ILIKE ${query_param_index} OR content ILIKE ${query_param_index})")
-        params.append(f"%{query}%")
+        ts_query = f"websearch_to_tsquery('simple', ${query_param_index})"
+        conditions.append(f"dc.search_vector @@ {ts_query}")
+        params.append(normalized_query)
         param_idx += 1
+        candidate_limit = max(top_k * 8, top_k)
 
         where_clause = " AND ".join(conditions)
 
         query_sql = f"""
-            SELECT *,
-                CASE
-                    WHEN title ILIKE ${query_param_index} THEN 1.0
-                    WHEN content ILIKE ${query_param_index} THEN 0.6
-                    ELSE 0.0
-                END AS similarity
-            FROM documents
-            WHERE {where_clause}
-            ORDER BY similarity DESC, updated_at DESC
-            LIMIT ${param_idx}
+            WITH ranked_chunks AS (
+                SELECT
+                    dc.document_id,
+                    dc.chunk_index,
+                    dc.start_offset,
+                    dc.end_offset,
+                    dc.char_count,
+                    dc.content AS matched_content,
+                    ts_rank(dc.search_vector, {ts_query}) AS similarity
+                FROM document_chunks dc
+                WHERE {where_clause}
+                ORDER BY similarity DESC, dc.updated_at DESC
+                LIMIT ${param_idx}
+            ),
+            best_chunks AS (
+                SELECT DISTINCT ON (document_id)
+                    document_id,
+                    similarity,
+                    chunk_index,
+                    start_offset,
+                    end_offset,
+                    char_count,
+                    matched_content
+                FROM ranked_chunks
+                ORDER BY document_id, similarity DESC, chunk_index ASC
+            )
+            SELECT
+                d.*,
+                bc.similarity,
+                bc.chunk_index AS matched_chunk_index,
+                bc.start_offset AS matched_start_offset,
+                bc.end_offset AS matched_end_offset,
+                bc.char_count AS matched_char_count,
+                bc.matched_content
+            FROM best_chunks bc
+            JOIN documents d ON d.id = bc.document_id
+            ORDER BY bc.similarity DESC, d.updated_at DESC
+            LIMIT ${param_idx + 1}
         """
 
-        params.append(top_k)
+        params.extend([candidate_limit, top_k])
 
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(query_sql, *params)
@@ -515,6 +716,91 @@ class DocumentRepository:
             results.append((doc, min(score, 1.0)))
 
         return results
+
+    async def list_document_chunks(
+        self,
+        document_id: str,
+        tenant_id: str,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        query = """
+            SELECT
+                chunk_index,
+                start_offset,
+                end_offset,
+                char_count,
+                content
+            FROM document_chunks
+            WHERE document_id = $1
+              AND tenant_id = $2
+              AND (
+                    access_level = 'tenant'
+                    OR (access_level = 'user' AND user_id = $3)
+              )
+            ORDER BY chunk_index ASC
+        """
+
+        async with self.db_pool.acquire() as conn:
+            rows = await conn.fetch(query, document_id, tenant_id, user_id)
+
+        return [
+            {
+                "segment_index": int(row["chunk_index"]),
+                "start_offset": int(row["start_offset"]),
+                "end_offset": int(row["end_offset"]),
+                "char_count": int(row["char_count"]),
+                "content": row["content"],
+            }
+            for row in rows
+        ]
+
+    async def search_document_chunks(
+        self,
+        document_id: str,
+        tenant_id: str,
+        user_id: Optional[str],
+        query: str,
+        limit: int = 3,
+    ) -> List[Dict[str, Any]]:
+        normalized_query = query.strip()
+        if not normalized_query:
+            return []
+
+        ts_query = "websearch_to_tsquery('simple', $4)"
+        query_sql = f"""
+            SELECT
+                chunk_index,
+                start_offset,
+                end_offset,
+                char_count,
+                content,
+                ts_rank(search_vector, {ts_query}) AS match_score
+            FROM document_chunks
+            WHERE document_id = $1
+              AND tenant_id = $2
+              AND (
+                    access_level = 'tenant'
+                    OR (access_level = 'user' AND user_id = $3)
+              )
+              AND search_vector @@ {ts_query}
+            ORDER BY match_score DESC, chunk_index ASC
+            LIMIT $5
+        """
+
+        async with self.db_pool.acquire() as conn:
+            rows = await conn.fetch(query_sql, document_id, tenant_id, user_id, normalized_query, limit)
+
+        return [
+            {
+                "segment_index": int(row["chunk_index"]),
+                "start_offset": int(row["start_offset"]),
+                "end_offset": int(row["end_offset"]),
+                "char_count": int(row["char_count"]),
+                "content": row["content"],
+                "match_score": float(row["match_score"]) if row["match_score"] is not None else 0.0,
+            }
+            for row in rows
+        ]
 
     async def find_exact_duplicate_documents(
         self,

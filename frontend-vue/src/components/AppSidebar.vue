@@ -22,6 +22,10 @@
           <span class="nav-icon">🕘</span>
           <span>历史记录</span>
         </router-link>
+        <router-link to="/costs" class="sidebar-nav-item">
+          <span class="nav-icon">💵</span>
+          <span>成本统计</span>
+        </router-link>
         <router-link to="/knowledge" class="sidebar-nav-item">
           <span class="nav-icon">📚</span>
           <span>知识库</span>
@@ -164,7 +168,8 @@ const handleNewChat = async () => {
 
 const switchSession = (sessionId) => {
   chatStore.loadSession(sessionId)
-  router.push({ path: '/chat', query: { session: sessionId } })
+  const targetPath = route.path === '/history' ? '/history' : '/chat'
+  router.push({ path: targetPath, query: { session: sessionId } })
 }
 
 const handleDeleteSession = async (sessionId) => {

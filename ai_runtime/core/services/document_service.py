@@ -26,6 +26,11 @@ from core.parsers.url_fetcher import URLFetcher
 from core.audit import AuditLogger
 from core.quota import QuotaManager
 
+try:
+    import jieba
+except ImportError:
+    jieba = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +84,7 @@ DEFAULT_RETRIEVAL_SETTINGS = {
 SIMHASH_MAX_DISTANCE = 8
 SIMILARITY_LIMIT = 5
 CANDIDATE_SCAN_LIMIT = 200
+SEARCH_TERMS_VERSION = "chunk-cjk-v1"
 
 
 class DocumentService:
@@ -198,6 +204,104 @@ class DocumentService:
 
     def _chunk_text(self, text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
         return [segment["content"] for segment in self._chunk_text_with_offsets(text, chunk_size, chunk_overlap)]
+
+    def _extract_cjk_search_tokens(self, text: str) -> List[str]:
+        normalized = self._normalize_text_for_ai_processing(text)
+        if not normalized:
+            return []
+
+        tokens: List[str] = []
+        if jieba is not None:
+            for token in jieba.cut_for_search(normalized):
+                item = re.sub(r"\s+", "", token.strip())
+                if len(item) < 2 or not re.search(r"[\u4e00-\u9fff]", item):
+                    continue
+                if item in CHINESE_STOPWORDS:
+                    continue
+                tokens.append(item)
+        else:
+            for block in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+                max_window = min(4, len(block))
+                for size in range(2, max_window + 1):
+                    for start in range(0, len(block) - size + 1):
+                        item = block[start:start + size]
+                        if item in CHINESE_STOPWORDS:
+                            continue
+                        tokens.append(item)
+
+        return tokens
+
+    def _build_search_terms(
+        self,
+        title: str,
+        content: str,
+        keywords: Optional[List[str]] = None,
+    ) -> str:
+        normalized_title = self._normalize_text_for_ai_processing(title or "")
+        normalized_content = self._normalize_text_for_ai_processing(content or "")
+        combined_text = "\n".join(part for part in (normalized_title, normalized_content) if part)
+
+        weighted_tokens: List[str] = []
+        if normalized_title:
+            weighted_tokens.extend(self._extract_cjk_search_tokens(normalized_title))
+            weighted_tokens.extend(re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,30}", normalized_title))
+
+        weighted_tokens.extend(self._extract_cjk_search_tokens(combined_text))
+        weighted_tokens.extend(re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,30}", combined_text))
+
+        for item in keywords or []:
+            if isinstance(item, str) and item.strip():
+                weighted_tokens.append(item.strip())
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for token in weighted_tokens:
+            normalized_token = token.strip()
+            if not normalized_token:
+                continue
+
+            if re.search(r"[\u4e00-\u9fff]", normalized_token):
+                if len(normalized_token) < 2 or normalized_token in CHINESE_STOPWORDS:
+                    continue
+            else:
+                lower_token = normalized_token.lower()
+                if len(lower_token) < 2 or lower_token in ENGLISH_STOPWORDS:
+                    continue
+                normalized_token = lower_token
+
+            if normalized_token in seen:
+                continue
+            seen.add(normalized_token)
+            deduped.append(normalized_token)
+            if len(deduped) >= 256:
+                break
+
+        return " ".join(deduped)
+
+    def _build_keyword_query(self, query: str) -> str:
+        normalized = self._normalize_text_for_ai_processing(query)
+        if not normalized:
+            return ""
+
+        if not re.search(r"[\u4e00-\u9fff]", normalized):
+            return normalized
+
+        tokenized_terms = self._build_search_terms("", normalized).split()
+        if not tokenized_terms:
+            return normalized
+
+        return " OR ".join(tokenized_terms[:12])
+
+    def _extract_query_terms(self, query: str) -> List[str]:
+        normalized = self._normalize_text_for_ai_processing(query)
+        if not normalized:
+            return []
+
+        terms = self._build_search_terms("", normalized).split()
+        if terms:
+            return terms
+
+        return [term.strip().lower() for term in normalized.split() if term.strip()]
 
     def _normalize_text_for_ai_processing(self, text: str) -> str:
         if not text:
@@ -726,6 +830,69 @@ class DocumentService:
         embeddings = await embedding_service.embed_batch(chunks)
         return self._average_embeddings(embeddings)
 
+    async def _build_chunk_index_payloads(
+        self,
+        title: str,
+        content: str,
+        source: Optional[str],
+        source_type: SourceType,
+        indexing_settings: Dict[str, Any],
+        embedding_service: Optional[EmbeddingService] = None,
+        keywords: Optional[List[str]] = None,
+    ) -> tuple[List[Dict[str, Any]], Optional[List[float]], Optional[str]]:
+        chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
+        chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
+        segments = self._chunk_text_with_offsets(content, chunk_size, chunk_overlap)
+
+        if not segments:
+            segments = [{
+                "segment_index": 1,
+                "start_offset": 0,
+                "end_offset": len(content or ""),
+                "char_count": len(content or ""),
+                "content": content or "",
+            }]
+
+        segment_texts = [segment["content"] for segment in segments]
+        embeddings: List[Optional[List[float]]] = [None] * len(segments)
+        embedding_model: Optional[str] = None
+        aggregate_embedding: Optional[List[float]] = None
+
+        if embedding_service is not None and segment_texts:
+            if len(segment_texts) == 1:
+                embedding_values = [await embedding_service.embed_text(segment_texts[0])]
+            else:
+                embedding_values = await embedding_service.embed_batch(segment_texts)
+            embeddings = list(embedding_values)
+            embedding_model = embedding_service.get_model_name()
+            aggregate_embedding = embedding_values[0] if len(embedding_values) == 1 else self._average_embeddings(embedding_values)
+
+        chunks: List[Dict[str, Any]] = []
+        for index, segment in enumerate(segments):
+            chunk_content = segment["content"]
+            chunk_keywords = self._extract_keywords(title, chunk_content, limit=6)
+            chunks.append(
+                {
+                    "chunk_index": segment["segment_index"],
+                    "start_offset": segment["start_offset"],
+                    "end_offset": segment["end_offset"],
+                    "char_count": segment["char_count"],
+                    "content": chunk_content,
+                    "embedding": embeddings[index],
+                    "search_terms": self._build_search_terms(title, chunk_content, chunk_keywords + (keywords or [])[:4]),
+                    "metadata": {
+                        "source": source,
+                        "source_type": source_type.value,
+                        "chunking_method": indexing_settings.get("indexing_method") or "chunk",
+                        "chunk_size": chunk_size,
+                        "chunk_overlap": chunk_overlap,
+                        "segment_index": segment["segment_index"],
+                    },
+                }
+            )
+
+        return chunks, aggregate_embedding, embedding_model
+
     def _merge_results(
         self,
         vector_results: List[tuple[Document, float]],
@@ -824,7 +991,9 @@ class DocumentService:
                 chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
 
         safe_chunk_size, safe_chunk_overlap = self._normalize_chunk_settings(int(chunk_size), int(chunk_overlap))
-        segments = self._chunk_text_with_offsets(doc.content or "", safe_chunk_size, safe_chunk_overlap)
+        segments = await self.repository.list_document_chunks(document_id, tenant_id, user_id)
+        if not segments:
+            segments = self._chunk_text_with_offsets(doc.content or "", safe_chunk_size, safe_chunk_overlap)
 
         safe_max_segments = max(1, min(max_segments, 1000))
         returned_segments = segments[:safe_max_segments]
@@ -848,6 +1017,17 @@ class DocumentService:
         user_id: Optional[str],
         max_segments: int = 3,
     ) -> List[Dict[str, Any]]:
+        keyword_query = self._build_keyword_query(query)
+        direct_matches = await self.repository.search_document_chunks(
+            document_id=document.id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            query=keyword_query or query,
+            limit=max(1, min(max_segments, 10)),
+        )
+        if direct_matches:
+            return direct_matches
+
         indexing_settings = await self._get_indexing_settings(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -855,12 +1035,14 @@ class DocumentService:
         )
         chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
         chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
-        segments = self._chunk_text_with_offsets(document.content or "", chunk_size, chunk_overlap)
+        segments = await self.repository.list_document_chunks(document.id, tenant_id, user_id)
+        if not segments:
+            segments = self._chunk_text_with_offsets(document.content or "", chunk_size, chunk_overlap)
 
         if not segments:
             return []
 
-        terms = [term.strip().lower() for term in query.split() if term.strip()]
+        terms = self._extract_query_terms(query)
         scored_segments: List[Dict[str, Any]] = []
 
         for segment in segments:
@@ -932,7 +1114,13 @@ class DocumentService:
         # 生成向量嵌入
         embedding = None
         embedding_model = None
+        chunk_payloads: List[Dict[str, Any]] = []
         merged_metadata = dict(request.metadata or {})
+        indexing_settings = await self._get_indexing_settings(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            knowledge_base_id=request.knowledge_base_id,
+        )
 
         try:
             merged_metadata = self._build_ai_metadata(
@@ -947,39 +1135,73 @@ class DocumentService:
 
         if request.auto_index:
             try:
-                indexing_settings = await self._get_indexing_settings(
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    knowledge_base_id=request.knowledge_base_id,
-                )
                 embedding_service = await self._select_embedding_service(
                     tenant_id=tenant_id,
                     model_id=indexing_settings.get("embedding_model_id"),
                 )
-                embedding = await self._build_embedding(
-                    request.content,
-                    embedding_service,
-                    indexing_settings,
+                chunk_payloads, embedding, embedding_model = await self._build_chunk_index_payloads(
+                    title=request.title,
+                    content=request.content,
+                    source=request.source,
+                    source_type=request.source_type,
+                    indexing_settings=indexing_settings,
+                    embedding_service=embedding_service,
+                    keywords=list(merged_metadata.get("ai_keywords") or []),
                 )
-                embedding_model = embedding_service.get_model_name()
             except Exception as e:
                 logger.error(f"Failed to generate embedding: {e}")
                 # 继续创建文档，但标记为未索引
+                chunk_payloads, embedding, embedding_model = await self._build_chunk_index_payloads(
+                    title=request.title,
+                    content=request.content,
+                    source=request.source,
+                    source_type=request.source_type,
+                    indexing_settings=indexing_settings,
+                    embedding_service=None,
+                    keywords=list(merged_metadata.get("ai_keywords") or []),
+                )
+        else:
+            chunk_payloads, embedding, embedding_model = await self._build_chunk_index_payloads(
+                title=request.title,
+                content=request.content,
+                source=request.source,
+                source_type=request.source_type,
+                indexing_settings=indexing_settings,
+                embedding_service=None,
+                keywords=list(merged_metadata.get("ai_keywords") or []),
+            )
 
-        # 创建文档
-        doc = await self.repository.create_document(
-            tenant_id=tenant_id,
-            user_id=user_id if request.access_level == AccessLevel.USER else None,
-            knowledge_base_id=request.knowledge_base_id,
-            access_level=request.access_level,
-            title=request.title,
-            content=request.content,
-            source=request.source,
-            source_type=request.source_type,
-            embedding=embedding,
-            embedding_model=embedding_model,
-            metadata=merged_metadata,
+        merged_metadata["chunk_count"] = len(chunk_payloads)
+        merged_metadata["search_terms_version"] = SEARCH_TERMS_VERSION
+        document_search_terms = self._build_search_terms(
+            request.title,
+            request.content,
+            list(merged_metadata.get("ai_keywords") or []),
         )
+
+        async with self.repository.db_pool.acquire() as conn:
+            async with conn.transaction():
+                doc = await self.repository.create_document(
+                    tenant_id=tenant_id,
+                    user_id=user_id if request.access_level == AccessLevel.USER else None,
+                    knowledge_base_id=request.knowledge_base_id,
+                    access_level=request.access_level,
+                    title=request.title,
+                    content=request.content,
+                    source=request.source,
+                    source_type=request.source_type,
+                    embedding=embedding,
+                    embedding_model=embedding_model,
+                    search_terms=document_search_terms,
+                    metadata=merged_metadata,
+                    conn=conn,
+                )
+                await self.repository.replace_document_chunks(
+                    document=doc,
+                    chunks=chunk_payloads,
+                    embedding_model=embedding_model,
+                    conn=conn,
+                )
 
         # 审计日志
         if self.audit_logger:
@@ -1029,13 +1251,26 @@ class DocumentService:
         """
         existing_doc = None
         metadata_to_update = request.metadata
+        chunk_payloads: Optional[List[Dict[str, Any]]] = None
+        search_terms_to_update: Optional[str] = None
 
-        if request.content is not None or request.metadata is not None or request.re_index:
+        if (
+            request.content is not None
+            or request.title is not None
+            or request.source is not None
+            or request.metadata is not None
+            or request.re_index
+        ):
             existing_doc = await self.repository.get_document(document_id, tenant_id, user_id)
             if not existing_doc:
                 return None
 
-        if existing_doc and (request.content is not None or request.metadata is not None):
+        if existing_doc and (
+            request.content is not None
+            or request.title is not None
+            or request.source is not None
+            or request.metadata is not None
+        ):
             base_metadata = dict(existing_doc.metadata or {})
             if request.metadata is not None:
                 for key, value in request.metadata.items():
@@ -1057,14 +1292,26 @@ class DocumentService:
                 logger.error(f"Failed to refresh AI metadata: {exc}")
                 metadata_to_update = base_metadata
 
-        # 如果内容更新且需要重新索引
         embedding = None
         embedding_model = None
+        should_refresh_index = bool(
+            existing_doc and (
+                request.re_index
+                or request.content is not None
+                or request.title is not None
+                or request.source is not None
+            )
+        )
 
-        if request.re_index:
+        if should_refresh_index and existing_doc and metadata_to_update is None:
+            metadata_to_update = dict(existing_doc.metadata or {})
+
+        if should_refresh_index:
             try:
                 if existing_doc:
-                    content = request.content if request.content is not None else existing_doc.content
+                    effective_title = request.title if request.title is not None else existing_doc.title
+                    effective_content = request.content if request.content is not None else existing_doc.content
+                    effective_source = request.source if request.source is not None else existing_doc.source
                     indexing_settings = await self._get_indexing_settings(
                         tenant_id=tenant_id,
                         user_id=user_id,
@@ -1074,26 +1321,74 @@ class DocumentService:
                         tenant_id=tenant_id,
                         model_id=indexing_settings.get("embedding_model_id"),
                     )
-                    embedding = await self._build_embedding(
-                        content,
-                        embedding_service,
-                        indexing_settings,
+                    chunk_payloads, embedding, embedding_model = await self._build_chunk_index_payloads(
+                        title=effective_title,
+                        content=effective_content,
+                        source=effective_source,
+                        source_type=existing_doc.source_type,
+                        indexing_settings=indexing_settings,
+                        embedding_service=embedding_service,
+                        keywords=list((metadata_to_update or {}).get("ai_keywords") or []),
                     )
-                    embedding_model = embedding_service.get_model_name()
+                    if metadata_to_update is not None:
+                        metadata_to_update["chunk_count"] = len(chunk_payloads)
+                        metadata_to_update["search_terms_version"] = SEARCH_TERMS_VERSION
+                    search_terms_to_update = self._build_search_terms(
+                        effective_title,
+                        effective_content,
+                        list((metadata_to_update or {}).get("ai_keywords") or []),
+                    )
             except Exception as e:
                 logger.error(f"Failed to generate embedding: {e}")
+                if existing_doc:
+                    indexing_settings = await self._get_indexing_settings(
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        knowledge_base_id=existing_doc.knowledge_base_id,
+                    )
+                    chunk_payloads, _fallback_embedding, _fallback_model = await self._build_chunk_index_payloads(
+                        title=effective_title,
+                        content=effective_content,
+                        source=effective_source,
+                        source_type=existing_doc.source_type,
+                        indexing_settings=indexing_settings,
+                        embedding_service=None,
+                        keywords=list((metadata_to_update or {}).get("ai_keywords") or []),
+                    )
+                    if metadata_to_update is not None:
+                        metadata_to_update["chunk_count"] = len(chunk_payloads)
+                        metadata_to_update["search_terms_version"] = SEARCH_TERMS_VERSION
+                    search_terms_to_update = self._build_search_terms(
+                        effective_title,
+                        effective_content,
+                        list((metadata_to_update or {}).get("ai_keywords") or []),
+                    )
 
-        return await self.repository.update_document(
-            document_id=document_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            title=request.title,
-            content=request.content,
-            source=request.source,
-            metadata=metadata_to_update,
-            embedding=embedding,
-            embedding_model=embedding_model,
-        )
+        async with self.repository.db_pool.acquire() as conn:
+            async with conn.transaction():
+                updated_doc = await self.repository.update_document(
+                    document_id=document_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    title=request.title,
+                    content=request.content,
+                    source=request.source,
+                    metadata=metadata_to_update,
+                    embedding=embedding,
+                    embedding_model=embedding_model,
+                    search_terms=search_terms_to_update,
+                    conn=conn,
+                )
+
+                if updated_doc and chunk_payloads is not None:
+                    await self.repository.replace_document_chunks(
+                        document=updated_doc,
+                        chunks=chunk_payloads,
+                        embedding_model=embedding_model or updated_doc.embedding_model,
+                        conn=conn,
+                    )
+
+        return updated_doc
 
     async def delete_document(
         self,
@@ -1186,11 +1481,12 @@ class DocumentService:
             rerank_model_id = rerank_model_id_override
 
         results: List[tuple[Document, float]] = []
+        keyword_query = self._build_keyword_query(query)
 
         if retrieval_method == "keyword":
             results = await self.repository.search_by_keyword(
                 tenant_id=tenant_id,
-                query=query,
+                query=keyword_query or query,
                 user_id=user_id,
                 top_k=effective_top_k,
                 knowledge_base_id=knowledge_base_id,
@@ -1219,7 +1515,7 @@ class DocumentService:
             )
             keyword_results = await self.repository.search_by_keyword(
                 tenant_id=tenant_id,
-                query=query,
+                query=keyword_query or query,
                 user_id=user_id,
                 top_k=effective_top_k,
                 knowledge_base_id=knowledge_base_id,

@@ -153,31 +153,6 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  # Elasticsearch - 生产模式
-  elasticsearch:
-    restart: always
-    ports: []  # 不暴露端口到宿主机
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"  # 生产环境增加内存
-      - bootstrap.memory_lock=true
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-      nofile:
-        soft: 65536
-        hard: 65536
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-        reservations:
-          cpus: '1'
-          memory: 1G
-
   # Certbot - 生产模式
   certbot:
     restart: always
@@ -191,8 +166,6 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
-    driver: local
-  es_data:
     driver: local
   huggingface_cache:
     driver: local
