@@ -91,13 +91,15 @@
         <div
           v-for="(message, index) in messages"
           :key="index"
-          :class="['message-row', message.role]"
+          :class="['thread-turn', `thread-turn-${message.role}`]"
         >
-          <div :class="['message', message.role]">
-            <div class="message-avatar" v-if="message.role !== 'user'">
-              <span class="ai-avatar">🤖</span>
-            </div>
-            <div class="message-content">
+          <article class="thread-article" :data-turn-role="message.role">
+            <div class="thread-shell">
+              <div :class="['thread-message', `thread-message-${message.role}`]">
+                <div v-if="message.role !== 'user'" class="message-avatar">
+                  <span class="ai-avatar">AI</span>
+                </div>
+                <div class="message-content">
               <div
                 v-if="message.streaming && !message.content"
                 class="typing-indicator"
@@ -106,14 +108,24 @@
                 <span></span>
                 <span></span>
               </div>
-              <div class="message-text">
+                <div class="message-text">
                 <template v-if="message.role === 'assistant' && message.renderMarkdown !== false">
-                  <div v-if="message.streaming" class="streaming-text">{{ message.content }}</div>
                   <div
-                    v-else
+                    v-if="hasRenderedMarkdown(message)"
                     class="markdown prose markdown-new-styling wrap-break-word light"
-                    v-html="message.htmlContent"
-                  ></div>
+                    :class="{ 'streaming-markdown': message.streaming }"
+                  >
+                    <MessageMarkdownBlocks
+                      v-if="message.renderBlocks && message.renderBlocks.length > 0"
+                      :blocks="message.renderBlocks"
+                      block-key-prefix="stable-"
+                    />
+                    <MessageMarkdownBlocks
+                      v-if="message.streamingRenderBlocks && message.streamingRenderBlocks.length > 0"
+                      :blocks="message.streamingRenderBlocks"
+                      block-key-prefix="preview-"
+                    />
+                  </div>
                 </template>
                 <template v-else-if="message.role === 'assistant' && message.renderMarkdown === false">
                   <pre class="plain-markdown">{{ message.content }}</pre>
@@ -128,80 +140,84 @@
                 </template>
                 <span v-if="message.streaming" class="stream-cursor">▍</span>
               </div>
-              <div
-                v-if="message.role === 'assistant' && message.retrievalStatus === 'no_hits'"
-                class="retrieval-banner"
-              >
-                <span class="retrieval-banner-label">知识库未命中</span>
-                <span v-if="message.knowledgeBaseName">{{ message.knowledgeBaseName }}</span>
-              </div>
-              <div
-                v-if="message.role === 'assistant' && message.citations && message.citations.length > 0"
-                class="citation-list"
-              >
-                <div class="citation-title">引用来源</div>
-                <div
-                  v-for="(citation, citationIndex) in message.citations"
-                  :key="`${message.id || index}-${citation.document_id || citationIndex}`"
-                  class="citation-card"
-                >
-                  <div class="citation-head">
-                    <strong>{{ citation.title || '未命名文档' }}</strong>
-                    <span v-if="Number.isFinite(citation.score)">相关度 {{ citation.score.toFixed(4) }}</span>
-                  </div>
-                  <div v-if="citation.source" class="citation-source">{{ citation.source }}</div>
                   <div
-                    v-for="segment in citation.matched_segments || []"
-                    :key="`${citation.document_id}-${segment.segment_index}`"
-                    class="citation-segment"
+                    v-if="message.role === 'assistant' && message.retrievalStatus === 'no_hits'"
+                    class="retrieval-banner"
                   >
-                    <div class="citation-segment-meta">
-                      <span>#{{ segment.segment_index }}</span>
-                      <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
+                    <span class="retrieval-banner-label">知识库未命中</span>
+                    <span v-if="message.knowledgeBaseName">{{ message.knowledgeBaseName }}</span>
+                  </div>
+                  <div
+                    v-if="message.role === 'assistant' && message.citations && message.citations.length > 0"
+                    class="citation-list"
+                  >
+                    <div class="citation-title">引用来源</div>
+                    <div
+                      v-for="(citation, citationIndex) in message.citations"
+                      :key="`${message.id || index}-${citation.document_id || citationIndex}`"
+                      class="citation-card"
+                    >
+                      <div class="citation-head">
+                        <strong>{{ citation.title || '未命名文档' }}</strong>
+                        <span v-if="Number.isFinite(citation.score)">相关度 {{ citation.score.toFixed(4) }}</span>
+                      </div>
+                      <div v-if="citation.source" class="citation-source">{{ citation.source }}</div>
+                      <div
+                        v-for="segment in citation.matched_segments || []"
+                        :key="`${citation.document_id}-${segment.segment_index}`"
+                        class="citation-segment"
+                      >
+                        <div class="citation-segment-meta">
+                          <span>#{{ segment.segment_index }}</span>
+                          <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
+                        </div>
+                        <div class="citation-segment-content">{{ segment.content }}</div>
+                      </div>
                     </div>
-                    <div class="citation-segment-content">{{ segment.content }}</div>
+                  </div>
+                  <div v-if="!message.streaming && message.role === 'assistant'" class="message-footer">
+                    <div class="message-metrics">
+                      <span v-if="message.routeScene" class="meta-chip">{{ message.routeScene }}</span>
+                      <span v-if="message.resolvedModelName" class="meta-chip">{{ message.resolvedModelName }}</span>
+                      <span v-if="message.fallbackUsed" class="meta-chip warning">已回退</span>
+                      <span v-if="message.totalTokens" class="meta-chip">{{ formatTokenCount(message.totalTokens) }} tokens</span>
+                      <span v-if="message.costUsd !== null && message.costUsd !== undefined" class="meta-chip">${{ formatCurrency(message.costUsd) }}</span>
+                      <span v-if="message.timestamp" class="meta-chip subtle">{{ formatTime(message.timestamp) }}</span>
+                    </div>
+                    <div class="message-actions">
+                      <button
+                        class="action-btn"
+                        :class="{ active: message.feedback?.label === 'like' }"
+                        @click="submitMessageFeedback(message, 'like')"
+                        title="有帮助"
+                        aria-label="有帮助"
+                      >
+                        <span>👍</span>
+                      </button>
+                      <button
+                        class="action-btn"
+                        :class="{ active: message.feedback?.label === 'dislike' }"
+                        @click="submitMessageFeedback(message, 'dislike')"
+                        title="质量较差"
+                        aria-label="质量较差"
+                      >
+                        <span>👎</span>
+                      </button>
+                      <button class="action-btn" @click="copyMessage(message.content)" title="复制" aria-label="复制">
+                        <span>⧉</span>
+                      </button>
+                      <button class="action-btn" @click="regenerateMessage(index)" v-if="message.role === 'assistant'" title="重新生成" aria-label="重新生成">
+                        <span>↻</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div v-if="message.feedback?.comment" class="feedback-note">
+                    反馈备注：{{ message.feedback.comment }}
                   </div>
                 </div>
-              </div>
-              <div v-if="!message.streaming && message.role === 'assistant'" class="message-footer">
-                <div class="message-metrics">
-                  <span v-if="message.routeScene" class="meta-chip">{{ message.routeScene }}</span>
-                  <span v-if="message.resolvedModelName" class="meta-chip">{{ message.resolvedModelName }}</span>
-                  <span v-if="message.fallbackUsed" class="meta-chip warning">已回退</span>
-                  <span v-if="message.totalTokens" class="meta-chip">{{ formatTokenCount(message.totalTokens) }} tokens</span>
-                  <span v-if="message.costUsd !== null && message.costUsd !== undefined" class="meta-chip">${{ formatCurrency(message.costUsd) }}</span>
-                </div>
-                <div class="message-actions">
-                  <button
-                    class="action-btn"
-                    :class="{ active: message.feedback?.label === 'like' }"
-                    @click="submitMessageFeedback(message, 'like')"
-                    title="有帮助"
-                  >
-                    <span>👍</span>
-                  </button>
-                  <button
-                    class="action-btn"
-                    :class="{ active: message.feedback?.label === 'dislike' }"
-                    @click="submitMessageFeedback(message, 'dislike')"
-                    title="质量较差"
-                  >
-                    <span>👎</span>
-                  </button>
-                  <button class="action-btn" @click="copyMessage(message.content)" title="复制">
-                    <span>📋</span>
-                  </button>
-                  <button class="action-btn" @click="regenerateMessage(index)" v-if="message.role === 'assistant'" title="重新生成">
-                    <span>🔄</span>
-                  </button>
-                </div>
-                <div class="message-time">{{ formatTime(message.timestamp) }}</div>
-              </div>
-              <div v-if="message.feedback?.comment" class="feedback-note">
-                反馈备注：{{ message.feedback.comment }}
               </div>
             </div>
-          </div>
+          </article>
         </div>
       </div>
 
@@ -255,6 +271,7 @@ import { chatAPI } from '@/api'
 import { useChatStore } from '@/store/chat'
 import { useModelsStore } from '@/store/models'
 import { useKnowledgeStore } from '@/store/knowledge'
+import MessageMarkdownBlocks from '@/components/MessageMarkdownBlocks.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -273,7 +290,7 @@ const messages = computed(() => chatStore.currentSession?.messages || [])
 const latestMessageSignature = computed(() => {
   const lastMessage = messages.value[messages.value.length - 1]
   if (!lastMessage) return ''
-  return `${messages.value.length}:${lastMessage.role}:${lastMessage.streaming ? 1 : 0}:${lastMessage.content?.length || 0}`
+  return `${messages.value.length}:${lastMessage.role}:${lastMessage.streaming ? 1 : 0}:${lastMessage.content?.length || 0}:${lastMessage.rawContent?.length || 0}:${lastMessage.renderBlocks?.length || 0}`
 })
 
 const enabledModels = computed(() => modelsStore.enabledModels)
@@ -484,6 +501,13 @@ const formatTokenCount = (value) => {
   return `${parsed}`
 }
 
+const hasRenderedMarkdown = (message) => {
+  return Boolean(
+    (message.renderBlocks && message.renderBlocks.length > 0) ||
+    (message.streamingRenderBlocks && message.streamingRenderBlocks.length > 0)
+  )
+}
+
 </script>
 
 <style scoped>
@@ -508,6 +532,10 @@ const formatTokenCount = (value) => {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.75;
+  color: #1e293b;
+}
+
+.streaming-markdown {
   color: #1e293b;
 }
 
@@ -680,6 +708,11 @@ const formatTokenCount = (value) => {
 }
 
 :deep(.markdown a) {
+  color: var(--primary-600);
+  text-decoration: underline;
+}
+
+:deep(.markdown .streaming-link-pending) {
   color: var(--primary-600);
   text-decoration: underline;
 }

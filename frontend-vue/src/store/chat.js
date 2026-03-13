@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia'
 import { chatAPI } from '@/api'
-import { isPlainMarkdownRequest, renderMarkdown } from '@/utils/markdown'
+import {
+  isPlainMarkdownRequest,
+  renderMarkdown,
+  renderMarkdownBlocks,
+  renderStreamingMarkdownBlocks,
+  splitMarkdownForStreaming
+} from '@/utils/markdown'
 
 try {
   localStorage.removeItem('chat_sessions')
@@ -56,6 +62,53 @@ const buildMessageHtml = (role, content, shouldRenderMarkdown = true) => {
   return renderMarkdown(content || '')
 }
 
+const buildMessageBlocks = (role, content, shouldRenderMarkdown = true) => {
+  if (role !== 'assistant' || shouldRenderMarkdown === false) {
+    return []
+  }
+  return renderMarkdownBlocks(content || '')
+}
+
+const buildStreamingMessageBlocks = (message, forceComplete = false) => {
+  const nextRawContent = message.rawContent || message.content || ''
+
+  if (message.role !== 'assistant' || message.renderMarkdown === false) {
+    return {
+      rawContent: nextRawContent,
+      stableContent: '',
+      previewContent: '',
+      renderBlocks: [],
+      streamingRenderBlocks: []
+    }
+  }
+
+  if (forceComplete) {
+    return {
+      rawContent: nextRawContent,
+      stableContent: nextRawContent,
+      previewContent: '',
+      renderBlocks: buildMessageBlocks(message.role, nextRawContent, message.renderMarkdown),
+      streamingRenderBlocks: []
+    }
+  }
+
+  const { stableContent, previewContent } = splitMarkdownForStreaming(nextRawContent)
+  const renderBlocks = stableContent === (message.renderStableContent || '')
+    ? (message.renderBlocks || [])
+    : buildMessageBlocks(message.role, stableContent, message.renderMarkdown)
+  const streamingRenderBlocks = previewContent === (message.renderPreviewContent || '')
+    ? (message.streamingRenderBlocks || [])
+    : renderStreamingMarkdownBlocks(previewContent)
+
+  return {
+    rawContent: nextRawContent,
+    stableContent,
+    previewContent,
+    renderBlocks,
+    streamingRenderBlocks
+  }
+}
+
 const normalizeMessage = (raw) => {
   const metadata = raw.metadata || {}
   const shouldRenderMarkdown = raw.role === 'assistant' ? raw.renderMarkdown !== false : false
@@ -63,9 +116,14 @@ const normalizeMessage = (raw) => {
     id: raw.id,
     role: raw.role,
     content: raw.content,
+    rawContent: raw.content,
     timestamp: raw.created_at || raw.createdAt || raw.timestamp || new Date().toISOString(),
     renderMarkdown: shouldRenderMarkdown,
     htmlContent: buildMessageHtml(raw.role, raw.content, shouldRenderMarkdown),
+    renderBlocks: buildMessageBlocks(raw.role, raw.content, shouldRenderMarkdown),
+    streamingRenderBlocks: [],
+    renderStableContent: raw.role === 'assistant' && shouldRenderMarkdown ? (raw.content || '') : '',
+    renderPreviewContent: '',
     metadata,
     citations: parseCitations(metadata),
     retrievalStatus: metadata?.retrieval_status || null,
@@ -91,6 +149,10 @@ const buildTitle = (message) => {
 }
 
 const streamControllers = new Map()
+const STREAM_PUMP_INTERVAL_MS = 16
+const STREAM_TARGET_CHARS_PER_SECOND = 160
+const STREAM_MIN_CHARS_PER_TICK = 2
+const STREAM_MAX_CHARS_PER_TICK = 4
 
 const getStreamController = (sessionId) => {
   let controller = streamControllers.get(sessionId)
@@ -99,6 +161,9 @@ const getStreamController = (sessionId) => {
       queue: '',
       pumping: false,
       timer: null,
+      renderFrame: null,
+      charBudget: 0,
+      lastPumpAt: 0,
       waiters: []
     }
     streamControllers.set(sessionId, controller)
@@ -112,12 +177,64 @@ const resolveStreamWaiters = (controller) => {
   waiters.forEach((resolve) => resolve())
 }
 
-const getStreamSliceSize = (pendingLength) => {
-  if (pendingLength > 1200) return 96
-  if (pendingLength > 600) return 64
-  if (pendingLength > 240) return 32
-  if (pendingLength > 80) return 16
-  return 6
+const getStreamSliceSize = (controller) => {
+  const now = performance.now()
+  if (!controller.lastPumpAt) {
+    controller.lastPumpAt = now
+  }
+
+  const elapsed = now - controller.lastPumpAt
+  controller.lastPumpAt = now
+  controller.charBudget += (elapsed / 1000) * STREAM_TARGET_CHARS_PER_SECOND
+
+  const plannedSize = Math.floor(controller.charBudget)
+  const nextSize = Math.min(
+    STREAM_MAX_CHARS_PER_TICK,
+    Math.max(STREAM_MIN_CHARS_PER_TICK, plannedSize || STREAM_MIN_CHARS_PER_TICK)
+  )
+
+  controller.charBudget = Math.max(0, controller.charBudget - nextSize)
+  return nextSize
+}
+
+const refreshStreamingBlocks = (store, sessionId) => {
+  const list = store.messagesBySession[sessionId] || []
+  const lastMessage = list[list.length - 1]
+  if (!lastMessage || lastMessage.role !== 'assistant' || lastMessage.renderMarkdown === false) {
+    return
+  }
+
+  const streamingState = buildStreamingMessageBlocks(lastMessage)
+  lastMessage.rawContent = streamingState.rawContent
+  lastMessage.renderBlocks = streamingState.renderBlocks
+  lastMessage.streamingRenderBlocks = streamingState.streamingRenderBlocks
+  lastMessage.renderStableContent = streamingState.stableContent
+  lastMessage.renderPreviewContent = streamingState.previewContent
+  store.messagesBySession[sessionId] = list
+}
+
+const scheduleStreamingRender = (store, sessionId) => {
+  const controller = getStreamController(sessionId)
+  if (controller.renderFrame) return
+
+  controller.renderFrame = requestAnimationFrame(() => {
+    controller.renderFrame = null
+    refreshStreamingBlocks(store, sessionId)
+
+    if (controller.queue || controller.pumping) {
+      scheduleStreamingRender(store, sessionId)
+    }
+  })
+}
+
+const flushStreamingRender = (store, sessionId) => {
+  const controller = streamControllers.get(sessionId)
+  if (!controller) return
+  if (controller.renderFrame) {
+    cancelAnimationFrame(controller.renderFrame)
+    controller.renderFrame = null
+  }
+  refreshStreamingBlocks(store, sessionId)
 }
 
 const pumpStreamContent = (store, sessionId) => {
@@ -146,9 +263,10 @@ const pumpStreamContent = (store, sessionId) => {
       return
     }
 
-    const sliceSize = getStreamSliceSize(current.queue.length)
+    const sliceSize = Math.min(current.queue.length, getStreamSliceSize(current))
     lastMessage.content += current.queue.slice(0, sliceSize)
     current.queue = current.queue.slice(sliceSize)
+    scheduleStreamingRender(store, sessionId)
 
     if (!current.queue) {
       current.pumping = false
@@ -157,7 +275,7 @@ const pumpStreamContent = (store, sessionId) => {
       return
     }
 
-    current.timer = setTimeout(step, 16)
+    current.timer = setTimeout(step, STREAM_PUMP_INTERVAL_MS)
   }
 
   controller.pumping = true
@@ -188,9 +306,15 @@ const resetStreamController = (sessionId) => {
   if (controller.timer) {
     clearTimeout(controller.timer)
   }
+  if (controller.renderFrame) {
+    cancelAnimationFrame(controller.renderFrame)
+  }
   controller.queue = ''
   controller.pumping = false
   controller.timer = null
+  controller.renderFrame = null
+  controller.charBudget = 0
+  controller.lastPumpAt = 0
   resolveStreamWaiters(controller)
   streamControllers.delete(sessionId)
 }
@@ -379,9 +503,14 @@ export const useChatStore = defineStore('chat', {
       this.addMessage({
         role: 'assistant',
         content: '',
+        rawContent: '',
         streaming: true,
         renderMarkdown,
         htmlContent: '',
+        renderBlocks: [],
+        streamingRenderBlocks: [],
+        renderStableContent: '',
+        renderPreviewContent: '',
         metadata: {},
         citations: [],
         retrievalStatus: null,
@@ -408,6 +537,10 @@ export const useChatStore = defineStore('chat', {
             if (list.length === 0) return
             const lastMessage = list[list.length - 1]
             if (chunk.content) {
+              lastMessage.rawContent = (lastMessage.rawContent || '') + chunk.content
+              if (lastMessage.renderMarkdown !== false) {
+                scheduleStreamingRender(this, sessionId)
+              }
               enqueueStreamContent(this, sessionId, chunk.content)
             }
             if (chunk.messageId || chunk.message_id) {
@@ -431,13 +564,20 @@ export const useChatStore = defineStore('chat', {
         )
 
         await waitForStreamDrain(sessionId)
+        flushStreamingRender(this, sessionId)
 
         const list = this.messagesBySession[sessionId] || []
         if (list.length > 0) {
+          list[list.length - 1].content = list[list.length - 1].rawContent || list[list.length - 1].content
           list[list.length - 1].streaming = false
+          const completedState = buildStreamingMessageBlocks(list[list.length - 1], true)
+          list[list.length - 1].renderBlocks = completedState.renderBlocks
+          list[list.length - 1].streamingRenderBlocks = []
+          list[list.length - 1].renderStableContent = completedState.stableContent
+          list[list.length - 1].renderPreviewContent = ''
           list[list.length - 1].htmlContent = buildMessageHtml(
             list[list.length - 1].role,
-            list[list.length - 1].content,
+            list[list.length - 1].rawContent || list[list.length - 1].content,
             list[list.length - 1].renderMarkdown
           )
           this.messagesBySession[sessionId] = list
@@ -451,9 +591,14 @@ export const useChatStore = defineStore('chat', {
         const list = this.messagesBySession[sessionId] || []
         if (list.length > 0) {
           list[list.length - 1].content = 'Error: ' + error.message
+          list[list.length - 1].rawContent = list[list.length - 1].content
           list[list.length - 1].streaming = false
           list[list.length - 1].error = true
           list[list.length - 1].htmlContent = ''
+          list[list.length - 1].renderBlocks = []
+          list[list.length - 1].streamingRenderBlocks = []
+          list[list.length - 1].renderStableContent = ''
+          list[list.length - 1].renderPreviewContent = ''
           this.messagesBySession[sessionId] = list
         }
         throw error

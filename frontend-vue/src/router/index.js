@@ -1,19 +1,20 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import Login from '../views/Login.vue'
-import Register from '../views/Register.vue'
-import Chat from '../views/Chat.vue'
-import History from '../views/History.vue'
-import CostStats from '../views/CostStats.vue'
-import ModelsManage from '../views/ModelsManage.vue'
-import Profile from '../views/Profile.vue'
-import Settings from '../views/Settings.vue'
-import AgentPlaceholder from '../views/AgentPlaceholder.vue'
-import KnowledgeBaseList from '../views/KnowledgeBaseList.vue'
-import KnowledgeBaseCreate from '../views/KnowledgeBaseCreate.vue'
-import KnowledgeBaseDetail from '../views/KnowledgeBaseDetail.vue'
-import KnowledgeBaseEdit from '../views/KnowledgeBaseEdit.vue'
-import KnowledgeBaseSettings from '../views/KnowledgeBaseSettings.vue'
-import KnowledgeBaseRetrievalTest from '../views/KnowledgeBaseRetrievalTest.vue'
+
+const Login = () => import('../views/Login.vue')
+const Register = () => import('../views/Register.vue')
+const Chat = () => import('../views/Chat.vue')
+const History = () => import('../views/History.vue')
+const CostStats = () => import('../views/CostStats.vue')
+const ModelsManage = () => import('../views/ModelsManage.vue')
+const Profile = () => import('../views/Profile.vue')
+const Settings = () => import('../views/Settings.vue')
+const AgentPlaceholder = () => import('../views/AgentPlaceholder.vue')
+const KnowledgeBaseList = () => import('../views/KnowledgeBaseList.vue')
+const KnowledgeBaseCreate = () => import('../views/KnowledgeBaseCreate.vue')
+const KnowledgeBaseDetail = () => import('../views/KnowledgeBaseDetail.vue')
+const KnowledgeBaseEdit = () => import('../views/KnowledgeBaseEdit.vue')
+const KnowledgeBaseSettings = () => import('../views/KnowledgeBaseSettings.vue')
+const KnowledgeBaseRetrievalTest = () => import('../views/KnowledgeBaseRetrievalTest.vue')
 
 const routes = [
   {
