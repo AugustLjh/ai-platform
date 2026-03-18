@@ -53,7 +53,6 @@ class ChatServiceGRPC(chat_service_pb2_grpc.ChatServiceServicer):
                     'temperature': request.config.temperature,
                     'max_tokens': request.config.max_tokens,
                     'use_rag': request.config.use_rag,
-                    'use_agent': request.config.use_agent,
                     'tools': list(request.config.tools),
                     'knowledge_base_id': knowledge_base_id,
                 }

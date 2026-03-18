@@ -88,6 +88,7 @@ services:
     volumes:
       - letsencrypt_data:/etc/letsencrypt:rw
       - certbot_webroot:/var/www/certbot:rw
+      - ./frontend-dist:/srv/frontend:ro
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/health"]
       interval: 30s

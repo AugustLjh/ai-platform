@@ -91,15 +91,13 @@
         <div
           v-for="(message, index) in messages"
           :key="index"
-          :class="['thread-turn', `thread-turn-${message.role}`]"
+          :class="['message-row', message.role]"
         >
-          <article class="thread-article" :data-turn-role="message.role">
-            <div class="thread-shell">
-              <div :class="['thread-message', `thread-message-${message.role}`]">
-                <div v-if="message.role !== 'user'" class="message-avatar">
-                  <span class="ai-avatar">AI</span>
-                </div>
-                <div class="message-content">
+          <div :class="['message', message.role]">
+            <div v-if="message.role !== 'user'" class="message-avatar">
+              <span class="ai-avatar">AI</span>
+            </div>
+            <div class="message-content">
               <div
                 v-if="message.streaming && !message.content"
                 class="typing-indicator"
@@ -108,7 +106,7 @@
                 <span></span>
                 <span></span>
               </div>
-                <div class="message-text">
+              <div class="message-text">
                 <template v-if="message.role === 'assistant' && message.renderMarkdown !== false">
                   <div
                     v-if="hasRenderedMarkdown(message)"
@@ -140,84 +138,93 @@
                 </template>
                 <span v-if="message.streaming" class="stream-cursor">▍</span>
               </div>
+              <div
+                v-if="message.role === 'assistant' && message.retrievalStatus === 'no_hits'"
+                class="retrieval-banner"
+              >
+                <span class="retrieval-banner-label">知识库未命中</span>
+                <span v-if="message.knowledgeBaseName">{{ message.knowledgeBaseName }}</span>
+              </div>
+              <div
+                v-if="message.role === 'assistant' && message.citations && message.citations.length > 0"
+                class="citation-list"
+              >
+                <button
+                  type="button"
+                  class="citation-toggle"
+                  :aria-expanded="isCitationOpen(message, index)"
+                  @click="toggleCitations(message, index)"
+                >
+                  <span class="citation-title">引用来源</span>
+                  <span class="citation-toggle-meta">{{ message.citations.length }} 条</span>
+                  <span class="citation-toggle-icon">{{ isCitationOpen(message, index) ? '收起' : '展开' }}</span>
+                </button>
+                <div v-if="isCitationOpen(message, index)" class="citation-items">
                   <div
-                    v-if="message.role === 'assistant' && message.retrievalStatus === 'no_hits'"
-                    class="retrieval-banner"
+                    v-for="(citation, citationIndex) in message.citations"
+                    :key="`${message.id || index}-${citation.document_id || citationIndex}`"
+                    class="citation-card"
                   >
-                    <span class="retrieval-banner-label">知识库未命中</span>
-                    <span v-if="message.knowledgeBaseName">{{ message.knowledgeBaseName }}</span>
-                  </div>
-                  <div
-                    v-if="message.role === 'assistant' && message.citations && message.citations.length > 0"
-                    class="citation-list"
-                  >
-                    <div class="citation-title">引用来源</div>
+                    <div class="citation-head">
+                      <strong>{{ citation.title || '未命名文档' }}</strong>
+                      <span v-if="Number.isFinite(citation.score)">相关度 {{ citation.score.toFixed(4) }}</span>
+                    </div>
+                    <div v-if="citation.source" class="citation-source">{{ citation.source }}</div>
                     <div
-                      v-for="(citation, citationIndex) in message.citations"
-                      :key="`${message.id || index}-${citation.document_id || citationIndex}`"
-                      class="citation-card"
+                      v-for="segment in citation.matched_segments || []"
+                      :key="`${citation.document_id}-${segment.segment_index}`"
+                      class="citation-segment"
                     >
-                      <div class="citation-head">
-                        <strong>{{ citation.title || '未命名文档' }}</strong>
-                        <span v-if="Number.isFinite(citation.score)">相关度 {{ citation.score.toFixed(4) }}</span>
+                      <div class="citation-segment-meta">
+                        <span>#{{ segment.segment_index }}</span>
+                        <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
                       </div>
-                      <div v-if="citation.source" class="citation-source">{{ citation.source }}</div>
-                      <div
-                        v-for="segment in citation.matched_segments || []"
-                        :key="`${citation.document_id}-${segment.segment_index}`"
-                        class="citation-segment"
-                      >
-                        <div class="citation-segment-meta">
-                          <span>#{{ segment.segment_index }}</span>
-                          <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
-                        </div>
-                        <div class="citation-segment-content">{{ segment.content }}</div>
-                      </div>
+                      <div class="citation-segment-content">{{ segment.content }}</div>
                     </div>
-                  </div>
-                  <div v-if="!message.streaming && message.role === 'assistant'" class="message-footer">
-                    <div class="message-metrics">
-                      <span v-if="message.routeScene" class="meta-chip">{{ message.routeScene }}</span>
-                      <span v-if="message.resolvedModelName" class="meta-chip">{{ message.resolvedModelName }}</span>
-                      <span v-if="message.fallbackUsed" class="meta-chip warning">已回退</span>
-                      <span v-if="message.totalTokens" class="meta-chip">{{ formatTokenCount(message.totalTokens) }} tokens</span>
-                      <span v-if="message.costUsd !== null && message.costUsd !== undefined" class="meta-chip">${{ formatCurrency(message.costUsd) }}</span>
-                      <span v-if="message.timestamp" class="meta-chip subtle">{{ formatTime(message.timestamp) }}</span>
-                    </div>
-                    <div class="message-actions">
-                      <button
-                        class="action-btn"
-                        :class="{ active: message.feedback?.label === 'like' }"
-                        @click="submitMessageFeedback(message, 'like')"
-                        title="有帮助"
-                        aria-label="有帮助"
-                      >
-                        <span>👍</span>
-                      </button>
-                      <button
-                        class="action-btn"
-                        :class="{ active: message.feedback?.label === 'dislike' }"
-                        @click="submitMessageFeedback(message, 'dislike')"
-                        title="质量较差"
-                        aria-label="质量较差"
-                      >
-                        <span>👎</span>
-                      </button>
-                      <button class="action-btn" @click="copyMessage(message.content)" title="复制" aria-label="复制">
-                        <span>⧉</span>
-                      </button>
-                      <button class="action-btn" @click="regenerateMessage(index)" v-if="message.role === 'assistant'" title="重新生成" aria-label="重新生成">
-                        <span>↻</span>
-                      </button>
-                    </div>
-                  </div>
-                  <div v-if="message.feedback?.comment" class="feedback-note">
-                    反馈备注：{{ message.feedback.comment }}
                   </div>
                 </div>
               </div>
+              <div v-if="!message.streaming && message.role === 'assistant'" class="message-footer">
+                <div class="message-metrics">
+                  <span v-if="message.routeScene" class="meta-chip">{{ message.routeScene }}</span>
+                  <span v-if="message.resolvedModelName" class="meta-chip">{{ message.resolvedModelName }}</span>
+                  <span v-if="message.fallbackUsed" class="meta-chip warning">已回退</span>
+                  <span v-if="message.totalTokens" class="meta-chip">{{ formatTokenCount(message.totalTokens) }} tokens</span>
+                  <span v-if="message.costUsd !== null && message.costUsd !== undefined" class="meta-chip">${{ formatCurrency(message.costUsd) }}</span>
+                  <span v-if="message.timestamp" class="meta-chip subtle">{{ formatTime(message.timestamp) }}</span>
+                </div>
+                <div class="message-actions">
+                  <button
+                    class="action-btn"
+                    :class="{ active: message.feedback?.label === 'like' }"
+                    @click="submitMessageFeedback(message, 'like')"
+                    title="有帮助"
+                    aria-label="有帮助"
+                  >
+                    <span>👍</span>
+                  </button>
+                  <button
+                    class="action-btn"
+                    :class="{ active: message.feedback?.label === 'dislike' }"
+                    @click="submitMessageFeedback(message, 'dislike')"
+                    title="质量较差"
+                    aria-label="质量较差"
+                  >
+                    <span>👎</span>
+                  </button>
+                  <button class="action-btn" @click="copyMessage(message.content)" title="复制" aria-label="复制">
+                    <span>⧉</span>
+                  </button>
+                  <button class="action-btn" @click="regenerateMessage(index)" v-if="message.role === 'assistant'" title="重新生成" aria-label="重新生成">
+                    <span>↻</span>
+                  </button>
+                </div>
+              </div>
+              <div v-if="message.feedback?.comment" class="feedback-note">
+                反馈备注：{{ message.feedback.comment }}
+              </div>
             </div>
-          </article>
+          </div>
         </div>
       </div>
 
@@ -285,6 +292,7 @@ const isComposing = ref(false)
 const error = ref('')
 const messagesContainer = ref(null)
 const textareaRef = ref(null)
+const openCitationKeys = ref({})
 
 const messages = computed(() => chatStore.currentSession?.messages || [])
 const latestMessageSignature = computed(() => {
@@ -508,6 +516,18 @@ const hasRenderedMarkdown = (message) => {
   )
 }
 
+const getCitationKey = (message, index) => message.id || `${index}-${message.timestamp || ''}`
+
+const isCitationOpen = (message, index) => Boolean(openCitationKeys.value[getCitationKey(message, index)])
+
+const toggleCitations = (message, index) => {
+  const key = getCitationKey(message, index)
+  openCitationKeys.value = {
+    ...openCitationKeys.value,
+    [key]: !openCitationKeys.value[key]
+  }
+}
+
 </script>
 
 <style scoped>
@@ -564,12 +584,41 @@ const hasRenderedMarkdown = (message) => {
   gap: 10px;
 }
 
+.citation-toggle {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid #dbe4ee;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+}
+
+.citation-toggle:hover {
+  background: #f1f5f9;
+}
+
 .citation-title {
   font-size: 12px;
   font-weight: 700;
   color: #475569;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.citation-toggle-meta,
+.citation-toggle-icon {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.citation-items {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .citation-card {
@@ -863,6 +912,7 @@ const hasRenderedMarkdown = (message) => {
   position: relative;
   --thread-content-margin: 16px;
   --thread-content-max-width: 40rem;
+  --assistant-content-max-ratio: 70%;
   width: 100%;
   max-width: 100%;
 }
@@ -1540,9 +1590,14 @@ const hasRenderedMarkdown = (message) => {
 
 .message-row.assistant .message {
   max-width: 100%;
+  justify-content: flex-start;
 }
 
-.message-row.assistant .message-content,
+.message-row.assistant .message-content {
+  width: var(--assistant-content-max-ratio);
+  max-width: var(--assistant-content-max-ratio);
+}
+
 .message-row.assistant .message-text {
   width: 100%;
 }

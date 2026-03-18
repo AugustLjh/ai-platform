@@ -91,7 +91,6 @@ type ChatConfig struct {
 	Temperature float32  `protobuf:"fixed32,2,opt,name=temperature,proto3" json:"temperature,omitempty"`
 	MaxTokens   int32    `protobuf:"varint,3,opt,name=max_tokens,json=maxTokens,proto3" json:"max_tokens,omitempty"`
 	UseRag      bool     `protobuf:"varint,4,opt,name=use_rag,json=useRag,proto3" json:"use_rag,omitempty"`
-	UseAgent    bool     `protobuf:"varint,5,opt,name=use_agent,json=useAgent,proto3" json:"use_agent,omitempty"`
 	Tools       []string `protobuf:"bytes,6,rep,name=tools,proto3" json:"tools,omitempty"`
 }
 
@@ -133,13 +132,6 @@ func (x *ChatConfig) GetMaxTokens() int32 {
 func (x *ChatConfig) GetUseRag() bool {
 	if x != nil {
 		return x.UseRag
-	}
-	return false
-}
-
-func (x *ChatConfig) GetUseAgent() bool {
-	if x != nil {
-		return x.UseAgent
 	}
 	return false
 }
@@ -299,11 +291,11 @@ type ChatMessage struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Id         string            `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Role       string            `protobuf:"bytes,2,opt,name=role,proto3" json:"role,omitempty"`
-	Content    string            `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
-	Timestamp  int64             `protobuf:"varint,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	TokenUsage map[string]int32  `protobuf:"bytes,5,rep,name=token_usage,json=tokenUsage,proto3" json:"token_usage,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
+	Id         string           `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Role       string           `protobuf:"bytes,2,opt,name=role,proto3" json:"role,omitempty"`
+	Content    string           `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	Timestamp  int64            `protobuf:"varint,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	TokenUsage map[string]int32 `protobuf:"bytes,5,rep,name=token_usage,json=tokenUsage,proto3" json:"token_usage,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
 }
 
 func (x *ChatMessage) Reset() {

@@ -1,20 +1,18 @@
 COMPOSE := docker compose
-DEV_FILES := -f docker-compose.yml -f docker-compose.dev.yml
 PROD_INFRA_FILES := -f docker-compose.infra.yml
 PROD_BACKEND_FILES := -f docker-compose.backend.yml
 PROD_FRONTEND_FILES := -f docker-compose.frontend.yml
 SAFE_BUILD_ENV := DOCKER_BUILDKIT=0 COMPOSE_PARALLEL_LIMIT=1
+FRONTEND_RELEASE_ROOT := frontend-dist
 PROD_REQUIRED_IMAGES := \
 	pgvector/pgvector:pg16 \
 	docker.1ms.run/library/redis:alpine \
 	ai-platform-infra-nginx \
 	certbot/certbot:latest \
 	ai-platform-backend-ai-runtime \
-	ai-platform-backend-platform \
-	ai-platform-frontend-frontend
+	ai-platform-backend-platform
 
 .PHONY: help \
-	dev dev-build dev-logs dev-down \
 	prod prod-build prod-build-safe prod-logs prod-down prod-check \
 	infra-up infra-build infra-build-safe infra-logs infra-down infra-ps \
 	backend-up backend-build backend-build-safe backend-logs backend-down backend-ps \
@@ -22,19 +20,13 @@ PROD_REQUIRED_IMAGES := \
 	ai-runtime-build ai-runtime-build-safe \
 	platform-build platform-build-safe \
 	ps clean test \
-	db-migrate db-shell redis-cli \
+	db-upgrade db-current db-history db-revision db-reset-to-alembic db-shell redis-cli \
 	restart-platform restart-ai-runtime restart-frontend restart-nginx
 
 help:
 	@echo "AI Platform - Docker Compose 管理命令"
 	@echo ""
-	@echo "开发环境:"
-	@echo "  make dev              - 启动开发环境（热重载）"
-	@echo "  make dev-build        - 重新构建并启动开发环境"
-	@echo "  make dev-logs         - 查看开发环境日志"
-	@echo "  make dev-down         - 停止开发环境"
-	@echo ""
-	@echo "拆分后的生产编排:"
+	@echo "统一部署编排:"
 	@echo "  make infra-up         - 启动基础设施（postgres/redis/nginx/certbot）"
 	@echo "  make infra-build      - 重构基础设施中的可构建镜像"
 	@echo "  make infra-build-safe - 低 I/O 模式重构 nginx 镜像"
@@ -45,11 +37,11 @@ help:
 	@echo "  make backend-build-safe - 低 I/O 模式重构后端镜像"
 	@echo "  make backend-logs     - 查看后端日志"
 	@echo "  make backend-down     - 停止后端"
-	@echo "  make frontend-up      - 启动前端"
-	@echo "  make frontend-build   - 重构前端镜像"
-	@echo "  make frontend-build-safe - 低 I/O 模式重构前端镜像"
-	@echo "  make frontend-logs    - 查看前端日志"
-	@echo "  make frontend-down    - 停止前端"
+	@echo "  make frontend-up      - 校验当前前端静态发布并确保 nginx 运行"
+	@echo "  make frontend-build   - 构建并发布新的前端静态版本"
+	@echo "  make frontend-build-safe - 低 I/O 模式构建并发布新的前端静态版本"
+	@echo "  make frontend-logs    - 查看共享 nginx 日志"
+	@echo "  make frontend-down    - 前端已并入共享 nginx，无独立容器可停止"
 	@echo ""
 	@echo "单服务重构:"
 	@echo "  make ai-runtime-build - 仅重构 AI Runtime 镜像"
@@ -67,42 +59,21 @@ help:
 	@echo ""
 	@echo "通用命令:"
 	@echo "  make ps               - 查看 ai-platform 相关容器"
-	@echo "  make clean            - 停止开发环境和拆分后的生产环境，并清理卷"
-	@echo "  make test             - 在开发编排中执行测试"
+	@echo "  make clean            - 停止当前统一部署环境，并清理卷"
+	@echo "  make test             - 在本地开发环境执行测试"
 	@echo ""
 	@echo "数据库与服务:"
-	@echo "  make db-migrate       - 向 postgres 容器顺序执行迁移"
+	@echo "  make db-upgrade       - 使用 Alembic 升级到最新版本"
+	@echo "  make db-current       - 查看当前 Alembic 版本"
+	@echo "  make db-history       - 查看 Alembic 历史"
+	@echo "  make db-revision m=... - 创建新的 Alembic revision"
+	@echo "  make db-reset-to-alembic - 备份数据并重建为 Alembic 管理"
 	@echo "  make db-shell         - 进入 PostgreSQL shell"
 	@echo "  make redis-cli        - 进入 Redis CLI"
 	@echo "  make restart-platform - 重启 platform"
 	@echo "  make restart-ai-runtime - 重启 ai-runtime"
-	@echo "  make restart-frontend - 重启 frontend"
+	@echo "  make restart-frontend - 前端已并入共享 nginx，重新发布请使用 make frontend-build"
 	@echo "  make restart-nginx    - 重启 nginx"
-
-# ============================================
-# 开发环境
-# ============================================
-
-dev:
-	@echo "启动开发环境（支持热重载）..."
-	$(COMPOSE) $(DEV_FILES) --profile full up -d
-	@echo "开发环境已启动"
-	@echo "  - 前端: http://localhost:5173"
-	@echo "  - 后端: http://localhost:8080"
-	@echo "  - AI Runtime: http://localhost:8000"
-	@echo "  - PostgreSQL: localhost:5433"
-	@echo "  - Redis: localhost:6379"
-
-dev-build:
-	@echo "重新构建并启动开发环境..."
-	$(COMPOSE) $(DEV_FILES) --profile full up -d --build
-
-dev-logs:
-	$(COMPOSE) $(DEV_FILES) logs -f
-
-dev-down:
-	@echo "停止开发环境..."
-	$(COMPOSE) $(DEV_FILES) --profile full down --remove-orphans
 
 # ============================================
 # 拆分后的生产编排
@@ -155,28 +126,30 @@ backend-ps:
 	$(COMPOSE) $(PROD_BACKEND_FILES) ps
 
 frontend-up:
-	@echo "启动前端服务..."
-	$(COMPOSE) $(PROD_FRONTEND_FILES) up -d --no-build
+	@echo "校验当前前端静态发布..."
+	@test -f $(FRONTEND_RELEASE_ROOT)/current/index.html || (echo "缺少已发布的前端静态资源，请先执行 make frontend-build" && exit 1)
+	$(COMPOSE) $(PROD_INFRA_FILES) up -d --no-build nginx
 
 frontend-build:
-	@echo "重构前端镜像..."
-	$(COMPOSE) $(PROD_FRONTEND_FILES) build frontend
-	$(COMPOSE) $(PROD_FRONTEND_FILES) up -d frontend
+	@echo "构建并发布前端静态资源..."
+	./scripts/publish-frontend.sh
+	$(COMPOSE) $(PROD_INFRA_FILES) up -d --no-build nginx
 
 frontend-build-safe:
-	@echo "低 I/O 模式重构前端镜像..."
-	$(SAFE_BUILD_ENV) $(COMPOSE) $(PROD_FRONTEND_FILES) build frontend
-	$(COMPOSE) $(PROD_FRONTEND_FILES) up -d --no-build frontend
+	@echo "低 I/O 模式构建并发布前端静态资源..."
+	$(SAFE_BUILD_ENV) ./scripts/publish-frontend.sh
+	$(COMPOSE) $(PROD_INFRA_FILES) up -d --no-build nginx
 
 frontend-logs:
-	$(COMPOSE) $(PROD_FRONTEND_FILES) logs -f frontend
+	@echo "前端静态资源由共享 nginx 托管，以下为 nginx 日志:"
+	$(COMPOSE) $(PROD_INFRA_FILES) logs -f nginx
 
 frontend-down:
-	@echo "停止前端服务..."
-	$(COMPOSE) $(PROD_FRONTEND_FILES) down --remove-orphans
+	@echo "前端静态资源已并入共享 nginx，无独立前端容器可停止"
 
 frontend-ps:
-	$(COMPOSE) $(PROD_FRONTEND_FILES) ps
+	@echo "当前前端发布:"
+	@readlink -f $(FRONTEND_RELEASE_ROOT)/current 2>/dev/null || echo "未找到 current 发布"
 
 # ============================================
 # 兼容的整栈命令
@@ -195,6 +168,7 @@ prod-check:
 		echo "请在资源充足的机器上显式执行 make infra-build/backend-build/frontend-build，或预先导入镜像。"; \
 		exit 1; \
 	fi
+	@test -f $(FRONTEND_RELEASE_ROOT)/current/index.html || (echo "缺少已发布的前端静态资源，请先执行 make frontend-build"; exit 1)
 	@if grep -Eq '^EMBEDDING_PROVIDER=local$$' ai_runtime/.env; then \
 		if [ "$$ALLOW_LOCAL_EMBEDDING" != "1" ]; then \
 			echo "检测到 ai_runtime/.env 使用 EMBEDDING_PROVIDER=local。"; \
@@ -203,7 +177,7 @@ prod-check:
 			exit 1; \
 		fi; \
 	fi
-	@echo "注意: 新数据库不会自动迁移。首次部署请先执行 make infra-up 和 make db-migrate，再启动后端。"
+	@echo "注意: 数据库现在由 Alembic 管理。首次部署先执行 make infra-up，再运行 make db-upgrade 或直接启动后端。"
 
 prod: prod-check infra-up backend-up frontend-up
 	@echo "生产环境已按 infra/backend/frontend 拆分方式启动"
@@ -235,6 +209,10 @@ ai-runtime-build:
 	$(COMPOSE) $(PROD_BACKEND_FILES) build ai-runtime
 	$(COMPOSE) $(PROD_BACKEND_FILES) up -d --no-build ai-runtime
 
+ai-runtime-down:
+	@echo "仅清除 AI Runtime 镜像..."
+	$(COMPOSE) $(PROD_BACKEND_FILES) down ai-runtime --remove-orphans
+
 ai-runtime-build-safe:
 	@echo "低 I/O 模式仅重构 AI Runtime 镜像..."
 	$(SAFE_BUILD_ENV) $(COMPOSE) $(PROD_BACKEND_FILES) build ai-runtime
@@ -245,6 +223,10 @@ platform-build:
 	$(COMPOSE) $(PROD_BACKEND_FILES) build platform
 	$(COMPOSE) $(PROD_BACKEND_FILES) up -d --no-build platform
 
+platform-down:
+	@echo "仅清理 Platform 镜像..."
+	$(COMPOSE) $(PROD_BACKEND_FILES) down platform --remove-orphans
+
 platform-build-safe:
 	@echo "低 I/O 模式仅重构 Platform 镜像..."
 	$(SAFE_BUILD_ENV) $(COMPOSE) $(PROD_BACKEND_FILES) build platform
@@ -254,35 +236,41 @@ ps:
 	docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" --filter name=ai-platform
 
 clean:
-	@echo "清理开发环境和拆分后的生产环境..."
-	-$(COMPOSE) $(DEV_FILES) --profile full down -v --remove-orphans
+	@echo "清理当前统一部署环境..."
 	-$(COMPOSE) $(PROD_FRONTEND_FILES) down -v --remove-orphans
 	-$(COMPOSE) $(PROD_BACKEND_FILES) down -v --remove-orphans
 	-$(COMPOSE) $(PROD_INFRA_FILES) down -v --remove-orphans
 	@echo "清理完成"
 
 test:
-	@echo "运行测试..."
-	$(COMPOSE) $(DEV_FILES) run --rm ai-runtime pytest
-	$(COMPOSE) $(DEV_FILES) run --rm platform go test ./...
+	@echo "运行本地测试..."
+	cd ai_runtime && pytest
+	cd platform && go test ./...
 
 # ============================================
 # 数据库与缓存
 # ============================================
 
-db-migrate:
-	@echo "执行数据库迁移..."
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/001_initial_schema.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/002_knowledge_base_enhancements.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/003_enable_pgvector.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/004_add_knowledge_bases.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/005_migrate_existing_documents.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/006_llm_models.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/007_add_model_type.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/008_add_quota_periods.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/009_add_retrieval_evaluation.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/010_enable_full_text_search.sql
-	docker compose $(PROD_INFRA_FILES) exec -T postgres psql -U ai_platform -d ai_platform < db/migrations/011_document_chunk_indexing.sql
+db-upgrade:
+	@echo "执行 Alembic 升级..."
+	docker compose $(PROD_BACKEND_FILES) run --rm --entrypoint alembic ai-runtime -c /app/db/alembic.ini upgrade head
+
+db-current:
+	@echo "查看当前 Alembic 版本..."
+	docker compose $(PROD_BACKEND_FILES) run --rm --entrypoint alembic ai-runtime -c /app/db/alembic.ini current
+
+db-history:
+	@echo "查看 Alembic 历史..."
+	docker compose $(PROD_BACKEND_FILES) run --rm --entrypoint alembic ai-runtime -c /app/db/alembic.ini history
+
+db-revision:
+	@test -n "$(m)" || (echo "用法: make db-revision m=add_some_change" && exit 1)
+	@echo "创建 Alembic revision: $(m)"
+	docker compose $(PROD_BACKEND_FILES) run --rm --entrypoint alembic ai-runtime -c /app/db/alembic.ini revision -m "$(m)"
+
+db-reset-to-alembic:
+	@echo "备份现有数据并重建为 Alembic 管理..."
+	./scripts/db/reset_to_alembic.sh
 
 db-shell:
 	@echo "连接到 PostgreSQL..."
@@ -303,7 +291,7 @@ restart-ai-runtime:
 	$(COMPOSE) $(PROD_BACKEND_FILES) restart ai-runtime
 
 restart-frontend:
-	$(COMPOSE) $(PROD_FRONTEND_FILES) restart frontend
+	@echo "前端已并入共享 nginx，无独立前端容器可重启；重新发布请执行 make frontend-build"
 
 restart-nginx:
 	$(COMPOSE) $(PROD_INFRA_FILES) restart nginx

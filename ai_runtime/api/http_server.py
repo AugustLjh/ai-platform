@@ -24,7 +24,6 @@ class ChatConfig(BaseModel):
     """Chat configuration"""
     model: Optional[str] = Field(default=None, description="Requested model selector")
     use_rag: bool = Field(default=False, description="Enable RAG")
-    use_agent: bool = Field(default=False, description="Enable Agent")
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=2000, ge=1, le=8000)
     knowledge_base_id: Optional[str] = Field(default=None, description="Knowledge base ID for RAG")
@@ -94,14 +93,12 @@ class InternalChatConfig:
         self,
         model: Optional[str],
         use_rag: bool,
-        use_agent: bool,
         temperature: float,
         max_tokens: int,
         knowledge_base_id: Optional[str] = None,
     ):
         self.model = model
         self.use_rag = use_rag
-        self.use_agent = use_agent
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.knowledge_base_id = knowledge_base_id
@@ -178,7 +175,6 @@ def create_http_app() -> FastAPI:
                 config=InternalChatConfig(
                     model=request.config.model,
                     use_rag=request.config.use_rag,
-                    use_agent=request.config.use_agent,
                     temperature=request.config.temperature,
                     max_tokens=request.config.max_tokens,
                     knowledge_base_id=request.config.knowledge_base_id
@@ -217,7 +213,6 @@ def create_http_app() -> FastAPI:
                     config=InternalChatConfig(
                         model=request.config.model,
                         use_rag=request.config.use_rag,
-                        use_agent=request.config.use_agent,
                         temperature=request.config.temperature,
                         max_tokens=request.config.max_tokens,
                         knowledge_base_id=request.config.knowledge_base_id
@@ -258,8 +253,8 @@ def create_http_app() -> FastAPI:
                 session_id=session_id,
                 message="",
                 config=InternalChatConfig(
+                    model=None,
                     use_rag=False,
-                    use_agent=False,
                     temperature=0.7,
                     max_tokens=2000,
                     knowledge_base_id=None

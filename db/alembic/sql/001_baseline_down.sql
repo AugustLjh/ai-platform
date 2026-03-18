@@ -1,0 +1,17 @@
+DROP TABLE IF EXISTS public.document_chunks CASCADE;
+DROP TABLE IF EXISTS public.retrieval_test_runs CASCADE;
+DROP TABLE IF EXISTS public.retrieval_test_sets CASCADE;
+DROP TABLE IF EXISTS public.token_usage CASCADE;
+DROP TABLE IF EXISTS public.messages CASCADE;
+DROP TABLE IF EXISTS public.api_keys CASCADE;
+DROP TABLE IF EXISTS public.documents CASCADE;
+DROP TABLE IF EXISTS public.llm_models CASCADE;
+DROP TABLE IF EXISTS public.audit_logs CASCADE;
+DROP TABLE IF EXISTS public.quotas CASCADE;
+DROP TABLE IF EXISTS public.sessions CASCADE;
+DROP TABLE IF EXISTS public.knowledge_bases CASCADE;
+DROP TABLE IF EXISTS public.users CASCADE;
+DROP TABLE IF EXISTS public.tenants CASCADE;
+DROP FUNCTION IF EXISTS public.update_updated_at_column();
+DROP EXTENSION IF EXISTS vector;
+DROP EXTENSION IF EXISTS "uuid-ossp";

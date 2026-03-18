@@ -328,7 +328,6 @@ export const useChatStore = defineStore('chat', {
     error: null,
     config: {
       useRAG: localStorage.getItem('chat_use_rag') === 'true',
-      useAgent: localStorage.getItem('chat_use_agent') === 'true',
       temperature: Number(localStorage.getItem('chat_temperature') || 0.7),
       maxTokens: Number(localStorage.getItem('chat_max_tokens') || 2000),
       knowledgeBaseId: localStorage.getItem('chat_knowledge_base_id') || ''
@@ -527,7 +526,6 @@ export const useChatStore = defineStore('chat', {
           {
             model: configOverride.model,
             use_rag: configOverride.use_rag ?? (effectiveKnowledgeBaseId ? true : this.config.useRAG),
-            use_agent: configOverride.use_agent ?? this.config.useAgent,
             temperature: configOverride.temperature ?? this.config.temperature,
             max_tokens: configOverride.max_tokens ?? this.config.maxTokens,
             knowledge_base_id: effectiveKnowledgeBaseId || undefined
@@ -611,7 +609,6 @@ export const useChatStore = defineStore('chat', {
         ...partial
       }
       localStorage.setItem('chat_use_rag', String(this.config.useRAG))
-      localStorage.setItem('chat_use_agent', String(this.config.useAgent))
       localStorage.setItem('chat_temperature', String(this.config.temperature))
       localStorage.setItem('chat_max_tokens', String(this.config.maxTokens))
       localStorage.setItem('chat_knowledge_base_id', String(this.config.knowledgeBaseId || ''))

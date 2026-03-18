@@ -42,7 +42,6 @@ type ChatConfig struct {
 	Temperature     float32
 	MaxTokens       int32
 	UseRAG          bool
-	UseAgent        bool
 	Tools           []string
 	KnowledgeBaseID string
 }
@@ -115,7 +114,6 @@ func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *Ch
 			Temperature: req.Config.Temperature,
 			MaxTokens:   req.Config.MaxTokens,
 			UseRag:      req.Config.UseRAG,
-			UseAgent:    req.Config.UseAgent,
 			Tools:       req.Config.Tools,
 		},
 	}
@@ -185,7 +183,6 @@ type httpChatRequest struct {
 type httpChatConfig struct {
 	Model           string  `json:"model"`
 	UseRAG          bool    `json:"use_rag"`
-	UseAgent        bool    `json:"use_agent"`
 	Temperature     float32 `json:"temperature"`
 	MaxTokens       int32   `json:"max_tokens"`
 	KnowledgeBaseID string  `json:"knowledge_base_id"`
@@ -222,7 +219,6 @@ func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan
 		Config: httpChatConfig{
 			Model:           config.Model,
 			UseRAG:          config.UseRAG,
-			UseAgent:        config.UseAgent,
 			Temperature:     config.Temperature,
 			MaxTokens:       config.MaxTokens,
 			KnowledgeBaseID: config.KnowledgeBaseID,

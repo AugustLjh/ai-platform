@@ -276,6 +276,7 @@ onMounted(async () => {
 .app-sidebar {
   width: var(--sidebar-width);
   flex: 0 0 var(--sidebar-width);
+  height: 100%;
   background: var(--gpt-sidebar);
   border-right: 1px solid #2a2b2e;
   color: #cbd5e1;
@@ -612,11 +613,9 @@ onMounted(async () => {
 
 @media (max-width: 1024px) {
   .app-sidebar {
-    position: absolute;
-    left: 0;
-    top: 0;
-    height: 100vh;
-    z-index: 100;
+    width: 100%;
+    flex-basis: 100%;
+    border-right: 1px solid #2a2b2e;
     box-shadow: 0 12px 24px rgba(0, 0, 0, 0.25);
   }
 }

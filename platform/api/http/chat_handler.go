@@ -164,7 +164,6 @@ func (h *ChatHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		// Stream chat
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-		defer cancel() // Ensure cleanup in all paths
 
 		messageChan, err := h.chatService.StreamChat(ctx, serviceReq)
 		if err != nil {
@@ -664,7 +663,6 @@ func (h *ChatHandler) toServiceRequest(req *ChatRequest) *service.ChatRequest {
 		Temperature:     0.7,
 		MaxTokens:       2000,
 		UseRAG:          false,
-		UseAgent:        false,
 		Tools:           []string{},
 		KnowledgeBaseID: "",
 	}
@@ -680,7 +678,6 @@ func (h *ChatHandler) toServiceRequest(req *ChatRequest) *service.ChatRequest {
 			config.MaxTokens = req.Config.MaxTokens
 		}
 		config.UseRAG = req.Config.UseRAG
-		config.UseAgent = req.Config.UseAgent
 		config.Tools = req.Config.Tools
 		config.KnowledgeBaseID = req.Config.KnowledgeBaseID
 	}
@@ -719,7 +716,6 @@ type ChatConfigRequest struct {
 	Temperature     float32  `json:"temperature"`
 	MaxTokens       int32    `json:"max_tokens"`
 	UseRAG          bool     `json:"use_rag"`
-	UseAgent        bool     `json:"use_agent"`
 	Tools           []string `json:"tools"`
 	KnowledgeBaseID string   `json:"knowledge_base_id"`
 }

@@ -1,32 +1,21 @@
 # ============================================
-# 前端编排
-# 仅包含 Vue 前端服务
-# 依赖 docker-compose.infra.yml 先创建共享网络与 Nginx
-# 启动方式: docker compose -f docker-compose.frontend.yml up -d
+# 前端构建编排
+# 仅用于构建 Vue 静态资源并发布到 frontend-dist/
+# 启动站点请使用 docker-compose.infra.yml 中的 nginx
 # ============================================
 
 name: ai-platform-frontend
 
 services:
-  frontend:
+  frontend-builder:
     build:
       context: ./frontend-vue
       dockerfile: Dockerfile
-    container_name: ai-platform-frontend
-    restart: always
-    cpus: ${FRONTEND_CPU_LIMIT:-0.5}
-    mem_limit: ${FRONTEND_MEMORY_LIMIT:-256m}
+      target: builder
+      args:
+        FRONTEND_NODE_IMAGE: ${FRONTEND_NODE_IMAGE:-node:20-alpine}
+    image: ai-platform-frontend-builder
     environment:
       - NODE_ENV=production
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - ai-platform
-
-networks:
-  ai-platform:
-    external: true
-    name: ai-platform_ai-platform
+    volumes:
+      - ./frontend-dist:/out

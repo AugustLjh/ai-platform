@@ -41,6 +41,7 @@ ENV PYTHONPATH=/generated
 
 # ---------- 应用代码 ----------
 COPY ai_runtime/ .
+COPY db /app/db
 
 # ---------- 端口 ----------
 EXPOSE 8000 50051

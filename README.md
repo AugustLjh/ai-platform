@@ -26,7 +26,7 @@ The current codebase includes:
 - Retrieval settings, retrieval quick test, evaluation datasets, evaluation runs, and applying evaluation configs
 - LLM model management for `openai`, `deepseek`, `local`, `mock`, and `jina`
 - File parsing for `txt`, `md`, `pdf`, `html`, `csv`, `tsv`, `json`, `jsonl`, `yaml`, `xml`, `rtf`, `docx`, `pptx`, and `xlsx`
-- PostgreSQL migrations for auth, chat data, knowledge bases, model config, quotas, retrieval evaluation, full-text search, and chunk indexing
+- Alembic-managed PostgreSQL schema for auth, chat data, knowledge bases, model config, quotas, retrieval evaluation, full-text search, and chunk indexing
 
 The current Docker deployment uses PostgreSQL and Redis. Elasticsearch is not part of the active compose stack.
 
@@ -62,13 +62,15 @@ Redis
 ```text
 .
 |-- ai_runtime/              # Python runtime service
-|-- db/migrations/           # SQL migrations
+|-- db/alembic/             # Alembic migrations
 |-- frontend-vue/            # Vue 3 frontend
 |-- nginx/                   # Nginx gateway config
 |-- platform/                # Go platform service
 |-- proto/                   # Shared proto definitions
 |-- scripts/                 # Helper scripts
-|-- docker-compose*.yml      # Dev and split production compose files
+|-- docker-compose.infra.yml
+|-- docker-compose.backend.yml
+|-- docker-compose.frontend.yml
 |-- Makefile                 # Main entry for local operations
 |-- README.md
 `-- README_CN.md
@@ -82,45 +84,34 @@ Redis
 - GNU Make
 - Git
 
-### Development
+### Local Development
 
-The default development path is the hot-reload stack:
+Development now runs directly from each service directory. The repository no longer keeps a separate Docker Compose-based dev stack.
 
-```bash
-make dev
-```
-
-Main endpoints after startup:
-
-- Frontend: `http://localhost:5173`
-- Platform API: `http://localhost:8080`
-- AI Runtime HTTP: `http://localhost:8000`
-- PostgreSQL: `localhost:5433`
-- Redis: `localhost:6379`
-
-Useful commands:
+Common local commands:
 
 ```bash
-make dev-logs
-make dev-down
+cd frontend-vue && npm install && npm run dev -- --host 0.0.0.0
+cd platform && go run main.go
+cd ai_runtime && pip install -r requirements.txt && python -m main --mode both --http-port 8000 --grpc-port 50051
 make test
 ```
 
-### Production-style Split Deployment
+### Unified Deployment
 
-The project is currently organized around split compose files:
+The project now keeps only the split deployment compose files:
 
 - `docker-compose.infra.yml`
 - `docker-compose.backend.yml`
-- `docker-compose.frontend.yml`
+- `docker-compose.frontend.yml` for frontend build-only publishing
 
 Recommended sequence for a fresh environment:
 
 ```bash
 make infra-up
-make db-migrate
+make db-upgrade
 make backend-up
-make frontend-up
+make frontend-build
 ```
 
 If images already exist locally and you want the guarded one-shot startup:
@@ -154,6 +145,15 @@ make infra-logs
 make backend-logs
 make frontend-logs
 make prod-down
+```
+
+Database helpers:
+
+```bash
+make db-upgrade
+make db-current
+make db-history
+make db-revision m=add_some_change
 ```
 
 ## Environment Files
@@ -193,6 +193,7 @@ npm run dev -- --host 0.0.0.0
 ```
 
 The frontend uses `VITE_API_BASE_URL`, defaulting to relative paths when unset.
+Production-style frontend publishing now builds static assets into `frontend-dist/releases/<version>` and updates `frontend-dist/current`, which the shared infra nginx serves directly.
 
 ## Platform Service
 
@@ -249,23 +250,24 @@ FastAPI docs:
 
 ## Database and Migrations
 
-Migrations live under `db/migrations/` and currently include:
+The database is now managed only through Alembic under `db/alembic/`.
 
-- base schema
-- knowledge-base enhancements
-- pgvector enablement
-- knowledge-base tables
-- document migration
-- LLM model tables and model types
-- quota periods
-- retrieval evaluation
-- full-text search
-- document chunk indexing
-
-Run all current migrations with:
+Apply the latest schema with:
 
 ```bash
-make db-migrate
+make db-upgrade
+```
+
+Create a new revision with:
+
+```bash
+make db-revision m=describe_change
+```
+
+To preserve existing data while resetting the database onto the Alembic baseline:
+
+```bash
+make db-reset-to-alembic
 ```
 
 Current data services in active deployment:
@@ -284,6 +286,8 @@ Password: demo123456
 
 ## Notes
 
-- `make prod` intentionally refuses implicit image builds.
+- `make prod` is the umbrella alias for the current split deployment flow.
+- `make frontend-build` publishes static assets only. There is no dedicated production frontend container anymore.
+- `FRONTEND_NODE_IMAGE` defaults to the official `node:20-alpine`. Override it only if you need a different internal mirror.
 - If `ai_runtime/.env` sets `EMBEDDING_PROVIDER=local`, `make prod-check` will block startup unless `ALLOW_LOCAL_EMBEDDING=1` is provided.
 - Some helper scripts under `scripts/` still use `docker-compose` syntax and should be treated as legacy helpers compared with the current `Makefile`.

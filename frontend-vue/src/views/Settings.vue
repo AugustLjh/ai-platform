@@ -47,12 +47,6 @@
               <span>启用知识库检索（RAG）</span>
             </label>
           </div>
-          <div class="toggle-row">
-            <label>
-              <input type="checkbox" v-model="useAgent" />
-              <span>启用智能体模式</span>
-            </label>
-          </div>
 
           <div class="tip">设置会自动保存到本地浏览器。</div>
         </div>
@@ -97,11 +91,6 @@ const maxTokens = computed({
 const useRag = computed({
   get: () => chatStore.config.useRAG,
   set: (value) => chatStore.updateConfig({ useRAG: value })
-})
-
-const useAgent = computed({
-  get: () => chatStore.config.useAgent,
-  set: (value) => chatStore.updateConfig({ useAgent: value })
 })
 
 onMounted(async () => {

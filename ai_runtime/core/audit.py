@@ -241,3 +241,66 @@ class AuditLogger:
             ip_address=ip_address,
             user_agent=user_agent,
         )
+
+    async def log_knowledge_base_create(
+        self,
+        user_id: Optional[str],
+        tenant_id: str,
+        resource_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ):
+        """Compatibility wrapper for knowledge base creation audit logs."""
+        await self.log(
+            action="knowledge_base.create",
+            resource_type="knowledge_base",
+            resource_id=resource_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            details=details,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
+    async def log_knowledge_base_update(
+        self,
+        user_id: Optional[str],
+        tenant_id: str,
+        resource_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ):
+        """Compatibility wrapper for knowledge base update audit logs."""
+        await self.log(
+            action="knowledge_base.update",
+            resource_type="knowledge_base",
+            resource_id=resource_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            details=details,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
+    async def log_knowledge_base_delete(
+        self,
+        user_id: Optional[str],
+        tenant_id: str,
+        resource_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ):
+        """Compatibility wrapper for knowledge base deletion audit logs."""
+        await self.log(
+            action="knowledge_base.delete",
+            resource_type="knowledge_base",
+            resource_id=resource_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            details=details,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )

@@ -79,4 +79,7 @@ Thumbs.db
 # Project specific
 huggingface_cache/
 platform_build_cache/
+frontend-dist/
+dist/
+docs/
 nul

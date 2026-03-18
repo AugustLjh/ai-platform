@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -36,6 +37,16 @@ var (
 	ErrUnauthorized    = errors.New("unauthorized")
 )
 
+const (
+	chatHistoryMetadataKey = "chat_history"
+	maxPromptHistoryItems  = 40
+)
+
+type runtimeHistoryMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 // StreamChat handles streaming chat requests
 func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
 	// Validate request
@@ -58,15 +69,20 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 			log.Printf("[ChatService] Failed to ensure session: %v", err)
 		} else {
 			dbSession = session
-			if err := s.persistMessage(req.SessionID, "user", req.Message, modelName, req.Metadata); err != nil {
-				log.Printf("[ChatService] Failed to persist user message: %v", err)
-			}
 			s.maybeUpdateTitle(dbSession, req.Message)
 		}
 	}
 
 	// Get or create session
 	session := s.sessions.GetOrCreate(req.SessionID, req.UserID)
+	history := s.loadPromptHistory(req, session)
+	runtimeMetadata := s.attachPromptHistoryMetadata(req.Metadata, history)
+
+	if s.sessionStore != nil {
+		if err := s.persistMessage(req.SessionID, "user", req.Message, modelName, req.Metadata); err != nil {
+			log.Printf("[ChatService] Failed to persist user message: %v", err)
+		}
+	}
 
 	// Add user message to session
 	session.AddMessage("user", req.Message)
@@ -77,13 +93,12 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 		UserID:    req.UserID,
 		TenantID:  req.TenantID,
 		Message:   req.Message,
-		Metadata:  req.Metadata,
+		Metadata:  runtimeMetadata,
 		Config: &grpc.ChatConfig{
 			Model:           req.Config.Model,
 			Temperature:     req.Config.Temperature,
 			MaxTokens:       req.Config.MaxTokens,
 			UseRAG:          req.Config.UseRAG,
-			UseAgent:        req.Config.UseAgent,
 			Tools:           req.Config.Tools,
 			KnowledgeBaseID: req.Config.KnowledgeBaseID,
 		},
@@ -229,6 +244,73 @@ func (s *ChatService) maybeUpdateTitle(session *database.Session, message string
 		return
 	}
 	session.Title = trimmed
+}
+
+func (s *ChatService) loadPromptHistory(req *ChatRequest, session *Session) []Message {
+	if s.sessionStore != nil {
+		messages, err := s.sessionStore.GetSessionMessages(req.SessionID, 200, 0)
+		if err == nil {
+			history := make([]Message, 0, len(messages))
+			for _, message := range messages {
+				history = append(history, Message{
+					Role:      message.Role,
+					Content:   message.Content,
+					Timestamp: message.CreatedAt,
+				})
+			}
+			return history
+		}
+		log.Printf("[ChatService] Failed to load DB history for prompt, fallback to memory: %v", err)
+	}
+
+	if session == nil {
+		return nil
+	}
+
+	return session.GetMessages()
+}
+
+func (s *ChatService) attachPromptHistoryMetadata(metadata map[string]string, history []Message) map[string]string {
+	merged := make(map[string]string, len(metadata)+1)
+	for key, value := range metadata {
+		merged[key] = value
+	}
+
+	if len(history) == 0 {
+		delete(merged, chatHistoryMetadataKey)
+		return merged
+	}
+
+	trimmed := history
+	if len(trimmed) > maxPromptHistoryItems {
+		trimmed = trimmed[len(trimmed)-maxPromptHistoryItems:]
+	}
+
+	payload := make([]runtimeHistoryMessage, 0, len(trimmed))
+	for _, message := range trimmed {
+		if strings.TrimSpace(message.Role) == "" {
+			continue
+		}
+		payload = append(payload, runtimeHistoryMessage{
+			Role:    message.Role,
+			Content: message.Content,
+		})
+	}
+
+	if len(payload) == 0 {
+		delete(merged, chatHistoryMetadataKey)
+		return merged
+	}
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[ChatService] Failed to encode prompt history metadata: %v", err)
+		delete(merged, chatHistoryMetadataKey)
+		return merged
+	}
+
+	merged[chatHistoryMetadataKey] = string(encoded)
+	return merged
 }
 
 func (s *ChatService) ListSessions(userID, query string, limit, offset int) ([]*database.Session, error) {
@@ -382,7 +464,6 @@ type ChatConfig struct {
 	Temperature     float32
 	MaxTokens       int32
 	UseRAG          bool
-	UseAgent        bool
 	Tools           []string
 	KnowledgeBaseID string
 }

@@ -26,7 +26,7 @@
 - 检索设置、快速检索测试、评测数据集、评测运行、评测结果一键应用
 - `openai`、`deepseek`、`local`、`mock`、`jina` 五类模型配置管理
 - `txt`、`md`、`pdf`、`html`、`csv`、`tsv`、`json`、`jsonl`、`yaml`、`xml`、`rtf`、`docx`、`pptx`、`xlsx` 文档解析
-- PostgreSQL 迁移脚本，覆盖认证、聊天、知识库、模型、配额、检索评测、全文搜索、分块索引
+- 由 Alembic 统一管理的 PostgreSQL schema，覆盖认证、聊天、知识库、模型、配额、检索评测、全文搜索、分块索引
 
 当前 Docker 部署实际使用的是 PostgreSQL 和 Redis，Elasticsearch 不在现行 compose 编排中。
 
@@ -62,13 +62,15 @@ Redis
 ```text
 .
 |-- ai_runtime/              # Python AI Runtime
-|-- db/migrations/           # SQL 迁移脚本
+|-- db/alembic/             # Alembic 迁移目录
 |-- frontend-vue/            # Vue 3 前端
 |-- nginx/                   # Nginx 网关配置
 |-- platform/                # Go 平台层
 |-- proto/                   # 共享 proto 定义
 |-- scripts/                 # 辅助脚本
-|-- docker-compose*.yml      # 开发与拆分生产编排
+|-- docker-compose.infra.yml
+|-- docker-compose.backend.yml
+|-- docker-compose.frontend.yml
 |-- Makefile                 # 统一操作入口
 |-- README.md
 `-- README_CN.md
@@ -82,45 +84,34 @@ Redis
 - GNU Make
 - Git
 
-### 开发环境
+### 本地开发
 
-默认开发方式是带热重载的整套开发栈：
+开发环境现在统一改为各服务目录直接启动，仓库里不再保留单独的 Docker Compose 开发栈。
 
-```bash
-make dev
-```
-
-启动后主要地址：
-
-- 前端：`http://localhost:5173`
-- Platform API：`http://localhost:8080`
-- AI Runtime HTTP：`http://localhost:8000`
-- PostgreSQL：`localhost:5433`
-- Redis：`localhost:6379`
-
-常用命令：
+常用本地命令：
 
 ```bash
-make dev-logs
-make dev-down
+cd frontend-vue && npm install && npm run dev -- --host 0.0.0.0
+cd platform && go run main.go
+cd ai_runtime && pip install -r requirements.txt && python -m main --mode both --http-port 8000 --grpc-port 50051
 make test
 ```
 
-### 生产式拆分部署
+### 统一部署
 
-当前项目以拆分 compose 文件为主：
+当前项目只保留这三份拆分编排文件：
 
 - `docker-compose.infra.yml`
 - `docker-compose.backend.yml`
-- `docker-compose.frontend.yml`
+- `docker-compose.frontend.yml`，仅用于构建和发布前端静态资源
 
 全新环境推荐顺序：
 
 ```bash
 make infra-up
-make db-migrate
+make db-upgrade
 make backend-up
-make frontend-up
+make frontend-build
 ```
 
 如果本地镜像已经准备好，也可以走受保护的一键启动：
@@ -154,6 +145,15 @@ make infra-logs
 make backend-logs
 make frontend-logs
 make prod-down
+```
+
+数据库常用命令：
+
+```bash
+make db-upgrade
+make db-current
+make db-history
+make db-revision m=add_some_change
 ```
 
 ## 环境变量文件
@@ -193,6 +193,7 @@ npm run dev -- --host 0.0.0.0
 ```
 
 前端通过 `VITE_API_BASE_URL` 指向后端；如果不配置，默认走相对路径。
+生产环境前端发布现在会把静态文件构建到 `frontend-dist/releases/<version>`，并更新 `frontend-dist/current`，由共享的基础设施 nginx 直接托管。
 
 ## Platform 服务
 
@@ -249,23 +250,24 @@ FastAPI 文档入口：
 
 ## 数据库与迁移
 
-迁移脚本位于 `db/migrations/`，当前覆盖：
+数据库现在只通过 `db/alembic/` 下的 Alembic 进行管理。
 
-- 基础表结构
-- 知识库增强
-- pgvector 启用
-- 知识库相关表
-- 文档迁移
-- LLM 模型表与模型类型
-- 配额周期
-- 检索评测
-- 全文搜索
-- 文档分块索引
-
-执行全部现行迁移：
+升级到最新 schema：
 
 ```bash
-make db-migrate
+make db-upgrade
+```
+
+创建新的 revision：
+
+```bash
+make db-revision m=describe_change
+```
+
+如果要保留现有数据，并把数据库重建到 Alembic baseline：
+
+```bash
+make db-reset-to-alembic
 ```
 
 当前在线部署实际使用的数据服务：
@@ -284,6 +286,8 @@ Password: demo123456
 
 ## 说明
 
-- `make prod` 会显式阻止隐式构建镜像。
+- `make prod` 只是当前拆分部署流程的整体验证与启动别名。
+- `make frontend-build` 现在只发布静态资源，生产环境不再有独立的前端容器。
+- `FRONTEND_NODE_IMAGE` 默认使用官方 `node:20-alpine`，只有在你需要切到其他内部镜像源时才需要覆盖。
 - 如果 `ai_runtime/.env` 中设置了 `EMBEDDING_PROVIDER=local`，`make prod-check` 会要求额外传入 `ALLOW_LOCAL_EMBEDDING=1` 才允许继续。
 - `scripts/` 目录里部分脚本仍使用旧的 `docker-compose` 写法，当前应优先以 `Makefile` 为准。
