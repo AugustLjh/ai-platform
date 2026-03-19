@@ -14,6 +14,7 @@ from .repositories.retrieval_evaluation_repository import RetrievalEvaluationRep
 from .services.document_service import DocumentService
 from .services.knowledge_base_service import KnowledgeBaseService
 from .services.retrieval_evaluation_service import RetrievalEvaluationService
+from .vector_index import QdrantVectorIndex, VectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class ServiceContainer:
         self._kb_service: Optional[KnowledgeBaseService] = None
         self._document_service: Optional[DocumentService] = None
         self._retrieval_eval_service: Optional[RetrievalEvaluationService] = None
+        self._vector_index: Optional[VectorIndex] = None
 
     async def initialize(self, config: AppConfig, db_manager: DatabaseManager):
         """
@@ -79,9 +81,14 @@ class ServiceContainer:
 
         self._document_repository = DocumentRepository(
             db_pool=db_manager.pool,
-            use_pgvector=config.vector_search.use_pgvector,
         )
-        logger.info(f"   ✅ Document repository initialized (pgvector={'enabled' if config.vector_search.use_pgvector else 'disabled'})")
+        logger.info("   ✅ Document repository initialized (PostgreSQL metadata + keyword search)")
+
+        self._vector_index = QdrantVectorIndex(
+            config=config.qdrant,
+        )
+        await self._vector_index.initialize()
+        logger.info("   ✅ Vector index initialized (qdrant)")
 
         self._retrieval_eval_repository = RetrievalEvaluationRepository(
             db_pool=db_manager.pool,
@@ -116,9 +123,11 @@ class ServiceContainer:
             repository=self._document_repository,
             kb_repository=self._kb_repository,
             embedding_service=self._embedding_service,
+            vector_index=self._vector_index,
             audit_logger=self._audit_logger if config.enable_audit_log else None,
             quota_manager=self._quota_manager,
         )
+        await self._document_service.start_index_worker()
         logger.info("   ✅ Document service initialized")
 
         self._retrieval_eval_service = RetrievalEvaluationService(
@@ -171,6 +180,20 @@ class ServiceContainer:
         if self._retrieval_eval_service is None:
             raise RuntimeError("Retrieval evaluation service not initialized")
         return self._retrieval_eval_service
+
+    @property
+    def vector_index(self) -> VectorIndex:
+        """Get vector index backend"""
+        if self._vector_index is None:
+            raise RuntimeError("Vector index not initialized")
+        return self._vector_index
+
+    async def shutdown(self):
+        """Close backend resources"""
+        if self._document_service is not None:
+            await self._document_service.stop_index_worker()
+        if self._vector_index is not None:
+            await self._vector_index.close()
 
 
 # Global service container

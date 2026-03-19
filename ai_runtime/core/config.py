@@ -114,10 +114,6 @@ class QuotaConfig(BaseModel):
 
 class VectorSearchConfig(BaseModel):
     """Vector search configuration"""
-    use_pgvector: bool = Field(
-        default=False,
-        description="Use pgvector extension for better performance"
-    )
     top_k: int = Field(default=5, description="Maximum results for vector search")
     similarity_threshold: float = Field(default=0.7, description="Vector similarity threshold (0-1)")
 
@@ -125,9 +121,36 @@ class VectorSearchConfig(BaseModel):
     def from_env(cls) -> "VectorSearchConfig":
         """Load from environment variables"""
         return cls(
-            use_pgvector=os.getenv("USE_PGVECTOR", "false").lower() == "true",
             top_k=int(os.getenv("VECTOR_SEARCH_TOP_K", "5")),
             similarity_threshold=float(os.getenv("VECTOR_SIMILARITY_THRESHOLD", "0.7")),
+        )
+
+
+class QdrantConfig(BaseModel):
+    """Qdrant configuration"""
+    url: Optional[str] = Field(default=None, description="Full Qdrant URL, e.g. http://qdrant:6333")
+    host: str = Field(default="localhost", description="Qdrant host")
+    port: int = Field(default=6333, description="Qdrant HTTP port")
+    grpc_port: int = Field(default=6334, description="Qdrant gRPC port")
+    api_key: Optional[str] = Field(default=None, description="Qdrant API key")
+    prefer_grpc: bool = Field(default=False, description="Prefer gRPC client transport")
+    use_https: bool = Field(default=False, description="Use HTTPS when URL is not explicitly set")
+    timeout: float = Field(default=10.0, description="Qdrant request timeout in seconds")
+    collection_prefix: str = Field(default="document_chunks", description="Collection prefix for chunk vectors")
+
+    @classmethod
+    def from_env(cls) -> "QdrantConfig":
+        """Load from environment variables"""
+        return cls(
+            url=os.getenv("QDRANT_URL"),
+            host=os.getenv("QDRANT_HOST", "localhost"),
+            port=int(os.getenv("QDRANT_PORT", "6333")),
+            grpc_port=int(os.getenv("QDRANT_GRPC_PORT", "6334")),
+            api_key=os.getenv("QDRANT_API_KEY"),
+            prefer_grpc=os.getenv("QDRANT_PREFER_GRPC", "false").lower() == "true",
+            use_https=os.getenv("QDRANT_USE_HTTPS", "false").lower() == "true",
+            timeout=float(os.getenv("QDRANT_TIMEOUT", "10")),
+            collection_prefix=os.getenv("QDRANT_COLLECTION_PREFIX", "document_chunks"),
         )
 
 
@@ -285,6 +308,7 @@ class AppConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
     vector_search: VectorSearchConfig = Field(default_factory=VectorSearchConfig)
+    qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -310,6 +334,7 @@ class AppConfig(BaseModel):
             llm=LLMConfig.from_env(),
             quota=QuotaConfig.from_env(),
             vector_search=VectorSearchConfig.from_env(),
+            qdrant=QdrantConfig.from_env(),
             rag=RAGConfig.from_env(),
             agent=AgentConfig.from_env(),
             server=ServerConfig.from_env(),
@@ -351,9 +376,11 @@ class AppConfig(BaseModel):
         print(f"  Timeout: {self.llm.timeout}s")
         print()
         print("Vector Search:")
-        print(f"  Use pgvector: {self.vector_search.use_pgvector}")
         print(f"  Top K: {self.vector_search.top_k}")
         print(f"  Similarity Threshold: {self.vector_search.similarity_threshold}")
+        endpoint = self.qdrant.url or f"http{'s' if self.qdrant.use_https else ''}://{self.qdrant.host}:{self.qdrant.port}"
+        print(f"  Qdrant Endpoint: {endpoint}")
+        print(f"  Collection Prefix: {self.qdrant.collection_prefix}")
         print()
         print("RAG:")
         print(f"  Top K: {self.rag.top_k}")

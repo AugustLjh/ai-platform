@@ -8,7 +8,7 @@ name: ai-platform-infra
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16
     container_name: ai-platform-postgres
     restart: always
     cpus: ${POSTGRES_CPU_LIMIT:-1.0}
@@ -68,6 +68,18 @@ services:
     networks:
       - ai-platform
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ai-platform-qdrant
+    restart: always
+    cpus: ${QDRANT_CPU_LIMIT:-1.0}
+    mem_limit: ${QDRANT_MEMORY_LIMIT:-1024m}
+    ports: []
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - ai-platform
+
   nginx:
     build:
       context: ./nginx
@@ -116,6 +128,9 @@ volumes:
     driver: local
   redis_data:
     name: ai-platform_redis_data
+    driver: local
+  qdrant_data:
+    name: ai-platform_qdrant_data
     driver: local
   letsencrypt_data:
     name: ai-platform_letsencrypt_data

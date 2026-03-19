@@ -28,7 +28,7 @@
 - `txt`、`md`、`pdf`、`html`、`csv`、`tsv`、`json`、`jsonl`、`yaml`、`xml`、`rtf`、`docx`、`pptx`、`xlsx` 文档解析
 - 由 Alembic 统一管理的 PostgreSQL schema，覆盖认证、聊天、知识库、模型、配额、检索评测、全文搜索、分块索引
 
-当前 Docker 部署实际使用的是 PostgreSQL 和 Redis，Elasticsearch 不在现行 compose 编排中。
+当前 Docker 部署实际使用的是 PostgreSQL、Redis 和 Qdrant，Elasticsearch 不在现行 compose 编排中。
 
 ## 架构说明
 
@@ -53,7 +53,7 @@ Go 平台层 (:8080)
   +--> Python AI Runtime gRPC (:50051)
          |- 流式聊天后端
 
-PostgreSQL + pgvector
+PostgreSQL + Qdrant
 Redis
 ```
 
@@ -171,6 +171,7 @@ make db-revision m=add_some_change
 - `JWT_SECRET`：生产环境必须替换
 - `EMBEDDING_PROVIDER`：支持 `local`、`openai`、`jina`
 - `LLM_PROVIDER`：支持 `openai`、`deepseek`、`local`、`mock`
+- `QDRANT_HOST` / `QDRANT_PORT`：指定独立向量库地址
 - `AI_RUNTIME_CHAT_TRANSPORT`：Go 平台层可切换 `grpc` 或 `http` 调用聊天能力
 
 ## 前端能力
@@ -270,10 +271,17 @@ make db-revision m=describe_change
 make db-reset-to-alembic
 ```
 
+如果是把已有知识库数据恢复到一个新的部署环境，还需要执行下面的命令重建原生 Qdrant 索引：
+
+```bash
+make qdrant-backfill
+```
+
 当前在线部署实际使用的数据服务：
 
 - PostgreSQL
 - Redis
+- Qdrant
 
 ## 演示账号
 

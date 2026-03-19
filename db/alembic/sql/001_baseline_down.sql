@@ -1,4 +1,5 @@
 DROP TABLE IF EXISTS public.document_chunks CASCADE;
+DROP TABLE IF EXISTS public.document_index_jobs CASCADE;
 DROP TABLE IF EXISTS public.retrieval_test_runs CASCADE;
 DROP TABLE IF EXISTS public.retrieval_test_sets CASCADE;
 DROP TABLE IF EXISTS public.token_usage CASCADE;
@@ -13,5 +14,4 @@ DROP TABLE IF EXISTS public.knowledge_bases CASCADE;
 DROP TABLE IF EXISTS public.users CASCADE;
 DROP TABLE IF EXISTS public.tenants CASCADE;
 DROP FUNCTION IF EXISTS public.update_updated_at_column();
-DROP EXTENSION IF EXISTS vector;
 DROP EXTENSION IF EXISTS "uuid-ossp";

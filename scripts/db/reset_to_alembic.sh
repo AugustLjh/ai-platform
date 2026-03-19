@@ -60,3 +60,4 @@ docker exec -i "${POSTGRES_CONTAINER}" pg_restore \
 
 echo "Database reset to Alembic completed"
 echo "Backups kept under ${BACKUP_DIR}"
+echo "If you restored existing knowledge-base rows, run 'make qdrant-backfill' to rebuild the native Qdrant index"

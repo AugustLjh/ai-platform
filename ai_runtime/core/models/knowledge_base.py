@@ -73,14 +73,18 @@ class Document:
         source: Optional[str] = None,
         source_type: SourceType = SourceType.MANUAL,
         embedding_model: Optional[str] = None,
+        embedding_model_key: Optional[str] = None,
+        embedding_dimension: Optional[int] = None,
         indexed: bool = False,
         indexed_at: Optional[datetime] = None,
+        index_status: str = "pending",
+        index_version: int = 1,
+        last_index_error: Optional[str] = None,
         created_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
         metadata: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,  # 添加用户ID用于混合权限模式
         access_level: AccessLevel = AccessLevel.TENANT,
-        embedding: Optional[List[float]] = None,
     ):
         self.id = id
         self.tenant_id = tenant_id
@@ -92,12 +96,16 @@ class Document:
         self.source = source
         self.source_type = source_type
         self.embedding_model = embedding_model
+        self.embedding_model_key = embedding_model_key
+        self.embedding_dimension = embedding_dimension
         self.indexed = indexed
         self.indexed_at = indexed_at
+        self.index_status = index_status
+        self.index_version = index_version
+        self.last_index_error = last_index_error
         self.created_at = created_at or datetime.utcnow()
         self.updated_at = updated_at or datetime.utcnow()
         self.metadata = metadata or {}
-        self.embedding = embedding
 
     def to_dict(self) -> dict:
         return {
@@ -111,8 +119,13 @@ class Document:
             "source": self.source,
             "source_type": self.source_type.value,
             "embedding_model": self.embedding_model,
+            "embedding_model_key": self.embedding_model_key,
+            "embedding_dimension": self.embedding_dimension,
             "indexed": self.indexed,
             "indexed_at": self.indexed_at.isoformat() if self.indexed_at else None,
+            "index_status": self.index_status,
+            "index_version": self.index_version,
+            "last_index_error": self.last_index_error,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "metadata": self.metadata,
@@ -207,8 +220,13 @@ class DocumentResponse(BaseModel):
     source: Optional[str]
     source_type: str
     embedding_model: Optional[str]
+    embedding_model_key: Optional[str]
+    embedding_dimension: Optional[int]
     indexed: bool
     indexed_at: Optional[str]
+    index_status: str
+    index_version: int
+    last_index_error: Optional[str]
     created_at: str
     updated_at: str
     metadata: Dict[str, Any]
@@ -229,6 +247,9 @@ class IndexingSettings(BaseModel):
     chunk_size: int = Field(default=500, ge=50, le=2000)
     chunk_overlap: int = Field(default=50, ge=0, le=500)
     embedding_model_id: Optional[str] = None
+    tokenizer_mode: str = Field(default="cjk", description="Lexical tokenizer mode")
+    custom_terms: List[str] = Field(default_factory=list, description="Tenant-specific lexical terms")
+    synonym_map: Dict[str, List[str]] = Field(default_factory=dict, description="Synonym expansion map")
 
 
 class IndexingSettingsUpdate(BaseModel):
@@ -237,15 +258,26 @@ class IndexingSettingsUpdate(BaseModel):
     chunk_size: Optional[int] = Field(default=None, ge=50, le=2000)
     chunk_overlap: Optional[int] = Field(default=None, ge=0, le=500)
     embedding_model_id: Optional[str] = None
+    tokenizer_mode: Optional[str] = None
+    custom_terms: Optional[List[str]] = None
+    synonym_map: Optional[Dict[str, List[str]]] = None
 
 
 class RetrievalSettings(BaseModel):
     """知识库检索设置"""
-    retrieval_method: str = Field(default="vector", description="Retrieval method: vector/keyword/hybrid")
+    retrieval_method: str = Field(default="hybrid", description="Retrieval method: vector/keyword/hybrid")
     top_k: int = Field(default=5, ge=1, le=50)
     score_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    vector_top_k: int = Field(default=40, ge=1, le=200)
+    keyword_top_k: int = Field(default=40, ge=1, le=200)
+    fusion_algorithm: str = Field(default="rrf", description="Result fusion algorithm")
+    rrf_k: int = Field(default=60, ge=1, le=200)
+    vector_weight: float = Field(default=0.65, ge=0.0, le=5.0)
+    keyword_weight: float = Field(default=0.35, ge=0.0, le=5.0)
+    max_candidates: int = Field(default=100, ge=1, le=300)
     enable_rerank: bool = Field(default=False)
     rerank_model_id: Optional[str] = None
+    query_rewrite: bool = Field(default=True)
 
 
 class RetrievalSettingsUpdate(BaseModel):
@@ -253,8 +285,16 @@ class RetrievalSettingsUpdate(BaseModel):
     retrieval_method: Optional[str] = None
     top_k: Optional[int] = Field(default=None, ge=1, le=50)
     score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    vector_top_k: Optional[int] = Field(default=None, ge=1, le=200)
+    keyword_top_k: Optional[int] = Field(default=None, ge=1, le=200)
+    fusion_algorithm: Optional[str] = None
+    rrf_k: Optional[int] = Field(default=None, ge=1, le=200)
+    vector_weight: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    keyword_weight: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    max_candidates: Optional[int] = Field(default=None, ge=1, le=300)
     enable_rerank: Optional[bool] = None
     rerank_model_id: Optional[str] = None
+    query_rewrite: Optional[bool] = None
 
 
 class GovernanceRouteSettings(BaseModel):
@@ -431,8 +471,16 @@ class RetrievalEvaluationConfig(BaseModel):
     retrieval_method: Optional[str] = None
     top_k: Optional[int] = Field(default=None, ge=1, le=50)
     score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    vector_top_k: Optional[int] = Field(default=None, ge=1, le=200)
+    keyword_top_k: Optional[int] = Field(default=None, ge=1, le=200)
+    fusion_algorithm: Optional[str] = None
+    rrf_k: Optional[int] = Field(default=None, ge=1, le=200)
+    vector_weight: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    keyword_weight: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    max_candidates: Optional[int] = Field(default=None, ge=1, le=300)
     enable_rerank: Optional[bool] = None
     rerank_model_id: Optional[str] = None
+    query_rewrite: Optional[bool] = None
 
 
 class RetrievalEvaluationRunRequest(BaseModel):

@@ -24,14 +24,25 @@ DEFAULT_INDEXING_SETTINGS = {
     "chunk_size": 500,
     "chunk_overlap": 50,
     "embedding_model_id": None,
+    "tokenizer_mode": "cjk",
+    "custom_terms": [],
+    "synonym_map": {},
 }
 
 DEFAULT_RETRIEVAL_SETTINGS = {
-    "retrieval_method": "vector",
+    "retrieval_method": "hybrid",
     "top_k": 5,
     "score_threshold": 0.0,
+    "vector_top_k": 40,
+    "keyword_top_k": 40,
+    "fusion_algorithm": "rrf",
+    "rrf_k": 60,
+    "vector_weight": 0.65,
+    "keyword_weight": 0.35,
+    "max_candidates": 100,
     "enable_rerank": False,
     "rerank_model_id": None,
+    "query_rewrite": True,
 }
 
 DEFAULT_GOVERNANCE_SETTINGS = {

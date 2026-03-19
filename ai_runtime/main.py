@@ -83,6 +83,10 @@ async def shutdown_services():
     logger.info("=" * 70)
 
     try:
+        try:
+            await get_container().shutdown()
+        except Exception as e:
+            logger.error(f"Error while closing service container: {e}")
         db_manager = get_db_manager()
         await db_manager.disconnect()
     except Exception as e:

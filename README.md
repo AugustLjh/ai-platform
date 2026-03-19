@@ -28,7 +28,7 @@ The current codebase includes:
 - File parsing for `txt`, `md`, `pdf`, `html`, `csv`, `tsv`, `json`, `jsonl`, `yaml`, `xml`, `rtf`, `docx`, `pptx`, and `xlsx`
 - Alembic-managed PostgreSQL schema for auth, chat data, knowledge bases, model config, quotas, retrieval evaluation, full-text search, and chunk indexing
 
-The current Docker deployment uses PostgreSQL and Redis. Elasticsearch is not part of the active compose stack.
+The current Docker deployment uses PostgreSQL, Redis, and Qdrant. Elasticsearch is not part of the active compose stack.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ Go platform (:8080)
   +--> Python AI runtime gRPC (:50051)
          |- streaming chat backend
 
-PostgreSQL + pgvector
+PostgreSQL + Qdrant
 Redis
 ```
 
@@ -171,6 +171,7 @@ Important current settings:
 - `JWT_SECRET` must be replaced in production
 - `EMBEDDING_PROVIDER` supports `local`, `openai`, and `jina`
 - `LLM_PROVIDER` supports `openai`, `deepseek`, `local`, and `mock`
+- `QDRANT_HOST` / `QDRANT_PORT` point the runtime to the dedicated vector database
 - `AI_RUNTIME_CHAT_TRANSPORT` on the Go service can switch chat calls between `grpc` and `http`
 
 ## Frontend Capabilities
@@ -270,10 +271,17 @@ To preserve existing data while resetting the database onto the Alembic baseline
 make db-reset-to-alembic
 ```
 
+If you restore existing knowledge-base data onto a fresh deployment, rebuild the native Qdrant index with:
+
+```bash
+make qdrant-backfill
+```
+
 Current data services in active deployment:
 
 - PostgreSQL
 - Redis
+- Qdrant
 
 ## Demo Account
 

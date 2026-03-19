@@ -5,8 +5,9 @@ PROD_FRONTEND_FILES := -f docker-compose.frontend.yml
 SAFE_BUILD_ENV := DOCKER_BUILDKIT=0 COMPOSE_PARALLEL_LIMIT=1
 FRONTEND_RELEASE_ROOT := frontend-dist
 PROD_REQUIRED_IMAGES := \
-	pgvector/pgvector:pg16 \
+	postgres:16 \
 	docker.1ms.run/library/redis:alpine \
+	qdrant/qdrant:latest \
 	ai-platform-infra-nginx \
 	certbot/certbot:latest \
 	ai-platform-backend-ai-runtime \
@@ -17,17 +18,18 @@ PROD_REQUIRED_IMAGES := \
 	infra-up infra-build infra-build-safe infra-logs infra-down infra-ps \
 	backend-up backend-build backend-build-safe backend-logs backend-down backend-ps \
 	frontend-up frontend-build frontend-build-safe frontend-logs frontend-down frontend-ps \
-	ai-runtime-build ai-runtime-build-safe \
-	platform-build platform-build-safe \
+	ai-runtime-up ai-runtime-build ai-runtime-build-safe ai-runtime-down \
+	api-up api-build api-build-safe api-down \
+	platform-up platform-build platform-build-safe platform-down \
 	ps clean test \
-	db-upgrade db-current db-history db-revision db-reset-to-alembic db-shell redis-cli \
+	db-upgrade db-current db-history db-revision db-reset-to-alembic db-shell redis-cli qdrant-backfill \
 	restart-platform restart-ai-runtime restart-frontend restart-nginx
 
 help:
 	@echo "AI Platform - Docker Compose 管理命令"
 	@echo ""
 	@echo "统一部署编排:"
-	@echo "  make infra-up         - 启动基础设施（postgres/redis/nginx/certbot）"
+	@echo "  make infra-up         - 启动基础设施（postgres/redis/qdrant/nginx/certbot）"
 	@echo "  make infra-build      - 重构基础设施中的可构建镜像"
 	@echo "  make infra-build-safe - 低 I/O 模式重构 nginx 镜像"
 	@echo "  make infra-logs       - 查看基础设施日志"
@@ -44,10 +46,18 @@ help:
 	@echo "  make frontend-down    - 前端已并入共享 nginx，无独立容器可停止"
 	@echo ""
 	@echo "单服务重构:"
+	@echo "  make ai-runtime-up    - 仅启动 AI Runtime 服务"
 	@echo "  make ai-runtime-build - 仅重构 AI Runtime 镜像"
 	@echo "  make ai-runtime-build-safe - 低 I/O 模式仅重构 AI Runtime 镜像"
-	@echo "  make platform-build   - 仅重构 Platform 镜像"
-	@echo "  make platform-build-safe - 低 I/O 模式仅重构 Platform 镜像"
+	@echo "  make ai-runtime-down  - 仅停止并移除 AI Runtime 服务容器"
+	@echo "  make api-up           - 仅启动 API 服务（platform）"
+	@echo "  make api-build        - 仅重构 API 镜像（platform）"
+	@echo "  make api-build-safe   - 低 I/O 模式仅重构 API 镜像（platform）"
+	@echo "  make api-down         - 仅停止并移除 API 服务容器（platform）"
+	@echo "  make platform-up      - 兼容别名，等同于 make api-up"
+	@echo "  make platform-build   - 兼容别名，等同于 make api-build"
+	@echo "  make platform-build-safe - 兼容别名，等同于 make api-build-safe"
+	@echo "  make platform-down    - 兼容别名，等同于 make api-down"
 	@echo ""
 	@echo "兼容的整栈命令:"
 	@echo "  make prod-check       - 检查 prod 所需镜像和高资源配置"
@@ -70,6 +80,7 @@ help:
 	@echo "  make db-reset-to-alembic - 备份数据并重建为 Alembic 管理"
 	@echo "  make db-shell         - 进入 PostgreSQL shell"
 	@echo "  make redis-cli        - 进入 Redis CLI"
+	@echo "  make qdrant-backfill  - 在 ai-runtime 容器内执行 Qdrant 全量回填"
 	@echo "  make restart-platform - 重启 platform"
 	@echo "  make restart-ai-runtime - 重启 ai-runtime"
 	@echo "  make restart-frontend - 前端已并入共享 nginx，重新发布请使用 make frontend-build"
@@ -94,7 +105,7 @@ infra-build-safe:
 	$(COMPOSE) $(PROD_INFRA_FILES) up -d --no-build nginx
 
 infra-logs:
-	$(COMPOSE) $(PROD_INFRA_FILES) logs -f postgres redis nginx certbot
+	$(COMPOSE) $(PROD_INFRA_FILES) logs -f postgres redis qdrant nginx certbot
 
 infra-down:
 	@echo "停止基础设施..."
@@ -209,28 +220,46 @@ ai-runtime-build:
 	$(COMPOSE) $(PROD_BACKEND_FILES) build ai-runtime
 	$(COMPOSE) $(PROD_BACKEND_FILES) up -d --no-build ai-runtime
 
+ai-runtime-up:
+	@echo "仅启动 AI Runtime 服务..."
+	$(COMPOSE) $(PROD_BACKEND_FILES) up -d --no-build ai-runtime
+
 ai-runtime-down:
-	@echo "仅清除 AI Runtime 镜像..."
-	$(COMPOSE) $(PROD_BACKEND_FILES) down ai-runtime --remove-orphans
+	@echo "仅停止并移除 AI Runtime 服务容器..."
+	-$(COMPOSE) $(PROD_BACKEND_FILES) stop ai-runtime
+	-$(COMPOSE) $(PROD_BACKEND_FILES) rm -f ai-runtime
 
 ai-runtime-build-safe:
 	@echo "低 I/O 模式仅重构 AI Runtime 镜像..."
 	$(SAFE_BUILD_ENV) $(COMPOSE) $(PROD_BACKEND_FILES) build ai-runtime
 	$(COMPOSE) $(PROD_BACKEND_FILES) up -d --no-build ai-runtime
 
-platform-build:
-	@echo "仅重构 Platform 镜像..."
+api-up:
+	@echo "仅启动 API 服务（platform）..."
+	$(COMPOSE) $(PROD_BACKEND_FILES) up -d --no-build platform
+
+api-build:
+	@echo "仅重构 API 镜像（platform）..."
 	$(COMPOSE) $(PROD_BACKEND_FILES) build platform
 	$(COMPOSE) $(PROD_BACKEND_FILES) up -d --no-build platform
 
-platform-down:
-	@echo "仅清理 Platform 镜像..."
-	$(COMPOSE) $(PROD_BACKEND_FILES) down platform --remove-orphans
+api-down:
+	@echo "仅停止并移除 API 服务容器（platform）..."
+	-$(COMPOSE) $(PROD_BACKEND_FILES) stop platform
+	-$(COMPOSE) $(PROD_BACKEND_FILES) rm -f platform
 
-platform-build-safe:
-	@echo "低 I/O 模式仅重构 Platform 镜像..."
+api-build-safe:
+	@echo "低 I/O 模式仅重构 API 镜像（platform）..."
 	$(SAFE_BUILD_ENV) $(COMPOSE) $(PROD_BACKEND_FILES) build platform
 	$(COMPOSE) $(PROD_BACKEND_FILES) up -d --no-build platform
+
+platform-up: api-up
+
+platform-build: api-build
+
+platform-down: api-down
+
+platform-build-safe: api-build-safe
 
 ps:
 	docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" --filter name=ai-platform
@@ -271,6 +300,7 @@ db-revision:
 db-reset-to-alembic:
 	@echo "备份现有数据并重建为 Alembic 管理..."
 	./scripts/db/reset_to_alembic.sh
+	@echo "如已恢复历史知识库数据，请继续执行 make qdrant-backfill 重建 Qdrant 索引"
 
 db-shell:
 	@echo "连接到 PostgreSQL..."
@@ -279,6 +309,10 @@ db-shell:
 redis-cli:
 	@echo "连接到 Redis..."
 	$(COMPOSE) $(PROD_INFRA_FILES) exec redis redis-cli
+
+qdrant-backfill:
+	@echo "执行 Qdrant 全量回填..."
+	$(COMPOSE) $(PROD_BACKEND_FILES) exec ai-runtime python /app/scripts/backfill_qdrant.py
 
 # ============================================
 # 服务重启

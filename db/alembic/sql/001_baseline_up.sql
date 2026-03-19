@@ -1,5 +1,4 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
-CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
 
 CREATE FUNCTION public.update_updated_at_column() RETURNS trigger
     LANGUAGE plpgsql
@@ -78,15 +77,18 @@ CREATE TABLE public.documents (
     source character varying(255),
     source_type character varying(50),
     embedding_model character varying(100),
+    embedding_model_key character varying(255),
+    embedding_dimension integer,
     indexed boolean DEFAULT false NOT NULL,
     indexed_at timestamp with time zone,
+    index_status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    index_version integer DEFAULT 1 NOT NULL,
+    last_index_error text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb,
     user_id uuid,
     access_level character varying(20) DEFAULT 'tenant'::character varying NOT NULL,
-    embedding double precision[],
-    embedding_vector public.vector(384),
     knowledge_base_id uuid NOT NULL,
     search_terms text DEFAULT ''::text NOT NULL,
     search_vector tsvector GENERATED ALWAYS AS (((setweight(to_tsvector('simple'::regconfig, (COALESCE(title, ''::character varying))::text), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(content, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(search_terms, ''::text)), 'A'::"char"))) STORED,
@@ -113,8 +115,7 @@ CREATE TABLE public.document_chunks (
     content text NOT NULL,
     source character varying(255),
     source_type character varying(50),
-    embedding_model character varying(100),
-    embedding double precision[],
+    chunk_hash character varying(64),
     search_terms text DEFAULT ''::text NOT NULL,
     search_vector tsvector GENERATED ALWAYS AS (((setweight(to_tsvector('simple'::regconfig, (COALESCE(title, ''::character varying))::text), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(content, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(search_terms, ''::text)), 'A'::"char"))) STORED,
     metadata jsonb DEFAULT '{}'::jsonb,
@@ -126,6 +127,28 @@ CREATE TABLE public.document_chunks (
     CONSTRAINT document_chunks_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES public.knowledge_bases(id) ON DELETE CASCADE,
     CONSTRAINT document_chunks_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE,
     CONSTRAINT document_chunks_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE public.document_index_jobs (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    tenant_id uuid NOT NULL,
+    knowledge_base_id uuid,
+    document_id uuid NOT NULL,
+    job_type character varying(20) NOT NULL,
+    target_version integer,
+    status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    next_run_at timestamp with time zone DEFAULT now() NOT NULL,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    last_error text,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT document_index_jobs_pkey PRIMARY KEY (id),
+    CONSTRAINT document_index_jobs_document_id_fkey FOREIGN KEY (document_id) REFERENCES public.documents(id) ON DELETE CASCADE,
+    CONSTRAINT document_index_jobs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES public.knowledge_bases(id) ON DELETE CASCADE,
+    CONSTRAINT document_index_jobs_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE
 );
 
 CREATE TABLE public.llm_models (
@@ -305,8 +328,8 @@ CREATE INDEX idx_documents_user_id ON public.documents USING btree (user_id);
 CREATE INDEX idx_documents_access_level ON public.documents USING btree (access_level);
 CREATE INDEX idx_documents_source_type ON public.documents USING btree (source_type);
 CREATE INDEX idx_documents_knowledge_base_id ON public.documents USING btree (knowledge_base_id);
+CREATE INDEX idx_documents_index_status ON public.documents USING btree (index_status);
 CREATE INDEX idx_documents_search_vector_gin ON public.documents USING gin (search_vector);
-CREATE INDEX idx_documents_embedding_vector_ivfflat ON public.documents USING ivfflat (embedding_vector public.vector_cosine_ops) WITH (lists='100');
 
 CREATE INDEX idx_audit_logs_user_id ON public.audit_logs USING btree (user_id);
 CREATE INDEX idx_audit_logs_tenant_id ON public.audit_logs USING btree (tenant_id);
@@ -345,7 +368,12 @@ CREATE INDEX idx_document_chunks_knowledge_base_id ON public.document_chunks USI
 CREATE INDEX idx_document_chunks_access_level ON public.document_chunks USING btree (access_level);
 CREATE INDEX idx_document_chunks_source_type ON public.document_chunks USING btree (source_type);
 CREATE INDEX idx_document_chunks_chunk_index ON public.document_chunks USING btree (document_id, chunk_index);
+CREATE INDEX idx_document_chunks_chunk_hash ON public.document_chunks USING btree (chunk_hash);
 CREATE INDEX idx_document_chunks_search_vector_gin ON public.document_chunks USING gin (search_vector);
+
+CREATE INDEX idx_document_index_jobs_status_run_at ON public.document_index_jobs USING btree (status, next_run_at);
+CREATE INDEX idx_document_index_jobs_document_id ON public.document_index_jobs USING btree (document_id);
+CREATE INDEX idx_document_index_jobs_tenant_id ON public.document_index_jobs USING btree (tenant_id);
 
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 CREATE TRIGGER update_tenants_updated_at BEFORE UPDATE ON public.tenants FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
@@ -354,5 +382,6 @@ CREATE TRIGGER update_documents_updated_at BEFORE UPDATE ON public.documents FOR
 CREATE TRIGGER update_api_keys_updated_at BEFORE UPDATE ON public.api_keys FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 CREATE TRIGGER update_quotas_updated_at BEFORE UPDATE ON public.quotas FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 CREATE TRIGGER update_knowledge_bases_updated_at BEFORE UPDATE ON public.knowledge_bases FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+CREATE TRIGGER update_document_index_jobs_updated_at BEFORE UPDATE ON public.document_index_jobs FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 CREATE TRIGGER update_retrieval_test_sets_updated_at BEFORE UPDATE ON public.retrieval_test_sets FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 CREATE TRIGGER update_retrieval_test_runs_updated_at BEFORE UPDATE ON public.retrieval_test_runs FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

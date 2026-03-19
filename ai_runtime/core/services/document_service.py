@@ -1,10 +1,13 @@
 """
 Document Service - Business Logic Layer
 """
+import asyncio
 import hashlib
+import json
 import logging
 import re
 from collections import Counter
+from contextlib import suppress
 from datetime import datetime
 from uuid import UUID
 from typing import List, Optional, Dict, Any
@@ -25,6 +28,8 @@ from core.parsers.file_parser import FileParser
 from core.parsers.url_fetcher import URLFetcher
 from core.audit import AuditLogger
 from core.quota import QuotaManager
+from core.llm import BaseLLM, OpenAILLM, DeepseekLLM, LocalLLM
+from core.vector_index import VectorIndex, VectorSearchHit
 
 try:
     import jieba
@@ -71,20 +76,38 @@ DEFAULT_INDEXING_SETTINGS = {
     "chunk_size": 500,
     "chunk_overlap": 50,
     "embedding_model_id": None,
+    "tokenizer_mode": "cjk",
+    "custom_terms": [],
+    "synonym_map": {},
 }
 
 DEFAULT_RETRIEVAL_SETTINGS = {
-    "retrieval_method": "vector",
+    "retrieval_method": "hybrid",
     "top_k": 5,
     "score_threshold": 0.0,
+    "vector_top_k": 40,
+    "keyword_top_k": 40,
+    "fusion_algorithm": "rrf",
+    "rrf_k": 60,
+    "vector_weight": 0.65,
+    "keyword_weight": 0.35,
+    "max_candidates": 100,
     "enable_rerank": False,
     "rerank_model_id": None,
+    "query_rewrite": True,
 }
 
 SIMHASH_MAX_DISTANCE = 8
 SIMILARITY_LIMIT = 5
 CANDIDATE_SCAN_LIMIT = 200
 SEARCH_TERMS_VERSION = "chunk-cjk-v1"
+INDEX_JOB_MAX_RETRIES = 5
+INDEX_JOB_POLL_SECONDS = 2.0
+RERANK_POOL_MULTIPLIER = 4
+RERANK_MAX_CANDIDATES = 24
+RERANK_MAX_TITLE_CHARS = 180
+RERANK_MAX_CONTENT_CHARS = 1200
+RERANK_MAX_RESPONSE_TOKENS = 1600
 
 
 class DocumentService:
@@ -95,6 +118,7 @@ class DocumentService:
         repository: DocumentRepository,
         kb_repository: KnowledgeBaseRepository,
         embedding_service: EmbeddingService,
+        vector_index: VectorIndex,
         audit_logger: Optional[AuditLogger] = None,
         quota_manager: Optional[QuotaManager] = None,
     ):
@@ -105,17 +129,22 @@ class DocumentService:
             repository: 文档数据库仓库
             kb_repository: 知识库数据库仓库
             embedding_service: 向量嵌入服务
+            vector_index: 向量索引后端
             audit_logger: 审计日志服务（可选）
             quota_manager: 配额管理服务（可选）
         """
         self.repository = repository
         self.kb_repository = kb_repository
         self.embedding_service = embedding_service
+        self.vector_index = vector_index
         self.audit_logger = audit_logger
         self.quota_manager = quota_manager
         self.url_fetcher = URLFetcher()
         self._app_config = AppConfig.from_env()
         self._embedding_service_cache: Dict[str, EmbeddingService] = {}
+        self._rerank_runtime_cache: Dict[str, Any] = {}
+        self._index_worker_task: Optional[asyncio.Task] = None
+        self._index_worker_stop = asyncio.Event()
 
     async def _get_kb_metadata(
         self,
@@ -204,6 +233,33 @@ class DocumentService:
 
     def _chunk_text(self, text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
         return [segment["content"] for segment in self._chunk_text_with_offsets(text, chunk_size, chunk_overlap)]
+
+    def _extract_custom_terms(
+        self,
+        text: str,
+        indexing_settings: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        if not text:
+            return []
+
+        terms = indexing_settings.get("custom_terms") if indexing_settings else []
+        if not isinstance(terms, list):
+            return []
+
+        normalized = self._normalize_text_for_ai_processing(text)
+        if not normalized:
+            return []
+
+        matched: List[str] = []
+        seen: set[str] = set()
+        for raw_term in terms:
+            term = str(raw_term or "").strip()
+            if not term or term in seen:
+                continue
+            if term in normalized:
+                seen.add(term)
+                matched.append(term)
+        return matched
 
     def _extract_cjk_search_tokens(self, text: str) -> List[str]:
         normalized = self._normalize_text_for_ai_processing(text)
@@ -302,6 +358,52 @@ class DocumentService:
             return terms
 
         return [term.strip().lower() for term in normalized.split() if term.strip()]
+
+    def _deserialize_model_config(self, value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+                return decoded if isinstance(decoded, dict) else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+        return {}
+
+    def _rewrite_query(
+        self,
+        query: str,
+        indexing_settings: Dict[str, Any],
+        enabled: bool,
+    ) -> str:
+        normalized = self._normalize_text_for_ai_processing(query)
+        if not enabled or not normalized:
+            return normalized or query
+
+        synonym_map = indexing_settings.get("synonym_map") or {}
+        if not isinstance(synonym_map, dict):
+            synonym_map = {}
+
+        expanded_terms: List[str] = []
+        seen: set[str] = set()
+        for term in self._extract_query_terms(normalized)[:12]:
+            key = term.strip()
+            if not key:
+                continue
+
+            for candidate in [key, key.lower()]:
+                if candidate not in seen:
+                    seen.add(candidate)
+                    expanded_terms.append(candidate)
+
+            for synonym in synonym_map.get(key, []) or synonym_map.get(key.lower(), []):
+                synonym_value = str(synonym or "").strip()
+                if not synonym_value or synonym_value in seen:
+                    continue
+                seen.add(synonym_value)
+                expanded_terms.append(synonym_value)
+
+        return " ".join(expanded_terms) if expanded_terms else normalized
 
     def _normalize_text_for_ai_processing(self, text: str) -> str:
         if not text:
@@ -810,6 +912,342 @@ class DocumentService:
         service = await self._get_embedding_service_for_model(tenant_id, model_id)
         return service or self.embedding_service
 
+    async def _resolve_embedding_runtime(
+        self,
+        tenant_id: str,
+        model_id: Optional[str],
+    ) -> tuple[EmbeddingService, str]:
+        service = await self._get_embedding_service_for_model(tenant_id, model_id)
+        if service is not None and model_id:
+            return service, f"model:{model_id}"
+        default_service = service or self.embedding_service
+        return default_service, f"default:{default_service.get_model_name()}"
+
+    def _get_embedding_dimension(self, embedding: Optional[List[float]]) -> Optional[int]:
+        return len(embedding) if embedding else None
+
+    def _resolve_vector_dimension(
+        self,
+        document: Document,
+        chunk_payloads: List[Dict[str, Any]],
+    ) -> Optional[int]:
+        dimension = document.embedding_dimension
+        if dimension is not None:
+            return dimension
+
+        for chunk in chunk_payloads:
+            chunk_embedding = chunk.get("embedding")
+            if chunk_embedding:
+                return len(chunk_embedding)
+        return None
+
+    async def _sync_vector_document(
+        self,
+        *,
+        document: Document,
+        chunk_payloads: List[Dict[str, Any]],
+        embedding_model: Optional[str],
+        embedding_model_key: Optional[str],
+        previous_chunk_count: Optional[int] = None,
+    ) -> None:
+        _ = embedding_model
+        _ = previous_chunk_count
+        await self.vector_index.sync_document_chunks(
+            tenant_id=document.tenant_id,
+            knowledge_base_id=document.knowledge_base_id or "",
+            document_id=document.id,
+            user_id=document.user_id,
+            access_level=document.access_level.value,
+            source_type=document.source_type.value if document.source_type else None,
+            embedding_model_key=embedding_model_key,
+            embedding_dimension=self._resolve_vector_dimension(document, chunk_payloads),
+            chunks=chunk_payloads,
+        )
+
+    async def resolve_document_embedding_model_key(
+        self,
+        tenant_id: str,
+        document: Document,
+    ) -> Optional[str]:
+        metadata = dict(document.metadata or {})
+        stored_key = metadata.get("vector_embedding_model_key")
+        if isinstance(stored_key, str) and stored_key.strip():
+            return stored_key.strip()
+
+        embedding_model = (document.embedding_model or "").strip()
+        if not embedding_model:
+            return None
+
+        if document.knowledge_base_id:
+            indexing_settings = await self._get_indexing_settings(
+                tenant_id=tenant_id,
+                user_id=document.user_id,
+                knowledge_base_id=document.knowledge_base_id,
+            )
+            configured_model_id = indexing_settings.get("embedding_model_id")
+            if configured_model_id:
+                service = await self._get_embedding_service_for_model(tenant_id, configured_model_id)
+                if service is not None and service.get_model_name() == embedding_model:
+                    return f"model:{configured_model_id}"
+
+        query = """
+            SELECT id
+            FROM llm_models
+            WHERE model_type = 'embedding'
+              AND enabled = true
+              AND model_id = $1
+              AND (tenant_id = $2 OR tenant_id IS NULL)
+            ORDER BY CASE WHEN tenant_id = $2 THEN 0 ELSE 1 END, updated_at DESC
+            LIMIT 1
+        """
+        async with self.repository.db_pool.acquire() as conn:
+            row = await conn.fetchrow(query, embedding_model, tenant_id)
+
+        if row:
+            return f"model:{row['id']}"
+
+        if self.embedding_service.get_model_name() == embedding_model:
+            return f"default:{embedding_model}"
+
+        return None
+
+    async def _build_vector_chunk_payloads(
+        self,
+        *,
+        document: Document,
+        embedding_service: EmbeddingService,
+    ) -> List[Dict[str, Any]]:
+        stored_chunks = await self.repository.get_document_chunks_for_indexing(
+            document_id=document.id,
+            tenant_id=document.tenant_id,
+            user_id=document.user_id,
+        )
+        if not stored_chunks:
+            return []
+
+        texts = [chunk["content"] for chunk in stored_chunks]
+        if len(texts) == 1:
+            embeddings: List[Optional[List[float]]] = [await embedding_service.embed_text(texts[0])]
+        else:
+            embeddings = list(await embedding_service.embed_batch(texts))
+
+        payloads: List[Dict[str, Any]] = []
+        for index, chunk in enumerate(stored_chunks):
+            payload = dict(chunk)
+            payload["embedding"] = embeddings[index]
+            payloads.append(payload)
+        return payloads
+
+    async def _run_index_document(
+        self,
+        *,
+        document: Document,
+        target_version: Optional[int] = None,
+    ) -> None:
+        if target_version is not None and document.index_version != target_version:
+            logger.info(
+                "Skip stale index job for document %s: current version=%s target=%s",
+                document.id,
+                document.index_version,
+                target_version,
+            )
+            return
+
+        indexing_settings = await self._get_indexing_settings(
+            tenant_id=document.tenant_id,
+            user_id=document.user_id,
+            knowledge_base_id=document.knowledge_base_id,
+        )
+        embedding_service, embedding_model_key = await self._resolve_embedding_runtime(
+            tenant_id=document.tenant_id,
+            model_id=indexing_settings.get("embedding_model_id"),
+        )
+        chunk_payloads = await self._build_vector_chunk_payloads(
+            document=document,
+            embedding_service=embedding_service,
+        )
+
+        if chunk_payloads:
+            await self._sync_vector_document(
+                document=document,
+                chunk_payloads=chunk_payloads,
+                embedding_model=embedding_service.get_model_name(),
+                embedding_model_key=embedding_model_key,
+            )
+        else:
+            await self.vector_index.delete_document(document_id=document.id, embedding_dimension=None)
+
+        metadata = dict(document.metadata or {})
+        metadata["vector_backend"] = "qdrant"
+        metadata["search_terms_version"] = SEARCH_TERMS_VERSION
+        metadata["chunk_count"] = len(chunk_payloads)
+        if embedding_model_key:
+            metadata["vector_embedding_model_key"] = embedding_model_key
+        else:
+            metadata.pop("vector_embedding_model_key", None)
+
+        await self.repository.update_document(
+            document_id=document.id,
+            tenant_id=document.tenant_id,
+            user_id=document.user_id,
+            metadata=metadata,
+            embedding_model=embedding_service.get_model_name(),
+            embedding_model_key=embedding_model_key,
+            embedding_dimension=embedding_service.get_embedding_dimension(),
+        )
+        await self.repository.update_document_index_state(
+            document_id=document.id,
+            index_status="ready",
+            indexed=bool(chunk_payloads),
+            indexed_at=datetime.utcnow() if chunk_payloads else None,
+            last_index_error=None,
+        )
+
+    async def start_index_worker(self) -> None:
+        if self._index_worker_task and not self._index_worker_task.done():
+            return
+
+        self._index_worker_stop = asyncio.Event()
+        self._index_worker_task = asyncio.create_task(
+            self._index_worker_loop(),
+            name="document-index-worker",
+        )
+
+    async def stop_index_worker(self) -> None:
+        if not self._index_worker_task:
+            return
+
+        self._index_worker_stop.set()
+        try:
+            await asyncio.wait_for(self._index_worker_task, timeout=30)
+        except asyncio.TimeoutError:
+            self._index_worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._index_worker_task
+        self._index_worker_task = None
+
+    async def _index_worker_loop(self) -> None:
+        while not self._index_worker_stop.is_set():
+            try:
+                jobs = await self.repository.claim_index_jobs(limit=4)
+                if not jobs:
+                    try:
+                        await asyncio.wait_for(
+                            self._index_worker_stop.wait(),
+                            timeout=INDEX_JOB_POLL_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    break
+
+                for job in jobs:
+                    await self._process_index_job(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Document index worker loop failed")
+                try:
+                    await asyncio.wait_for(
+                        self._index_worker_stop.wait(),
+                        timeout=INDEX_JOB_POLL_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+    async def _process_index_job(self, job: Dict[str, Any]) -> None:
+        job_id = job["id"]
+        job_type = str(job.get("job_type") or "index")
+        document = await self.repository.get_document_for_indexing(job["document_id"])
+
+        if job_type != "index":
+            logger.warning("Unsupported index job type %s for job %s", job_type, job_id)
+            await self.repository.mark_index_job_completed(job_id)
+            return
+
+        if document is None:
+            await self.repository.mark_index_job_completed(job_id)
+            return
+
+        target_version = job.get("target_version")
+        if target_version is not None and document.index_version != target_version:
+            logger.info(
+                "Skip stale queued index job %s for document %s: current version=%s target=%s",
+                job_id,
+                document.id,
+                document.index_version,
+                target_version,
+            )
+            await self.repository.mark_index_job_completed(job_id)
+            return
+
+        try:
+            await self.repository.update_document_index_state(
+                document_id=document.id,
+                index_status="running",
+                indexed=False,
+                indexed_at=None,
+                last_index_error=None,
+            )
+            await self._run_index_document(
+                document=document,
+                target_version=target_version,
+            )
+            await self.repository.mark_index_job_completed(job_id)
+        except Exception as exc:
+            error_message = str(exc) or exc.__class__.__name__
+            logger.exception("Failed to process index job %s for document %s", job_id, document.id)
+
+            if int(job.get("attempts") or 0) >= INDEX_JOB_MAX_RETRIES:
+                await self.repository.mark_index_job_failed(job_id, error_message)
+                await self.repository.update_document_index_state(
+                    document_id=document.id,
+                    index_status="failed",
+                    indexed=False,
+                    indexed_at=None,
+                    last_index_error=error_message,
+                )
+            else:
+                await self.repository.mark_index_job_retry(
+                    job_id,
+                    error_message,
+                    delay_seconds=min(300, 15 * int(job.get("attempts") or 1)),
+                )
+                await self.repository.update_document_index_state(
+                    document_id=document.id,
+                    index_status="pending",
+                    indexed=False,
+                    indexed_at=None,
+                    last_index_error=error_message,
+                )
+
+    async def _fetch_documents_for_hits(
+        self,
+        *,
+        tenant_id: str,
+        user_id: Optional[str],
+        hits: List[VectorSearchHit],
+    ) -> List[tuple[Document, float]]:
+        ordered_ids: List[str] = []
+        for hit in hits:
+            if hit.document_id and hit.document_id not in ordered_ids:
+                ordered_ids.append(hit.document_id)
+
+        if not ordered_ids:
+            return []
+
+        document_map = await self.repository.get_documents_by_ids(
+            document_ids=ordered_ids,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        results: List[tuple[Document, float]] = []
+        for hit in hits:
+            document = document_map.get(hit.document_id)
+            if document is not None:
+                results.append((document, hit.score))
+        return results
+
     async def _build_embedding(
         self,
         content: str,
@@ -843,6 +1281,10 @@ class DocumentService:
         chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
         chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
         segments = self._chunk_text_with_offsets(content, chunk_size, chunk_overlap)
+        custom_terms = self._extract_custom_terms(
+            "\n".join(part for part in (title or "", content or "") if part),
+            indexing_settings,
+        )
 
         if not segments:
             segments = [{
@@ -870,7 +1312,7 @@ class DocumentService:
         chunks: List[Dict[str, Any]] = []
         for index, segment in enumerate(segments):
             chunk_content = segment["content"]
-            chunk_keywords = self._extract_keywords(title, chunk_content, limit=6)
+            chunk_keywords = self._extract_keywords(title, chunk_content, limit=6) + custom_terms
             chunks.append(
                 {
                     "chunk_index": segment["segment_index"],
@@ -879,6 +1321,7 @@ class DocumentService:
                     "char_count": segment["char_count"],
                     "content": chunk_content,
                     "embedding": embeddings[index],
+                    "chunk_hash": hashlib.sha256(chunk_content.encode("utf-8")).hexdigest(),
                     "search_terms": self._build_search_terms(title, chunk_content, chunk_keywords + (keywords or [])[:4]),
                     "metadata": {
                         "source": source,
@@ -898,7 +1341,34 @@ class DocumentService:
         vector_results: List[tuple[Document, float]],
         keyword_results: List[tuple[Document, float]],
         top_k: int,
+        fusion_algorithm: str = "rrf",
+        rrf_k: int = 60,
+        vector_weight: float = 0.65,
+        keyword_weight: float = 0.35,
     ) -> List[tuple[Document, float]]:
+        if fusion_algorithm == "rrf":
+            doc_map: Dict[str, Document] = {}
+            combined_scores: Dict[str, float] = {}
+
+            for rank, (doc, _score) in enumerate(vector_results, start=1):
+                doc_map[doc.id] = doc
+                combined_scores[doc.id] = combined_scores.get(doc.id, 0.0) + (vector_weight / (rrf_k + rank))
+
+            for rank, (doc, _score) in enumerate(keyword_results, start=1):
+                doc_map[doc.id] = doc
+                combined_scores[doc.id] = combined_scores.get(doc.id, 0.0) + (keyword_weight / (rrf_k + rank))
+
+            if not combined_scores:
+                return []
+
+            max_score = max(combined_scores.values()) or 1.0
+            merged = [
+                (doc_map[doc_id], min(score / max_score, 1.0))
+                for doc_id, score in combined_scores.items()
+            ]
+            merged.sort(key=lambda item: item[1], reverse=True)
+            return merged[:top_k]
+
         combined: Dict[str, tuple[Document, float]] = {}
 
         for doc, score in vector_results:
@@ -916,27 +1386,387 @@ class DocumentService:
         merged.sort(key=lambda item: item[1], reverse=True)
         return merged[:top_k]
 
-    def _apply_rerank(
+    async def _get_model_row(
+        self,
+        tenant_id: str,
+        selector: Optional[str],
+        model_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not selector:
+            return None
+
+        async with self.repository.db_pool.acquire() as conn:
+            try:
+                selector_uuid = UUID(selector)
+            except ValueError:
+                selector_uuid = None
+
+            if selector_uuid:
+                query = """
+                    SELECT id, name, display_name, provider, model_id, api_base,
+                           api_key_encrypted, config, enabled, is_default
+                    FROM llm_models
+                    WHERE model_type = $1
+                      AND enabled = true
+                      AND (tenant_id = $2 OR tenant_id IS NULL)
+                      AND (id = $3 OR model_id = $4 OR name = $4 OR display_name = $4)
+                    ORDER BY CASE WHEN tenant_id = $2 THEN 0 ELSE 1 END, is_default DESC, updated_at DESC
+                    LIMIT 1
+                """
+                row = await conn.fetchrow(query, model_type, tenant_id, selector_uuid, selector)
+            else:
+                query = """
+                    SELECT id, name, display_name, provider, model_id, api_base,
+                           api_key_encrypted, config, enabled, is_default
+                    FROM llm_models
+                    WHERE model_type = $1
+                      AND enabled = true
+                      AND (tenant_id = $2 OR tenant_id IS NULL)
+                      AND (model_id = $3 OR name = $3 OR display_name = $3)
+                    ORDER BY CASE WHEN tenant_id = $2 THEN 0 ELSE 1 END, is_default DESC, updated_at DESC
+                    LIMIT 1
+                """
+                row = await conn.fetchrow(query, model_type, tenant_id, selector)
+
+        if not row:
+            return None
+
+        return {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "display_name": row["display_name"],
+            "provider": row["provider"],
+            "model_id": row["model_id"],
+            "api_base": row["api_base"],
+            "api_key_encrypted": row["api_key_encrypted"],
+            "config": self._deserialize_model_config(row["config"]),
+        }
+
+    def _create_llm_instance(self, model_row: Dict[str, Any]) -> BaseLLM:
+        cache_key = model_row["id"]
+        cached = self._rerank_runtime_cache.get(cache_key)
+        if isinstance(cached, BaseLLM):
+            return cached
+
+        provider = (model_row.get("provider") or "").lower()
+        model_id = model_row.get("model_id") or "unknown-model"
+        api_key = model_row.get("api_key_encrypted")
+        api_base = model_row.get("api_base")
+        config = dict(model_row.get("config") or {})
+        llm_kwargs = dict(config)
+        if api_base:
+            llm_kwargs["api_base"] = api_base
+
+        if provider == "openai":
+            llm = OpenAILLM(model=model_id, api_key=api_key, **llm_kwargs)
+        elif provider == "deepseek":
+            llm = DeepseekLLM(model=model_id, api_key=api_key, **llm_kwargs)
+        elif provider in {"local", "mock"}:
+            llm = LocalLLM(model=model_id, **llm_kwargs)
+        else:
+            raise ValueError(f"Unsupported rerank LLM provider: {provider}")
+
+        self._rerank_runtime_cache[cache_key] = llm
+        return llm
+
+    async def _get_rerank_runtime(
+        self,
+        tenant_id: str,
+        selector: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        model_row = await self._get_model_row(tenant_id, selector, "rerank")
+        if not model_row:
+            return None
+
+        cache_key = model_row["id"]
+        cached = self._rerank_runtime_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+        provider = (model_row.get("provider") or "").lower()
+
+        if provider == "jina":
+            runtime = {
+                "kind": "jina",
+                "model_row": model_row,
+                "api_base": model_row.get("api_base") or "https://api.jina.ai/v1",
+                "api_key": model_row.get("api_key_encrypted"),
+                "model_id": model_row.get("model_id"),
+            }
+        else:
+            runtime = {
+                "kind": "llm",
+                "model_row": model_row,
+                "llm": self._create_llm_instance(model_row),
+            }
+
+        self._rerank_runtime_cache[cache_key] = runtime
+        return runtime
+
+    def _truncate_for_rerank(self, text: str, limit: int) -> str:
+        normalized = self._normalize_text_for_ai_processing(text)
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 1].rstrip() + "…"
+
+    def _build_rerank_candidate_payload(
+        self,
+        query: str,
+        results: List[tuple[Document, float]],
+    ) -> List[Dict[str, Any]]:
+        _ = query
+        payload: List[Dict[str, Any]] = []
+        for index, (doc, score) in enumerate(results):
+            payload.append(
+                {
+                    "index": index,
+                    "title": self._truncate_for_rerank(doc.title or "", RERANK_MAX_TITLE_CHARS),
+                    "content": self._truncate_for_rerank(doc.content or "", RERANK_MAX_CONTENT_CHARS),
+                    "source": self._truncate_for_rerank(doc.source or "", 200),
+                    "original_score": round(float(score), 4),
+                }
+            )
+        return payload
+
+    def _extract_json_payload(self, text: str) -> Optional[Any]:
+        if not text:
+            return None
+
+        candidates = [text.strip()]
+        fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+        candidates.extend(block.strip() for block in fenced_blocks if block.strip())
+
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start = text.find(opener)
+            end = text.rfind(closer)
+            if start != -1 and end != -1 and end > start:
+                candidates.append(text[start : end + 1].strip())
+
+        seen = set()
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                return json.loads(candidate)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return None
+
+    def _parse_rerank_scores(
+        self,
+        raw_response: str,
+        candidate_count: int,
+    ) -> Dict[int, float]:
+        payload = self._extract_json_payload(raw_response)
+        if payload is None:
+            return {}
+
+        if isinstance(payload, dict):
+            if isinstance(payload.get("results"), list):
+                entries = payload["results"]
+            elif isinstance(payload.get("scores"), list):
+                entries = payload["scores"]
+            else:
+                entries = [
+                    {"index": key, "score": value}
+                    for key, value in payload.items()
+                ]
+        elif isinstance(payload, list):
+            entries = payload
+        else:
+            return {}
+
+        scores: Dict[int, float] = {}
+        for entry in entries:
+            index_value: Any = None
+            score_value: Any = None
+
+            if isinstance(entry, dict):
+                index_value = entry.get("index", entry.get("id"))
+                score_value = entry.get("score", entry.get("relevance_score"))
+            elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                index_value, score_value = entry[0], entry[1]
+
+            try:
+                index = int(index_value)
+                score = float(score_value)
+            except (TypeError, ValueError):
+                continue
+
+            if 0 <= index < candidate_count:
+                scores[index] = max(0.0, min(score, 1.0))
+
+        return scores
+
+    def _finalize_reranked_results(
         self,
         results: List[tuple[Document, float]],
-        query: str,
+        scores: Dict[int, float],
     ) -> List[tuple[Document, float]]:
-        if not results:
-            return results
-
-        terms = [term for term in query.lower().split() if term]
-        if not terms:
+        if not scores:
             return results
 
         rescored = []
-        for doc, score in results:
-            text = f"{doc.title} {doc.content}".lower()
-            occurrences = sum(text.count(term) for term in terms)
-            boost = min(0.2, occurrences * 0.02)
-            rescored.append((doc, min(score + boost, 1.0)))
+        for index, (doc, original_score) in enumerate(results):
+            rerank_score = scores.get(index)
+            display_score = rerank_score if rerank_score is not None else original_score
+            rescored.append(
+                {
+                    "doc": doc,
+                    "display_score": max(0.0, min(float(display_score), 1.0)),
+                    "rerank_score": rerank_score,
+                    "original_score": float(original_score),
+                }
+            )
 
-        rescored.sort(key=lambda item: item[1], reverse=True)
-        return rescored
+        rescored.sort(
+            key=lambda item: (
+                item["rerank_score"] is not None,
+                item["rerank_score"] if item["rerank_score"] is not None else -1.0,
+                item["original_score"],
+            ),
+            reverse=True,
+        )
+        return [(item["doc"], item["display_score"]) for item in rescored]
+
+    async def _apply_llm_rerank(
+        self,
+        llm: BaseLLM,
+        query: str,
+        results: List[tuple[Document, float]],
+    ) -> List[tuple[Document, float]]:
+        candidate_payload = self._build_rerank_candidate_payload(query, results)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a retrieval reranker. Score how well each candidate answers the query. "
+                    "Return strict JSON only in the form "
+                    "{\"results\":[{\"index\":0,\"score\":0.0}]}. "
+                    "Scores must be floats between 0 and 1. Use every candidate exactly once."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Query:\n{self._truncate_for_rerank(query, 800)}\n\n"
+                    f"Candidates:\n{json.dumps(candidate_payload, ensure_ascii=False)}"
+                ),
+            },
+        ]
+
+        raw_response = await llm.chat(
+            messages,
+            temperature=0,
+            max_tokens=RERANK_MAX_RESPONSE_TOKENS,
+        )
+        scores = self._parse_rerank_scores(raw_response, len(results))
+        if not scores:
+            raise ValueError("LLM rerank response did not contain usable scores")
+        return self._finalize_reranked_results(results, scores)
+
+    async def _apply_jina_rerank(
+        self,
+        runtime: Dict[str, Any],
+        query: str,
+        results: List[tuple[Document, float]],
+    ) -> List[tuple[Document, float]]:
+        api_key = runtime.get("api_key")
+        if not api_key:
+            raise ValueError("Missing API key for Jina rerank model")
+
+        try:
+            import httpx
+        except ImportError as exc:
+            raise RuntimeError("httpx library not installed") from exc
+
+        documents = [
+            {
+                "text": (
+                    f"Title: {self._truncate_for_rerank(doc.title or '', RERANK_MAX_TITLE_CHARS)}\n"
+                    f"Source: {self._truncate_for_rerank(doc.source or '', 200)}\n"
+                    f"Content: {self._truncate_for_rerank(doc.content or '', RERANK_MAX_CONTENT_CHARS)}"
+                )
+            }
+            for doc, _score in results
+        ]
+
+        payload = {
+            "model": runtime.get("model_id"),
+            "query": self._truncate_for_rerank(query, 800),
+            "documents": documents,
+            "top_n": len(documents),
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{runtime['api_base'].rstrip('/')}/rerank",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        entries = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError("Jina rerank response missing results list")
+
+        scores: Dict[int, float] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                index = int(entry.get("index"))
+                score = float(entry.get("relevance_score", entry.get("score")))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < len(results):
+                scores[index] = max(0.0, min(score, 1.0))
+
+        if not scores:
+            raise ValueError("Jina rerank response did not contain usable scores")
+        return self._finalize_reranked_results(results, scores)
+
+    async def _apply_rerank(
+        self,
+        results: List[tuple[Document, float]],
+        query: str,
+        tenant_id: str,
+        rerank_model_id: Optional[str],
+    ) -> List[tuple[Document, float]]:
+        if not results or not rerank_model_id:
+            return results
+
+        rerank_candidates = results[: min(len(results), RERANK_MAX_CANDIDATES)]
+        remaining_candidates = results[len(rerank_candidates):]
+        if not rerank_candidates:
+            return results
+
+        runtime = await self._get_rerank_runtime(tenant_id, rerank_model_id)
+        if not runtime:
+            logger.warning("Rerank model not found or unavailable: %s", rerank_model_id)
+            return results
+
+        try:
+            if runtime["kind"] == "jina":
+                reranked = await self._apply_jina_rerank(runtime, query, rerank_candidates)
+            else:
+                reranked = await self._apply_llm_rerank(runtime["llm"], query, rerank_candidates)
+        except Exception as exc:
+            model_row = runtime.get("model_row") or {}
+            logger.warning(
+                "Falling back to original retrieval order because rerank model %s failed: %s",
+                model_row.get("display_name") or model_row.get("model_id") or rerank_model_id,
+                exc,
+            )
+            return results
+
+        return reranked + remaining_candidates
 
     async def get_document_preview(
         self,
@@ -1111,9 +1941,6 @@ class DocumentService:
             await self.quota_manager.check_document_quota(tenant_id)
             await self.quota_manager.check_document_size(request.content)
 
-        # 生成向量嵌入
-        embedding = None
-        embedding_model = None
         chunk_payloads: List[Dict[str, Any]] = []
         merged_metadata = dict(request.metadata or {})
         indexing_settings = await self._get_indexing_settings(
@@ -1133,52 +1960,32 @@ class DocumentService:
         except Exception as exc:
             logger.error(f"Failed to generate AI metadata: {exc}")
 
-        if request.auto_index:
-            try:
-                embedding_service = await self._select_embedding_service(
-                    tenant_id=tenant_id,
-                    model_id=indexing_settings.get("embedding_model_id"),
-                )
-                chunk_payloads, embedding, embedding_model = await self._build_chunk_index_payloads(
-                    title=request.title,
-                    content=request.content,
-                    source=request.source,
-                    source_type=request.source_type,
-                    indexing_settings=indexing_settings,
-                    embedding_service=embedding_service,
-                    keywords=list(merged_metadata.get("ai_keywords") or []),
-                )
-            except Exception as e:
-                logger.error(f"Failed to generate embedding: {e}")
-                # 继续创建文档，但标记为未索引
-                chunk_payloads, embedding, embedding_model = await self._build_chunk_index_payloads(
-                    title=request.title,
-                    content=request.content,
-                    source=request.source,
-                    source_type=request.source_type,
-                    indexing_settings=indexing_settings,
-                    embedding_service=None,
-                    keywords=list(merged_metadata.get("ai_keywords") or []),
-                )
-        else:
-            chunk_payloads, embedding, embedding_model = await self._build_chunk_index_payloads(
-                title=request.title,
-                content=request.content,
-                source=request.source,
-                source_type=request.source_type,
-                indexing_settings=indexing_settings,
-                embedding_service=None,
-                keywords=list(merged_metadata.get("ai_keywords") or []),
-            )
+        chunk_payloads, _unused_embedding, _unused_embedding_model = await self._build_chunk_index_payloads(
+            title=request.title,
+            content=request.content,
+            source=request.source,
+            source_type=request.source_type,
+            indexing_settings=indexing_settings,
+            embedding_service=None,
+            keywords=list(merged_metadata.get("ai_keywords") or []) + self._extract_custom_terms(
+                "\n".join(part for part in (request.title, request.content) if part),
+                indexing_settings,
+            ),
+        )
 
         merged_metadata["chunk_count"] = len(chunk_payloads)
         merged_metadata["search_terms_version"] = SEARCH_TERMS_VERSION
+        merged_metadata["vector_backend"] = "qdrant"
         document_search_terms = self._build_search_terms(
             request.title,
             request.content,
-            list(merged_metadata.get("ai_keywords") or []),
+            list(merged_metadata.get("ai_keywords") or []) + self._extract_custom_terms(
+                "\n".join(part for part in (request.title, request.content) if part),
+                indexing_settings,
+            ),
         )
 
+        doc: Optional[Document] = None
         async with self.repository.db_pool.acquire() as conn:
             async with conn.transaction():
                 doc = await self.repository.create_document(
@@ -1190,8 +1997,13 @@ class DocumentService:
                     content=request.content,
                     source=request.source,
                     source_type=request.source_type,
-                    embedding=embedding,
-                    embedding_model=embedding_model,
+                    embedding_model=None,
+                    embedding_model_key=None,
+                    embedding_dimension=None,
+                    indexed=False,
+                    index_status="pending",
+                    index_version=1,
+                    last_index_error=None,
                     search_terms=document_search_terms,
                     metadata=merged_metadata,
                     conn=conn,
@@ -1199,9 +2011,21 @@ class DocumentService:
                 await self.repository.replace_document_chunks(
                     document=doc,
                     chunks=chunk_payloads,
-                    embedding_model=embedding_model,
                     conn=conn,
                 )
+                if request.auto_index and doc is not None:
+                    await self.repository.enqueue_index_job(
+                        tenant_id=doc.tenant_id,
+                        knowledge_base_id=doc.knowledge_base_id,
+                        document_id=doc.id,
+                        job_type="index",
+                        target_version=doc.index_version,
+                        payload={"reason": "create"},
+                        conn=conn,
+                    )
+
+        if doc is None:
+            raise RuntimeError("Document creation failed")
 
         # 审计日志
         if self.audit_logger:
@@ -1249,37 +2073,35 @@ class DocumentService:
         Returns:
             更新后的文档，如果不存在或无权限则返回None
         """
-        existing_doc = None
-        metadata_to_update = request.metadata
-        chunk_payloads: Optional[List[Dict[str, Any]]] = None
-        search_terms_to_update: Optional[str] = None
+        existing_doc = await self.repository.get_document(document_id, tenant_id, user_id)
+        if not existing_doc:
+            return None
 
         if (
-            request.content is not None
-            or request.title is not None
-            or request.source is not None
-            or request.metadata is not None
-            or request.re_index
+            request.title is None
+            and request.content is None
+            and request.source is None
+            and request.metadata is None
+            and not request.re_index
         ):
-            existing_doc = await self.repository.get_document(document_id, tenant_id, user_id)
-            if not existing_doc:
-                return None
+            return existing_doc
 
-        if existing_doc and (
-            request.content is not None
+        effective_title = request.title if request.title is not None else existing_doc.title
+        effective_content = request.content if request.content is not None else existing_doc.content
+        effective_source = request.source if request.source is not None else existing_doc.source
+
+        should_refresh_index = bool(
+            request.re_index
+            or request.content is not None
             or request.title is not None
             or request.source is not None
-            or request.metadata is not None
-        ):
+        )
+
+        metadata_to_update: Optional[Dict[str, Any]]
+        if request.metadata is not None or should_refresh_index:
             base_metadata = dict(existing_doc.metadata or {})
             if request.metadata is not None:
-                for key, value in request.metadata.items():
-                    base_metadata[key] = value
-
-            effective_title = request.title if request.title is not None else existing_doc.title
-            effective_content = request.content if request.content is not None else existing_doc.content
-            effective_source = request.source if request.source is not None else existing_doc.source
-
+                base_metadata.update(request.metadata)
             try:
                 metadata_to_update = self._build_ai_metadata(
                     title=effective_title,
@@ -1291,79 +2113,45 @@ class DocumentService:
             except Exception as exc:
                 logger.error(f"Failed to refresh AI metadata: {exc}")
                 metadata_to_update = base_metadata
+        else:
+            metadata_to_update = None
 
-        embedding = None
-        embedding_model = None
-        should_refresh_index = bool(
-            existing_doc and (
-                request.re_index
-                or request.content is not None
-                or request.title is not None
-                or request.source is not None
-            )
-        )
-
-        if should_refresh_index and existing_doc and metadata_to_update is None:
-            metadata_to_update = dict(existing_doc.metadata or {})
+        chunk_payloads: Optional[List[Dict[str, Any]]] = None
+        search_terms_to_update: Optional[str] = None
+        next_index_version = existing_doc.index_version + 1 if should_refresh_index else existing_doc.index_version
 
         if should_refresh_index:
-            try:
-                if existing_doc:
-                    effective_title = request.title if request.title is not None else existing_doc.title
-                    effective_content = request.content if request.content is not None else existing_doc.content
-                    effective_source = request.source if request.source is not None else existing_doc.source
-                    indexing_settings = await self._get_indexing_settings(
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        knowledge_base_id=existing_doc.knowledge_base_id,
-                    )
-                    embedding_service = await self._select_embedding_service(
-                        tenant_id=tenant_id,
-                        model_id=indexing_settings.get("embedding_model_id"),
-                    )
-                    chunk_payloads, embedding, embedding_model = await self._build_chunk_index_payloads(
-                        title=effective_title,
-                        content=effective_content,
-                        source=effective_source,
-                        source_type=existing_doc.source_type,
-                        indexing_settings=indexing_settings,
-                        embedding_service=embedding_service,
-                        keywords=list((metadata_to_update or {}).get("ai_keywords") or []),
-                    )
-                    if metadata_to_update is not None:
-                        metadata_to_update["chunk_count"] = len(chunk_payloads)
-                        metadata_to_update["search_terms_version"] = SEARCH_TERMS_VERSION
-                    search_terms_to_update = self._build_search_terms(
-                        effective_title,
-                        effective_content,
-                        list((metadata_to_update or {}).get("ai_keywords") or []),
-                    )
-            except Exception as e:
-                logger.error(f"Failed to generate embedding: {e}")
-                if existing_doc:
-                    indexing_settings = await self._get_indexing_settings(
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        knowledge_base_id=existing_doc.knowledge_base_id,
-                    )
-                    chunk_payloads, _fallback_embedding, _fallback_model = await self._build_chunk_index_payloads(
-                        title=effective_title,
-                        content=effective_content,
-                        source=effective_source,
-                        source_type=existing_doc.source_type,
-                        indexing_settings=indexing_settings,
-                        embedding_service=None,
-                        keywords=list((metadata_to_update or {}).get("ai_keywords") or []),
-                    )
-                    if metadata_to_update is not None:
-                        metadata_to_update["chunk_count"] = len(chunk_payloads)
-                        metadata_to_update["search_terms_version"] = SEARCH_TERMS_VERSION
-                    search_terms_to_update = self._build_search_terms(
-                        effective_title,
-                        effective_content,
-                        list((metadata_to_update or {}).get("ai_keywords") or []),
-                    )
+            indexing_settings = await self._get_indexing_settings(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                knowledge_base_id=existing_doc.knowledge_base_id,
+            )
+            custom_terms = self._extract_custom_terms(
+                "\n".join(part for part in (effective_title, effective_content) if part),
+                indexing_settings,
+            )
+            chunk_payloads, _unused_embedding, _unused_model = await self._build_chunk_index_payloads(
+                title=effective_title,
+                content=effective_content,
+                source=effective_source,
+                source_type=existing_doc.source_type,
+                indexing_settings=indexing_settings,
+                embedding_service=None,
+                keywords=list((metadata_to_update or {}).get("ai_keywords") or []) + custom_terms,
+            )
+            if metadata_to_update is None:
+                metadata_to_update = dict(existing_doc.metadata or {})
+            metadata_to_update["chunk_count"] = len(chunk_payloads)
+            metadata_to_update["search_terms_version"] = SEARCH_TERMS_VERSION
+            metadata_to_update["vector_backend"] = "qdrant"
+            metadata_to_update.pop("vector_embedding_model_key", None)
+            search_terms_to_update = self._build_search_terms(
+                effective_title,
+                effective_content,
+                list((metadata_to_update or {}).get("ai_keywords") or []) + custom_terms,
+            )
 
+        updated_doc: Optional[Document] = None
         async with self.repository.db_pool.acquire() as conn:
             async with conn.transaction():
                 updated_doc = await self.repository.update_document(
@@ -1374,8 +2162,9 @@ class DocumentService:
                     content=request.content,
                     source=request.source,
                     metadata=metadata_to_update,
-                    embedding=embedding,
-                    embedding_model=embedding_model,
+                    indexed=False if should_refresh_index else None,
+                    index_status="pending" if should_refresh_index else None,
+                    index_version=next_index_version if should_refresh_index else None,
                     search_terms=search_terms_to_update,
                     conn=conn,
                 )
@@ -1384,9 +2173,30 @@ class DocumentService:
                     await self.repository.replace_document_chunks(
                         document=updated_doc,
                         chunks=chunk_payloads,
-                        embedding_model=embedding_model or updated_doc.embedding_model,
                         conn=conn,
                     )
+                    await self.repository.enqueue_index_job(
+                        tenant_id=updated_doc.tenant_id,
+                        knowledge_base_id=updated_doc.knowledge_base_id,
+                        document_id=updated_doc.id,
+                        job_type="index",
+                        target_version=next_index_version,
+                        payload={"reason": "update"},
+                        conn=conn,
+                    )
+
+        if updated_doc is None:
+            return None
+
+        if should_refresh_index:
+            await self.repository.update_document_index_state(
+                document_id=updated_doc.id,
+                index_status="pending",
+                indexed=False,
+                indexed_at=None,
+                last_index_error=None,
+            )
+            return await self.repository.get_document(updated_doc.id, tenant_id, user_id)
 
         return updated_doc
 
@@ -1397,7 +2207,17 @@ class DocumentService:
         user_id: Optional[str],
     ) -> bool:
         """删除文档"""
-        return await self.repository.delete_document(document_id, tenant_id, user_id)
+        existing_doc = await self.repository.get_document(document_id, tenant_id, user_id)
+        if not existing_doc:
+            return False
+
+        await self.vector_index.delete_document(
+            document_id=document_id,
+            embedding_dimension=None,
+        )
+
+        deleted = await self.repository.delete_document(document_id, tenant_id, user_id)
+        return deleted
 
     async def list_documents(
         self,
@@ -1449,108 +2269,123 @@ class DocumentService:
         Returns:
             [(文档, 相似度分数), ...]
         """
-        retrieval_settings = None
+        retrieval_settings = dict(DEFAULT_RETRIEVAL_SETTINGS)
+        indexing_settings = dict(DEFAULT_INDEXING_SETTINGS)
         if knowledge_base_id:
-            retrieval_settings = await self._get_retrieval_settings(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                knowledge_base_id=knowledge_base_id,
+            retrieval_settings.update(
+                await self._get_retrieval_settings(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    knowledge_base_id=knowledge_base_id,
+                )
+            )
+            indexing_settings.update(
+                await self._get_indexing_settings(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    knowledge_base_id=knowledge_base_id,
+                )
             )
 
-        if retrieval_settings:
-            retrieval_method = retrieval_method_override or retrieval_settings.get("retrieval_method") or "vector"
-            if retrieval_method not in ("vector", "keyword", "hybrid"):
-                retrieval_method = "vector"
-            effective_top_k = int(top_k_override or retrieval_settings.get("top_k") or top_k)
-            score_threshold = float(
-                score_threshold_override
-                if score_threshold_override is not None
-                else retrieval_settings.get("score_threshold") or 0.0
-            )
-            enable_rerank = (
-                bool(enable_rerank_override)
-                if enable_rerank_override is not None
-                else bool(retrieval_settings.get("enable_rerank"))
-            )
-            rerank_model_id = rerank_model_id_override or retrieval_settings.get("rerank_model_id")
-        else:
-            retrieval_method = retrieval_method_override or "vector"
-            effective_top_k = int(top_k_override or top_k)
-            score_threshold = float(score_threshold_override if score_threshold_override is not None else 0.0)
-            enable_rerank = bool(enable_rerank_override) if enable_rerank_override is not None else False
-            rerank_model_id = rerank_model_id_override
+        retrieval_method = retrieval_method_override or retrieval_settings.get("retrieval_method") or "hybrid"
+        if retrieval_method not in ("vector", "keyword", "hybrid"):
+            retrieval_method = "hybrid"
+
+        effective_top_k = int(top_k_override or retrieval_settings.get("top_k") or top_k)
+        score_threshold = float(
+            score_threshold_override
+            if score_threshold_override is not None
+            else retrieval_settings.get("score_threshold") or 0.0
+        )
+        enable_rerank = (
+            bool(enable_rerank_override)
+            if enable_rerank_override is not None
+            else bool(retrieval_settings.get("enable_rerank"))
+        )
+        rerank_model_id = rerank_model_id_override or retrieval_settings.get("rerank_model_id")
+        vector_top_k = max(effective_top_k, int(retrieval_settings.get("vector_top_k") or effective_top_k))
+        keyword_top_k = max(effective_top_k, int(retrieval_settings.get("keyword_top_k") or effective_top_k))
+        max_candidates = max(effective_top_k, int(retrieval_settings.get("max_candidates") or effective_top_k))
+        rerank_pool_size = min(
+            max_candidates,
+            max(effective_top_k, effective_top_k * RERANK_POOL_MULTIPLIER) if enable_rerank and rerank_model_id else effective_top_k,
+            RERANK_MAX_CANDIDATES,
+        )
+        fusion_algorithm = str(retrieval_settings.get("fusion_algorithm") or "rrf").lower()
+        rrf_k = int(retrieval_settings.get("rrf_k") or 60)
+        vector_weight = float(retrieval_settings.get("vector_weight") or 0.65)
+        keyword_weight = float(retrieval_settings.get("keyword_weight") or 0.35)
+        query_rewrite = bool(retrieval_settings.get("query_rewrite"))
+
+        rewritten_query = self._rewrite_query(query, indexing_settings, query_rewrite)
+        keyword_query = self._build_keyword_query(rewritten_query or query)
 
         results: List[tuple[Document, float]] = []
-        keyword_query = self._build_keyword_query(query)
 
         if retrieval_method == "keyword":
             results = await self.repository.search_by_keyword(
                 tenant_id=tenant_id,
-                query=keyword_query or query,
+                query=keyword_query or rewritten_query or query,
                 user_id=user_id,
-                top_k=effective_top_k,
+                top_k=keyword_top_k,
                 knowledge_base_id=knowledge_base_id,
                 access_level=access_level,
                 source_type=source_type,
             )
-        elif retrieval_method == "hybrid":
-            indexing_settings = await self._get_indexing_settings(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                knowledge_base_id=knowledge_base_id,
-            )
-            embedding_service = await self._select_embedding_service(
-                tenant_id=tenant_id,
-                model_id=indexing_settings.get("embedding_model_id"),
-            )
-            query_embedding = await embedding_service.embed_text(query)
-            vector_results = await self.repository.search_by_embedding(
-                tenant_id=tenant_id,
-                query_embedding=query_embedding,
-                user_id=user_id,
-                top_k=effective_top_k,
-                knowledge_base_id=knowledge_base_id,
-                access_level=access_level,
-                source_type=source_type,
-            )
-            keyword_results = await self.repository.search_by_keyword(
-                tenant_id=tenant_id,
-                query=keyword_query or query,
-                user_id=user_id,
-                top_k=effective_top_k,
-                knowledge_base_id=knowledge_base_id,
-                access_level=access_level,
-                source_type=source_type,
-            )
-            results = self._merge_results(vector_results, keyword_results, effective_top_k)
+            results = results[:rerank_pool_size]
         else:
-            indexing_settings = await self._get_indexing_settings(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                knowledge_base_id=knowledge_base_id,
-            )
-            embedding_service = await self._select_embedding_service(
+            embedding_service, embedding_model_key = await self._resolve_embedding_runtime(
                 tenant_id=tenant_id,
                 model_id=indexing_settings.get("embedding_model_id"),
             )
-            query_embedding = await embedding_service.embed_text(query)
-            results = await self.repository.search_by_embedding(
+            query_embedding = await embedding_service.embed_text(rewritten_query or query)
+            vector_hits = await self.vector_index.search(
                 tenant_id=tenant_id,
                 query_embedding=query_embedding,
                 user_id=user_id,
-                top_k=effective_top_k,
+                top_k=vector_top_k,
                 knowledge_base_id=knowledge_base_id,
-                access_level=access_level,
-                source_type=source_type,
+                access_level=access_level.value if access_level else None,
+                source_type=source_type.value if source_type else None,
+                score_threshold=score_threshold if score_threshold > 0 else None,
+                embedding_model_key=embedding_model_key,
+                embedding_dimension=embedding_service.get_embedding_dimension(),
             )
+            vector_results = await self._fetch_documents_for_hits(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                hits=vector_hits[:max_candidates],
+            )
+
+            if retrieval_method == "vector":
+                results = vector_results[:rerank_pool_size]
+            else:
+                keyword_results = await self.repository.search_by_keyword(
+                    tenant_id=tenant_id,
+                    query=keyword_query or rewritten_query or query,
+                    user_id=user_id,
+                    top_k=keyword_top_k,
+                    knowledge_base_id=knowledge_base_id,
+                    access_level=access_level,
+                    source_type=source_type,
+                )
+                results = self._merge_results(
+                    vector_results[:max_candidates],
+                    keyword_results[:max_candidates],
+                    rerank_pool_size,
+                    fusion_algorithm=fusion_algorithm,
+                    rrf_k=rrf_k,
+                    vector_weight=vector_weight,
+                    keyword_weight=keyword_weight,
+                )
 
         if score_threshold and score_threshold > 0:
             results = [(doc, score) for doc, score in results if score >= score_threshold]
 
         if enable_rerank and rerank_model_id:
-            results = self._apply_rerank(results, query)
+            results = await self._apply_rerank(results, query, tenant_id, rerank_model_id)
 
-        return results
+        return results[:effective_top_k]
 
     async def upload_file(
         self,
