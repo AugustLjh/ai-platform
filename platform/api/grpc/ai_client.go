@@ -6,11 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
+	"github.com/ai-platform/platform/database"
 	pb "github.com/ai-platform/platform/proto/chat"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -197,6 +200,24 @@ type httpChatChunk struct {
 	Metadata  map[string]string `json:"metadata"`
 }
 
+type AgentRunCreateRequest struct {
+	AgentDefinitionID string          `json:"agent_definition_id"`
+	Input             json.RawMessage `json:"input"`
+	TenantID          string          `json:"tenant_id"`
+	UserID            string          `json:"user_id,omitempty"`
+	SessionID         string          `json:"session_id,omitempty"`
+	Metadata          map[string]any  `json:"metadata,omitempty"`
+	AutoStart         bool            `json:"auto_start"`
+}
+
+type runtimeAgentRunSummaryResponse struct {
+	Run database.AgentRun `json:"run"`
+}
+
+type runtimeAgentResumeRequest struct {
+	InputPatch json.RawMessage `json:"input_patch"`
+}
+
 func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
 	if c.httpClient == nil {
 		c.httpClient = &http.Client{}
@@ -316,4 +337,174 @@ func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan
 	}()
 
 	return messageChan, nil
+}
+
+func (c *AIClient) CreateAgentRun(ctx context.Context, req *AgentRunCreateRequest) (*database.AgentRun, error) {
+	if c.httpBaseURL == "" {
+		return nil, errors.New("agent mode requires AI runtime HTTP base URL")
+	}
+	payload := AgentRunCreateRequest{
+		AgentDefinitionID: req.AgentDefinitionID,
+		Input:             req.Input,
+		TenantID:          req.TenantID,
+		UserID:            req.UserID,
+		SessionID:         req.SessionID,
+		Metadata:          req.Metadata,
+		AutoStart:         req.AutoStart,
+	}
+
+	var response runtimeAgentRunSummaryResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/runs", payload, req.TenantID, req.UserID, &response); err != nil {
+		return nil, err
+	}
+	return &response.Run, nil
+}
+
+func (c *AIClient) CancelAgentRun(ctx context.Context, runID, tenantID string) (*database.AgentRun, error) {
+	var response runtimeAgentRunSummaryResponse
+	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/agents/runs/%s/cancel", runID), nil, tenantID, "", &response); err != nil {
+		return nil, err
+	}
+	return &response.Run, nil
+}
+
+func (c *AIClient) ResumeAgentRun(ctx context.Context, runID, tenantID string, inputPatch json.RawMessage) (*database.AgentRun, error) {
+	var response runtimeAgentRunSummaryResponse
+	if err := c.doJSON(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/agents/runs/%s/resume", runID),
+		runtimeAgentResumeRequest{InputPatch: inputPatch},
+		tenantID,
+		"",
+		&response,
+	); err != nil {
+		return nil, err
+	}
+	return &response.Run, nil
+}
+
+func (c *AIClient) StreamAgentRunEvents(ctx context.Context, runID, tenantID string, afterSequence int64) (<-chan *database.AgentRunEvent, error) {
+	if c.httpBaseURL == "" {
+		return nil, errors.New("agent mode requires AI runtime HTTP base URL")
+	}
+
+	if c.httpClient == nil {
+		c.httpClient = &http.Client{}
+	}
+
+	endpoint := c.httpBaseURL + fmt.Sprintf(
+		"/api/v1/agents/runs/%s/events?stream=true&after_sequence=%d",
+		url.PathEscape(runID),
+		afterSequence,
+	)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if tenantID != "" {
+		httpReq.Header.Set("X-Tenant-ID", tenantID)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan *database.AgentRunEvent, 100)
+	go func() {
+		defer close(out)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("[AIClient] agent event stream failed: status=%d", resp.StatusCode)
+			return
+		}
+
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				log.Printf("[AIClient] agent event stream read error: %v", err)
+				return
+			}
+
+			line = strings.TrimRight(line, "\r\n")
+			if line == "" || !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "" || data == "[DONE]" {
+				if data == "[DONE]" {
+					return
+				}
+				continue
+			}
+
+			var event database.AgentRunEvent
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				log.Printf("[AIClient] failed to parse agent event: %v", err)
+				continue
+			}
+			out <- &event
+		}
+	}()
+
+	return out, nil
+}
+
+func (c *AIClient) doJSON(
+	ctx context.Context,
+	method, path string,
+	payload any,
+	tenantID, userID string,
+	out any,
+) error {
+	if c.httpBaseURL == "" {
+		return errors.New("AI runtime HTTP base URL is empty")
+	}
+	if c.httpClient == nil {
+		c.httpClient = &http.Client{}
+	}
+
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.httpBaseURL+path, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if tenantID != "" {
+		req.Header.Set("X-Tenant-ID", tenantID)
+	}
+	if userID != "" {
+		req.Header.Set("X-User-ID", userID)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("runtime request failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }

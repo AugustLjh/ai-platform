@@ -88,6 +88,10 @@ func main() {
 	// Initialize services
 	sessionStore := database.NewSessionStore(pgPool)
 	chatService := service.NewChatService(aiClient, sessionStore)
+	agentStore := database.NewAgentStore(pgPool)
+	skillStore := database.NewSkillStore(pgPool)
+	mcpStore := database.NewMCPStore(pgPool)
+	agentService := service.NewAgentService(aiClient, agentStore, skillStore, mcpStore)
 
 	// Initialize middleware (with real JWT auth)
 	authMiddleware := middleware.NewAuthMiddleware(authService)
@@ -99,6 +103,9 @@ func main() {
 	// Initialize HTTP handlers
 	chatHandler := httphandler.NewChatHandler(chatService, costTracker)
 	authHandler := httphandler.NewAuthHandler(authService)
+	agentHandler := httphandler.NewAgentHandler(agentService)
+	skillHandler := httphandler.NewSkillHandler(agentService)
+	mcpHandler := httphandler.NewMCPHandler(agentService)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -197,6 +204,109 @@ func main() {
 	mux.Handle("/api/v1/chat/messages/",
 		chain(
 			http.HandlerFunc(chatHandler.HandleMessageFeedback),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/runs/",
+		chain(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/events"):
+					agentHandler.HandleRunEvents(w, r)
+				case strings.HasSuffix(r.URL.Path, "/cancel"):
+					agentHandler.HandleCancelRun(w, r)
+				case strings.HasSuffix(r.URL.Path, "/resume"):
+					agentHandler.HandleResumeRun(w, r)
+				default:
+					agentHandler.HandleRunByID(w, r)
+				}
+			}),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/runs",
+		chain(
+			http.HandlerFunc(agentHandler.HandleRuns),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/",
+		chain(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/runs"):
+					agentHandler.HandleCreateRun(w, r)
+				case strings.HasSuffix(r.URL.Path, "/skills"):
+					skillHandler.HandleUpdateAgentSkills(w, r)
+				case strings.HasSuffix(r.URL.Path, "/mcp-servers"):
+					mcpHandler.HandleUpdateAgentMCPServers(w, r)
+				default:
+					agentHandler.HandleAgentByID(w, r)
+				}
+			}),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents",
+		chain(
+			http.HandlerFunc(agentHandler.HandleAgents),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/skills/sync",
+		chain(
+			http.HandlerFunc(skillHandler.HandleSyncSkills),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/skills/",
+		chain(
+			http.HandlerFunc(skillHandler.HandleSkillByID),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/skills",
+		chain(
+			http.HandlerFunc(skillHandler.HandleSkills),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/mcp/servers/",
+		chain(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/test"):
+					mcpHandler.HandleTestServer(w, r)
+				case strings.HasSuffix(r.URL.Path, "/refresh-tools"):
+					mcpHandler.HandleRefreshServerTools(w, r)
+				default:
+					mcpHandler.HandleServerByID(w, r)
+				}
+			}),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/mcp/servers",
+		chain(
+			http.HandlerFunc(mcpHandler.HandleServers),
 			authMiddleware.Handler,
 			rateLimiter.Handler,
 			guardMiddleware.Handler,
