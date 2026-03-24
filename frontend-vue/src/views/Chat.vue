@@ -423,7 +423,10 @@ const handleEnterSend = (event) => {
 }
 
 const openAgent = (agent) => {
-  router.push(`/agents/${agent}`)
+  router.push({
+    path: '/agents',
+    query: { starter: agent }
+  })
 }
 
 const copyMessage = async (content) => {

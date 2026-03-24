@@ -22,6 +22,10 @@
           <span class="nav-icon">🕘</span>
           <span>历史记录</span>
         </router-link>
+        <router-link to="/agents" class="sidebar-nav-item">
+          <span class="nav-icon">🧭</span>
+          <span>智能体</span>
+        </router-link>
         <router-link to="/costs" class="sidebar-nav-item">
           <span class="nav-icon">💵</span>
           <span>成本统计</span>

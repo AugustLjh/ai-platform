@@ -8,7 +8,9 @@ const CostStats = () => import('../views/CostStats.vue')
 const ModelsManage = () => import('../views/ModelsManage.vue')
 const Profile = () => import('../views/Profile.vue')
 const Settings = () => import('../views/Settings.vue')
-const AgentPlaceholder = () => import('../views/AgentPlaceholder.vue')
+const AgentsList = () => import('../views/AgentsList.vue')
+const AgentWorkspace = () => import('../views/AgentWorkspace.vue')
+const AgentRunDetail = () => import('../views/AgentRunDetail.vue')
 const KnowledgeBaseList = () => import('../views/KnowledgeBaseList.vue')
 const KnowledgeBaseCreate = () => import('../views/KnowledgeBaseCreate.vue')
 const KnowledgeBaseDetail = () => import('../views/KnowledgeBaseDetail.vue')
@@ -58,9 +60,21 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
-    path: '/agents/:agent',
-    name: 'AgentPlaceholder',
-    component: AgentPlaceholder,
+    path: '/agents',
+    name: 'AgentsList',
+    component: AgentsList,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/runs/:run_id',
+    name: 'AgentRunDetail',
+    component: AgentRunDetail,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/:id',
+    name: 'AgentWorkspace',
+    component: AgentWorkspace,
     meta: { requiresAuth: true }
   },
   {

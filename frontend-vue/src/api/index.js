@@ -1,4 +1,7 @@
 import api from './axios'
+export { agentsAPI } from './agents'
+export { skillsAPI } from './skills'
+export { mcpAPI } from './mcp'
 
 export const authAPI = {
   // Register
