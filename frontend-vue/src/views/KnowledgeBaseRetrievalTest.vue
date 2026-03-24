@@ -61,6 +61,8 @@
             <div v-for="segment in item.matched_segments" :key="`${item.document.id}-${segment.segment_index}`" class="segment-card">
               <div class="segment-head">
                 <span>#{{ segment.segment_index }}</span>
+                <span v-if="segment.citation_label">{{ segment.citation_label }}</span>
+                <span v-else-if="segment.section_title">{{ segment.section_title }}</span>
                 <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
               </div>
               <div class="segment-text">{{ segment.content }}</div>
@@ -123,7 +125,7 @@
                 <label>期望命中文档</label>
                 <select v-model="item.expectedDocumentIds" multiple size="6">
                   <option v-for="doc in documents" :key="doc.id" :value="doc.id">
-                    {{ doc.title || doc.name }}
+                    {{ doc.title }}
                   </option>
                 </select>
               </div>
@@ -199,6 +201,51 @@
             <div class="form-row">
               <label>Rerank</label>
               <select v-model="runForm.config.enable_rerank">
+                <option value="">沿用生产配置</option>
+                <option value="true">启用</option>
+                <option value="false">关闭</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-row">
+              <label>向量候选数</label>
+              <input v-model.number="runForm.config.vector_top_k" type="number" min="1" max="200" />
+            </div>
+            <div class="form-row">
+              <label>关键词候选数</label>
+              <input v-model.number="runForm.config.keyword_top_k" type="number" min="1" max="200" />
+            </div>
+            <div class="form-row">
+              <label>融合算法</label>
+              <select v-model="runForm.config.fusion_algorithm">
+                <option value="">沿用生产配置</option>
+                <option value="rrf">RRF</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>RRF K</label>
+              <input v-model.number="runForm.config.rrf_k" type="number" min="1" max="200" />
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-row">
+              <label>向量权重</label>
+              <input v-model.number="runForm.config.vector_weight" type="number" min="0" max="5" step="0.05" />
+            </div>
+            <div class="form-row">
+              <label>关键词权重</label>
+              <input v-model.number="runForm.config.keyword_weight" type="number" min="0" max="5" step="0.05" />
+            </div>
+            <div class="form-row">
+              <label>最大候选数</label>
+              <input v-model.number="runForm.config.max_candidates" type="number" min="1" max="300" />
+            </div>
+            <div class="form-row">
+              <label>查询改写</label>
+              <select v-model="runForm.config.query_rewrite">
                 <option value="">沿用生产配置</option>
                 <option value="true">启用</option>
                 <option value="false">关闭</option>
@@ -340,6 +387,8 @@
                 >
                   <div class="segment-head">
                     <span>#{{ segment.segment_index }}</span>
+                    <span v-if="segment.citation_label">{{ segment.citation_label }}</span>
+                    <span v-else-if="segment.section_title">{{ segment.section_title }}</span>
                     <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
                   </div>
                   <div class="segment-text">{{ segment.content }}</div>
@@ -390,7 +439,15 @@ const runForm = ref({
     retrieval_method: '',
     top_k: null,
     score_threshold: null,
-    enable_rerank: ''
+    enable_rerank: '',
+    vector_top_k: null,
+    keyword_top_k: null,
+    fusion_algorithm: '',
+    rrf_k: null,
+    vector_weight: null,
+    keyword_weight: null,
+    max_candidates: null,
+    query_rewrite: ''
   }
 })
 const feedbackDrafts = ref({})
@@ -583,7 +640,15 @@ function buildRunPayload() {
       retrieval_method: runForm.value.config.retrieval_method || null,
       top_k: Number.isFinite(runForm.value.config.top_k) ? runForm.value.config.top_k : null,
       score_threshold: Number.isFinite(runForm.value.config.score_threshold) ? runForm.value.config.score_threshold : null,
-      enable_rerank: runForm.value.config.enable_rerank === '' ? null : runForm.value.config.enable_rerank === 'true'
+      enable_rerank: runForm.value.config.enable_rerank === '' ? null : runForm.value.config.enable_rerank === 'true',
+      vector_top_k: Number.isFinite(runForm.value.config.vector_top_k) ? runForm.value.config.vector_top_k : null,
+      keyword_top_k: Number.isFinite(runForm.value.config.keyword_top_k) ? runForm.value.config.keyword_top_k : null,
+      fusion_algorithm: runForm.value.config.fusion_algorithm || null,
+      rrf_k: Number.isFinite(runForm.value.config.rrf_k) ? runForm.value.config.rrf_k : null,
+      vector_weight: Number.isFinite(runForm.value.config.vector_weight) ? runForm.value.config.vector_weight : null,
+      keyword_weight: Number.isFinite(runForm.value.config.keyword_weight) ? runForm.value.config.keyword_weight : null,
+      max_candidates: Number.isFinite(runForm.value.config.max_candidates) ? runForm.value.config.max_candidates : null,
+      query_rewrite: runForm.value.config.query_rewrite === '' ? null : runForm.value.config.query_rewrite === 'true'
     }
   }
 }

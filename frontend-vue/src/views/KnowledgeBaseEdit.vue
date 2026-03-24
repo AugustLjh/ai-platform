@@ -30,20 +30,21 @@
         </div>
 
         <div class="form-group">
-          <label>类型</label>
-          <select v-model="form.type">
-            <option value="general">通用</option>
-            <option value="technical">技术</option>
-            <option value="business">商业</option>
-            <option value="personal">个人</option>
+          <label>访问权限</label>
+          <select :value="form.access_level" disabled>
+            <option value="tenant">租户共享</option>
+            <option value="user">仅自己可见</option>
           </select>
+          <p class="field-hint">访问权限由创建时确定，当前后端不支持修改。</p>
         </div>
 
         <div class="form-group">
-          <label>
-            <input type="checkbox" v-model="form.is_public" />
-            设为公开知识库
-          </label>
+          <label>元数据（JSON）</label>
+          <textarea
+            v-model="form.metadata_json"
+            rows="8"
+            placeholder="{\n  &quot;owner&quot;: &quot;team-a&quot;\n}"
+          ></textarea>
         </div>
 
         <div v-if="error" class="error">{{ error }}</div>
@@ -75,8 +76,8 @@ const knowledgeBase = ref(null)
 const form = ref({
   name: '',
   description: '',
-  type: 'general',
-  is_public: false
+  access_level: 'tenant',
+  metadata_json: '{}'
 })
 
 const loading = ref(false)
@@ -95,13 +96,13 @@ const loadKnowledgeBase = async () => {
   try {
     knowledgeBase.value = await knowledgeStore.fetchKnowledgeBase(knowledgeBaseId)
     form.value = {
-      name: knowledgeBase.value.title || knowledgeBase.value.name,
-      description: knowledgeBase.value.content || knowledgeBase.value.description || '',
-      type: knowledgeBase.value.type || 'general',
-      is_public: knowledgeBase.value.access_level === 'tenant'
+      name: knowledgeBase.value.name,
+      description: knowledgeBase.value.description || '',
+      access_level: knowledgeBase.value.access_level || 'tenant',
+      metadata_json: JSON.stringify(knowledgeBase.value.metadata || {}, null, 2)
     }
   } catch (err) {
-    error.value = err.response?.data?.error || '加载知识库失败'
+    error.value = err.response?.data?.detail || '加载知识库失败'
   } finally {
     loading.value = false
   }
@@ -112,10 +113,23 @@ const handleSubmit = async () => {
   error.value = ''
 
   try {
-    await knowledgeStore.updateKnowledgeBase(knowledgeBaseId, form.value)
+    let metadata = {}
+    try {
+      metadata = form.value.metadata_json.trim() ? JSON.parse(form.value.metadata_json) : {}
+    } catch (_err) {
+      error.value = '元数据必须是合法 JSON'
+      saving.value = false
+      return
+    }
+
+    await knowledgeStore.updateKnowledgeBase(knowledgeBaseId, {
+      name: form.value.name.trim(),
+      description: form.value.description,
+      metadata
+    })
     router.push(`/knowledge/${knowledgeBaseId}`)
   } catch (err) {
-    error.value = err.response?.data?.error || '更新知识库失败'
+    error.value = err.response?.data?.detail || '更新知识库失败'
   } finally {
     saving.value = false
   }
@@ -189,6 +203,12 @@ const goBack = () => {
   margin-bottom: 24px;
 }
 
+.field-hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
 .form-group label {
   display: block;
   margin-bottom: 8px;
@@ -216,17 +236,6 @@ const goBack = () => {
   outline: none;
   border-color: #93a4b8;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
-}
-
-.form-group input[type="checkbox"] {
-  margin-right: 8px;
-}
-
-.form-group label:has(input[type="checkbox"]) {
-  display: flex;
-  align-items: center;
-  font-weight: normal;
-  cursor: pointer;
 }
 
 .error {

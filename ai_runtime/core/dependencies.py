@@ -18,6 +18,8 @@ from .vector_index import QdrantVectorIndex, VectorIndex
 
 logger = logging.getLogger(__name__)
 
+DEV_DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000000"
+
 
 class ServiceContainer:
     """Service container for dependency injection"""
@@ -287,8 +289,11 @@ async def get_current_tenant_id(
         return tenant_id
 
     # 4. Default for development
-    logger.warning("No tenant ID found, using default 'default-tenant' (development mode)")
-    return "default-tenant"
+    logger.warning(
+        "No tenant ID found, using development default tenant %s",
+        DEV_DEFAULT_TENANT_ID,
+    )
+    return DEV_DEFAULT_TENANT_ID
 
 
 async def get_current_user_id(

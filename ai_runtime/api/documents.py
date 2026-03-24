@@ -119,6 +119,7 @@ async def get_document_preview(
 @router.get("/documents/{document_id}/segments", response_model=DocumentSegmentsResponse)
 async def get_document_segments(
     document_id: str,
+    indexing_method: Optional[str] = Query(None, description="覆盖索引方式"),
     chunk_size: Optional[int] = Query(None, ge=50, le=2000, description="覆盖分段大小"),
     chunk_overlap: Optional[int] = Query(None, ge=0, le=500, description="覆盖重叠大小"),
     max_segments: int = Query(200, ge=1, le=1000, description="最多返回分段数"),
@@ -131,6 +132,7 @@ async def get_document_segments(
         document_id=document_id,
         tenant_id=tenant_id,
         user_id=user_id,
+        indexing_method=indexing_method,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         max_segments=max_segments,

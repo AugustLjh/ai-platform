@@ -162,21 +162,27 @@
                 <div v-if="isCitationOpen(message, index)" class="citation-items">
                   <div
                     v-for="(citation, citationIndex) in message.citations"
-                    :key="`${message.id || index}-${citation.document_id || citationIndex}`"
+                    :key="`${message.id || index}-${citation.citation_id || citation.chunk_id || citation.document_id || citationIndex}`"
                     class="citation-card"
                   >
                     <div class="citation-head">
                       <strong>{{ citation.title || '未命名文档' }}</strong>
+                      <span v-if="citation.citation_label" class="citation-chip">{{ citation.citation_label }}</span>
                       <span v-if="Number.isFinite(citation.score)">相关度 {{ citation.score.toFixed(4) }}</span>
                     </div>
-                    <div v-if="citation.source" class="citation-source">{{ citation.source }}</div>
+                    <div v-if="citation.source || citation.section_title" class="citation-source">
+                      <span v-if="citation.source">{{ citation.source }}</span>
+                      <span v-if="citation.source && citation.section_title"> · </span>
+                      <span v-if="citation.section_title">{{ citation.section_title }}</span>
+                    </div>
                     <div
                       v-for="segment in citation.matched_segments || []"
-                      :key="`${citation.document_id}-${segment.segment_index}`"
+                      :key="`${citation.citation_id || citation.document_id}-${segment.chunk_id || segment.segment_index}`"
                       class="citation-segment"
                     >
                       <div class="citation-segment-meta">
                         <span>#{{ segment.segment_index }}</span>
+                        <span v-if="segment.segment_type">{{ segment.segment_type }}</span>
                         <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
                       </div>
                       <div class="citation-segment-content">{{ segment.content }}</div>
@@ -633,8 +639,20 @@ const toggleCitations = (message, index) => {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
   color: #0f172a;
   font-size: 13px;
+}
+
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .citation-source {

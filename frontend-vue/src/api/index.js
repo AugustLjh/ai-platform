@@ -231,7 +231,10 @@ export const knowledgeBaseAPI = {
       indexing_method: data.indexing_method,
       chunk_size: data.chunk_size,
       chunk_overlap: data.chunk_overlap,
-      embedding_model_id: data.embedding_model_id || null
+      embedding_model_id: data.embedding_model_id || null,
+      tokenizer_mode: data.tokenizer_mode,
+      custom_terms: Array.isArray(data.custom_terms) ? data.custom_terms : [],
+      synonym_map: data.synonym_map && typeof data.synonym_map === 'object' ? data.synonym_map : {}
     })
   },
 
@@ -246,8 +249,16 @@ export const knowledgeBaseAPI = {
       retrieval_method: data.retrieval_method,
       top_k: data.top_k,
       score_threshold: data.score_threshold,
+      vector_top_k: data.vector_top_k,
+      keyword_top_k: data.keyword_top_k,
+      fusion_algorithm: data.fusion_algorithm,
+      rrf_k: data.rrf_k,
+      vector_weight: data.vector_weight,
+      keyword_weight: data.keyword_weight,
+      max_candidates: data.max_candidates,
       enable_rerank: data.enable_rerank,
-      rerank_model_id: data.rerank_model_id || null
+      rerank_model_id: data.rerank_model_id || null,
+      query_rewrite: data.query_rewrite
     })
   },
 

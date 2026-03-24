@@ -16,7 +16,7 @@
               <h1>知识库设置</h1>
             </div>
             <p class="subtitle">
-              统一管理索引与检索配置。索引方式在创建时确定，后续不可修改。
+              统一管理索引、检索与治理配置，所有参数都直接对应当前后端能力。
             </p>
           </div>
           <div class="header-actions">
@@ -31,35 +31,58 @@
           <div class="section-title">索引设置</div>
 
           <div class="form-row">
-            <label>索引方式（已锁定）</label>
-            <select :value="lockedIndexingMethod" disabled>
-              <option value="chunk">分块索引</option>
+            <label>索引方式</label>
+            <select v-model="form.indexing_method">
+              <option value="structured">自然结构分块</option>
+              <option value="paragraph">按段落分块</option>
+              <option value="chunk">固定长度分块</option>
               <option value="full">整篇索引</option>
             </select>
             <div class="hint">
-              索引方式在创建知识库时选择，创建后不可更换。
+              变更后会影响文档重新切分、索引预览和后续入库策略。
             </div>
           </div>
 
-          <div class="form-grid" v-if="lockedIndexingMethod === 'chunk'">
+          <div class="form-grid" v-if="form.indexing_method !== 'full'">
             <div class="form-row">
-              <label>分块长度</label>
+              <label>单块最大长度</label>
               <input type="number" min="50" max="2000" step="50" v-model.number="form.chunk_size" />
             </div>
             <div class="form-row">
-              <label>重叠长度</label>
+              <label>超长块重叠</label>
               <input type="number" min="0" max="500" step="10" v-model.number="form.chunk_overlap" />
             </div>
           </div>
 
+          <div class="form-grid">
+            <div class="form-row">
+              <label>分词模式</label>
+              <select v-model="form.tokenizer_mode">
+                <option value="cjk">CJK</option>
+                <option value="unicode">Unicode</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Embedding 模型</label>
+              <select v-model="form.embedding_model_id" :disabled="modelsLoading">
+                <option value="">不指定</option>
+                <option v-for="model in embeddingModels" :key="model.id" :value="model.id">
+                  {{ model.display_name }} ({{ model.model_id }})
+                </option>
+              </select>
+            </div>
+          </div>
+
           <div class="form-row">
-            <label>Embedding 模型</label>
-            <select v-model="form.embedding_model_id" :disabled="modelsLoading">
-              <option value="">不指定</option>
-              <option v-for="model in embeddingModels" :key="model.id" :value="model.id">
-                {{ model.display_name }} ({{ model.model_id }})
-              </option>
-            </select>
+            <label>自定义词表</label>
+            <textarea v-model="customTermsInput" rows="4" placeholder="每行一个词，或使用逗号分隔"></textarea>
+            <div class="hint">用于关键词检索和词法召回增强。</div>
+          </div>
+
+          <div class="form-row">
+            <label>同义词映射</label>
+            <textarea v-model="synonymMapInput" rows="5" placeholder="每行一条，例如：LLM=大模型, language model"></textarea>
+            <div class="hint">格式为 `主词=同义词1, 同义词2`。</div>
           </div>
           <div v-if="embeddingModels.length === 0" class="hint">
             暂无可用模型，请先在“模型管理”中添加或启用。
@@ -88,6 +111,47 @@
               <label>相似度阈值</label>
               <input type="number" min="0" max="1" step="0.01" v-model.number="form.score_threshold" />
             </div>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-row">
+              <label>向量候选数</label>
+              <input type="number" min="1" max="200" step="1" v-model.number="form.vector_top_k" />
+            </div>
+            <div class="form-row">
+              <label>关键词候选数</label>
+              <input type="number" min="1" max="200" step="1" v-model.number="form.keyword_top_k" />
+            </div>
+            <div class="form-row">
+              <label>融合算法</label>
+              <select v-model="form.fusion_algorithm">
+                <option value="rrf">RRF</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>RRF K</label>
+              <input type="number" min="1" max="200" step="1" v-model.number="form.rrf_k" />
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-row">
+              <label>向量权重</label>
+              <input type="number" min="0" max="5" step="0.05" v-model.number="form.vector_weight" />
+            </div>
+            <div class="form-row">
+              <label>关键词权重</label>
+              <input type="number" min="0" max="5" step="0.05" v-model.number="form.keyword_weight" />
+            </div>
+            <div class="form-row">
+              <label>最大候选数</label>
+              <input type="number" min="1" max="300" step="1" v-model.number="form.max_candidates" />
+            </div>
+          </div>
+
+          <div class="form-row toggle-row">
+            <label>查询改写</label>
+            <input type="checkbox" v-model="form.query_rewrite" />
           </div>
 
           <div class="form-row toggle-row">
@@ -179,6 +243,14 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useKnowledgeStore } from '@/store/knowledge'
 import { useModelsStore } from '@/store/models'
+import {
+  normalizeIndexingSettings,
+  normalizeRetrievalSettings,
+  parseCustomTerms,
+  parseSynonymMap,
+  stringifyCustomTerms,
+  stringifySynonymMap
+} from '@/utils/knowledgeSettings'
 
 const router = useRouter()
 const route = useRoute()
@@ -191,17 +263,28 @@ const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const success = ref('')
-const lockedIndexingMethod = ref('chunk')
+const customTermsInput = ref('')
+const synonymMapInput = ref('')
 
 const form = ref({
+  indexing_method: 'structured',
   chunk_size: 500,
   chunk_overlap: 50,
   embedding_model_id: '',
-  retrieval_method: 'vector',
+  tokenizer_mode: 'cjk',
+  retrieval_method: 'hybrid',
   top_k: 5,
   score_threshold: 0,
+  vector_top_k: 40,
+  keyword_top_k: 40,
+  fusion_algorithm: 'rrf',
+  rrf_k: 60,
+  vector_weight: 0.65,
+  keyword_weight: 0.35,
+  max_candidates: 100,
   enable_rerank: false,
   rerank_model_id: '',
+  query_rewrite: true,
   governance_config_version: 1,
   budget_alert_usd: null,
   low_quality_threshold: 2,
@@ -232,17 +315,30 @@ const loadSettings = async () => {
       knowledgeStore.fetchGovernanceSettings(knowledgeBaseId)
     ])
 
-    lockedIndexingMethod.value = indexingSettings.indexing_method || 'chunk'
+    const normalizedIndexing = normalizeIndexingSettings(indexingSettings)
+    const normalizedRetrieval = normalizeRetrievalSettings(retrievalSettings)
+    customTermsInput.value = stringifyCustomTerms(normalizedIndexing.custom_terms)
+    synonymMapInput.value = stringifySynonymMap(normalizedIndexing.synonym_map)
 
     form.value = {
-      chunk_size: indexingSettings.chunk_size ?? 500,
-      chunk_overlap: indexingSettings.chunk_overlap ?? 50,
-      embedding_model_id: indexingSettings.embedding_model_id || '',
-      retrieval_method: retrievalSettings.retrieval_method || 'vector',
-      top_k: retrievalSettings.top_k ?? 5,
-      score_threshold: retrievalSettings.score_threshold ?? 0,
-      enable_rerank: retrievalSettings.enable_rerank ?? false,
-      rerank_model_id: retrievalSettings.rerank_model_id || '',
+      indexing_method: normalizedIndexing.indexing_method,
+      chunk_size: normalizedIndexing.chunk_size,
+      chunk_overlap: normalizedIndexing.chunk_overlap,
+      embedding_model_id: normalizedIndexing.embedding_model_id,
+      tokenizer_mode: normalizedIndexing.tokenizer_mode,
+      retrieval_method: normalizedRetrieval.retrieval_method,
+      top_k: normalizedRetrieval.top_k,
+      score_threshold: normalizedRetrieval.score_threshold,
+      vector_top_k: normalizedRetrieval.vector_top_k,
+      keyword_top_k: normalizedRetrieval.keyword_top_k,
+      fusion_algorithm: normalizedRetrieval.fusion_algorithm,
+      rrf_k: normalizedRetrieval.rrf_k,
+      vector_weight: normalizedRetrieval.vector_weight,
+      keyword_weight: normalizedRetrieval.keyword_weight,
+      max_candidates: normalizedRetrieval.max_candidates,
+      enable_rerank: normalizedRetrieval.enable_rerank,
+      rerank_model_id: normalizedRetrieval.rerank_model_id,
+      query_rewrite: normalizedRetrieval.query_rewrite,
       governance_config_version: governanceSettings.config_version || 1,
       budget_alert_usd: governanceSettings.budget_alert_usd ?? null,
       low_quality_threshold: governanceSettings.low_quality_threshold ?? 2,
@@ -278,18 +374,29 @@ const handleSave = async () => {
 
   try {
     await knowledgeStore.updateIndexingSettings(knowledgeBaseId, {
-      indexing_method: lockedIndexingMethod.value,
+      indexing_method: form.value.indexing_method,
       chunk_size: form.value.chunk_size,
       chunk_overlap: form.value.chunk_overlap,
-      embedding_model_id: form.value.embedding_model_id || null
+      embedding_model_id: form.value.embedding_model_id || null,
+      tokenizer_mode: form.value.tokenizer_mode,
+      custom_terms: parseCustomTerms(customTermsInput.value),
+      synonym_map: parseSynonymMap(synonymMapInput.value)
     })
 
     await knowledgeStore.updateRetrievalSettings(knowledgeBaseId, {
       retrieval_method: form.value.retrieval_method,
       top_k: form.value.top_k,
       score_threshold: form.value.score_threshold,
+      vector_top_k: form.value.vector_top_k,
+      keyword_top_k: form.value.keyword_top_k,
+      fusion_algorithm: form.value.fusion_algorithm,
+      rrf_k: form.value.rrf_k,
+      vector_weight: form.value.vector_weight,
+      keyword_weight: form.value.keyword_weight,
+      max_candidates: form.value.max_candidates,
       enable_rerank: form.value.enable_rerank,
-      rerank_model_id: form.value.enable_rerank ? (form.value.rerank_model_id || null) : null
+      rerank_model_id: form.value.enable_rerank ? (form.value.rerank_model_id || null) : null,
+      query_rewrite: form.value.query_rewrite
     })
 
     const governanceRoutes = {}
@@ -528,6 +635,7 @@ onMounted(async () => {
 }
 
 .form-row input,
+.form-row textarea,
 .form-row select {
   background: #ffffff;
   color: #0f172a;
@@ -539,8 +647,14 @@ onMounted(async () => {
 }
 
 .form-row input:focus,
+.form-row textarea:focus,
 .form-row select:focus {
   border-color: #93a4b8;
+}
+
+.form-row textarea {
+  min-height: 96px;
+  resize: vertical;
 }
 
 .form-row select:disabled {

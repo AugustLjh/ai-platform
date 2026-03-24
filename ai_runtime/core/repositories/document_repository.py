@@ -868,7 +868,8 @@ class DocumentRepository:
                 start_offset,
                 end_offset,
                 char_count,
-                content
+                content,
+                metadata
             FROM document_chunks
             WHERE document_id = $1
               AND tenant_id = $2
@@ -882,17 +883,27 @@ class DocumentRepository:
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(query, document_id, tenant_id, user_id)
 
-        return [
-            {
-                "chunk_id": str(row["id"]),
-                "segment_index": int(row["chunk_index"]),
-                "start_offset": int(row["start_offset"]),
-                "end_offset": int(row["end_offset"]),
-                "char_count": int(row["char_count"]),
-                "content": row["content"],
-            }
-            for row in rows
-        ]
+        segments = []
+        for row in rows:
+            metadata = row["metadata"]
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            metadata = metadata or {}
+            segments.append(
+                {
+                    "chunk_id": str(row["id"]),
+                    "segment_index": int(row["chunk_index"]),
+                    "start_offset": int(row["start_offset"]),
+                    "end_offset": int(row["end_offset"]),
+                    "char_count": int(row["char_count"]),
+                    "content": row["content"],
+                    "segment_type": metadata.get("segment_type"),
+                    "section_title": metadata.get("section_title"),
+                    "citation_label": metadata.get("citation_label"),
+                    "heading_level": metadata.get("heading_level"),
+                }
+            )
+        return segments
 
     async def search_document_chunks(
         self,
@@ -915,6 +926,7 @@ class DocumentRepository:
                 end_offset,
                 char_count,
                 content,
+                metadata,
                 ts_rank(search_vector, {ts_query}) AS match_score
             FROM document_chunks
             WHERE document_id = $1
@@ -931,18 +943,28 @@ class DocumentRepository:
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(query_sql, document_id, tenant_id, user_id, normalized_query, limit)
 
-        return [
-            {
-                "chunk_id": str(row["id"]),
-                "segment_index": int(row["chunk_index"]),
-                "start_offset": int(row["start_offset"]),
-                "end_offset": int(row["end_offset"]),
-                "char_count": int(row["char_count"]),
-                "content": row["content"],
-                "match_score": float(row["match_score"]) if row["match_score"] is not None else 0.0,
-            }
-            for row in rows
-        ]
+        segments = []
+        for row in rows:
+            metadata = row["metadata"]
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            metadata = metadata or {}
+            segments.append(
+                {
+                    "chunk_id": str(row["id"]),
+                    "segment_index": int(row["chunk_index"]),
+                    "start_offset": int(row["start_offset"]),
+                    "end_offset": int(row["end_offset"]),
+                    "char_count": int(row["char_count"]),
+                    "content": row["content"],
+                    "match_score": float(row["match_score"]) if row["match_score"] is not None else 0.0,
+                    "segment_type": metadata.get("segment_type"),
+                    "section_title": metadata.get("section_title"),
+                    "citation_label": metadata.get("citation_label"),
+                    "heading_level": metadata.get("heading_level"),
+                }
+            )
+        return segments
 
     async def find_exact_duplicate_documents(
         self,

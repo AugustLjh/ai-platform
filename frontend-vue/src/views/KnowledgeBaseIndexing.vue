@@ -33,31 +33,52 @@
           <div class="form-row">
             <label>索引方式</label>
             <select v-model="form.indexing_method">
-              <option value="chunk">分块索引</option>
+              <option value="structured">自然结构分块</option>
+              <option value="paragraph">按段落分块</option>
+              <option value="chunk">固定长度分块</option>
               <option value="full">整篇索引</option>
             </select>
           </div>
 
-          <div class="form-grid" v-if="form.indexing_method === 'chunk'">
+          <div class="form-grid" v-if="form.indexing_method !== 'full'">
             <div class="form-row">
-              <label>分块长度</label>
+              <label>单块最大长度</label>
               <input type="number" min="50" max="2000" step="50" v-model.number="form.chunk_size" />
             </div>
             <div class="form-row">
-              <label>重叠长度</label>
+              <label>超长块重叠</label>
               <input type="number" min="0" max="500" step="10" v-model.number="form.chunk_overlap" />
             </div>
           </div>
 
-          <div class="section-title">Embedding 模型</div>
+          <div class="form-grid">
+            <div class="form-row">
+              <label>分词模式</label>
+              <select v-model="form.tokenizer_mode">
+                <option value="cjk">CJK</option>
+                <option value="unicode">Unicode</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>向量模型</label>
+              <select v-model="form.embedding_model_id" :disabled="modelsLoading">
+                <option value="">不指定</option>
+                <option v-for="model in embeddingModels" :key="model.id" :value="model.id">
+                  {{ model.display_name }} ({{ model.model_id }})
+                </option>
+              </select>
+            </div>
+          </div>
+
           <div class="form-row">
-            <label>向量模型</label>
-            <select v-model="form.embedding_model_id" :disabled="modelsLoading">
-              <option value="">不指定</option>
-              <option v-for="model in embeddingModels" :key="model.id" :value="model.id">
-                {{ model.display_name }} ({{ model.model_id }})
-              </option>
-            </select>
+            <label>自定义词表</label>
+            <textarea v-model="customTermsInput" rows="4" placeholder="每行一个词，或使用逗号分隔"></textarea>
+          </div>
+
+          <div class="form-row">
+            <label>同义词映射</label>
+            <textarea v-model="synonymMapInput" rows="5" placeholder="每行一条，例如：GPU=显卡, graphics card"></textarea>
+            <div class="hint">格式为 `主词=同义词1, 同义词2`。</div>
           </div>
           <div v-if="embeddingModels.length === 0" class="hint">
             暂无可用模型，请先在“模型管理”中添加或启用。
@@ -76,6 +97,13 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useKnowledgeStore } from '@/store/knowledge'
 import { useModelsStore } from '@/store/models'
+import {
+  normalizeIndexingSettings,
+  parseCustomTerms,
+  parseSynonymMap,
+  stringifyCustomTerms,
+  stringifySynonymMap
+} from '@/utils/knowledgeSettings'
 
 const router = useRouter()
 const route = useRoute()
@@ -88,11 +116,14 @@ const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const success = ref('')
+const customTermsInput = ref('')
+const synonymMapInput = ref('')
 
 const form = ref({
-  indexing_method: 'chunk',
+  indexing_method: 'structured',
   chunk_size: 500,
   chunk_overlap: 50,
+  tokenizer_mode: 'cjk',
   embedding_model_id: ''
 })
 
@@ -103,12 +134,15 @@ const loadSettings = async () => {
   loading.value = true
   error.value = ''
   try {
-    const settings = await knowledgeStore.fetchIndexingSettings(knowledgeBaseId)
+    const settings = normalizeIndexingSettings(await knowledgeStore.fetchIndexingSettings(knowledgeBaseId))
+    customTermsInput.value = stringifyCustomTerms(settings.custom_terms)
+    synonymMapInput.value = stringifySynonymMap(settings.synonym_map)
     form.value = {
-      indexing_method: settings.indexing_method || 'chunk',
-      chunk_size: settings.chunk_size ?? 500,
-      chunk_overlap: settings.chunk_overlap ?? 50,
-      embedding_model_id: settings.embedding_model_id || ''
+      indexing_method: settings.indexing_method,
+      chunk_size: settings.chunk_size,
+      chunk_overlap: settings.chunk_overlap,
+      tokenizer_mode: settings.tokenizer_mode,
+      embedding_model_id: settings.embedding_model_id
     }
   } catch (err) {
     error.value = err.response?.data?.detail || '加载索引设置失败'
@@ -124,7 +158,9 @@ const handleSave = async () => {
   try {
     const payload = {
       ...form.value,
-      embedding_model_id: form.value.embedding_model_id || null
+      embedding_model_id: form.value.embedding_model_id || null,
+      custom_terms: parseCustomTerms(customTermsInput.value),
+      synonym_map: parseSynonymMap(synonymMapInput.value)
     }
     await knowledgeStore.updateIndexingSettings(knowledgeBaseId, payload)
     success.value = '索引设置已保存'
@@ -326,6 +362,7 @@ onMounted(async () => {
 }
 
 .form-row input,
+.form-row textarea,
 .form-row select {
   background: #ffffff;
   color: #0f172a;
@@ -337,8 +374,14 @@ onMounted(async () => {
 }
 
 .form-row input:focus,
+.form-row textarea:focus,
 .form-row select:focus {
   border-color: #93a4b8;
+}
+
+.form-row textarea {
+  min-height: 96px;
+  resize: vertical;
 }
 
 .form-grid {

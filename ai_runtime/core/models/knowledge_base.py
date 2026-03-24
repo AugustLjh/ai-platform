@@ -243,7 +243,10 @@ class ListDocumentsResponse(BaseModel):
 # Knowledge Base Settings Schemas
 class IndexingSettings(BaseModel):
     """知识库索引设置"""
-    indexing_method: str = Field(default="chunk", description="Indexing method: chunk/full")
+    indexing_method: str = Field(
+        default="structured",
+        description="Indexing method: structured/paragraph/chunk/full",
+    )
     chunk_size: int = Field(default=500, ge=50, le=2000)
     chunk_overlap: int = Field(default=50, ge=0, le=500)
     embedding_model_id: Optional[str] = None
@@ -391,12 +394,17 @@ class DocumentSegment(BaseModel):
     char_count: int = Field(..., ge=0)
     content: str
     match_score: Optional[float] = None
+    segment_type: Optional[str] = None
+    section_title: Optional[str] = None
+    citation_label: Optional[str] = None
+    heading_level: Optional[int] = None
 
 
 class DocumentSegmentsResponse(BaseModel):
     """文档分段详情响应"""
     document_id: str
     title: str
+    indexing_method: str
     chunk_size: int
     chunk_overlap: int
     total_segments: int

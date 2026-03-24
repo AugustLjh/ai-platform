@@ -28,7 +28,7 @@ from core.parsers.file_parser import FileParser
 from core.parsers.url_fetcher import URLFetcher
 from core.audit import AuditLogger
 from core.quota import QuotaManager
-from core.llm import BaseLLM, OpenAILLM, DeepseekLLM, LocalLLM
+from core.llm import BaseLLM, DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
 from core.vector_index import VectorIndex, VectorSearchHit
 
 try:
@@ -72,7 +72,7 @@ ENGLISH_STOPWORDS = {
 }
 
 DEFAULT_INDEXING_SETTINGS = {
-    "indexing_method": "chunk",
+    "indexing_method": "structured",
     "chunk_size": 500,
     "chunk_overlap": 50,
     "embedding_model_id": None,
@@ -233,6 +233,267 @@ class DocumentService:
 
     def _chunk_text(self, text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
         return [segment["content"] for segment in self._chunk_text_with_offsets(text, chunk_size, chunk_overlap)]
+
+    def _normalize_indexing_method(self, method: Optional[str]) -> str:
+        normalized = str(method or DEFAULT_INDEXING_SETTINGS["indexing_method"]).strip().lower()
+        if normalized in {"structured", "paragraph", "chunk", "full"}:
+            return normalized
+        return DEFAULT_INDEXING_SETTINGS["indexing_method"]
+
+    def _build_segment_label(
+        self,
+        *,
+        section_title: Optional[str],
+        segment_type: str,
+        local_index: int,
+        total_parts: int = 1,
+        part_index: int = 1,
+    ) -> str:
+        if segment_type == "full":
+            return "全文"
+
+        base = section_title or "正文"
+        if segment_type == "paragraph":
+            label = f"{base} · 段落 {local_index}"
+        else:
+            label = f"{base} · 分块 {local_index}"
+
+        if total_parts > 1:
+            label = f"{label} ({part_index}/{total_parts})"
+        return label
+
+    def _make_segment(
+        self,
+        *,
+        segment_index: int,
+        start_offset: int,
+        end_offset: int,
+        content: str,
+        segment_type: str,
+        section_title: Optional[str] = None,
+        heading_level: Optional[int] = None,
+        citation_label: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "segment_index": segment_index,
+            "start_offset": start_offset,
+            "end_offset": end_offset,
+            "char_count": len(content),
+            "content": content,
+            "segment_type": segment_type,
+            "section_title": section_title,
+            "heading_level": heading_level,
+            "citation_label": citation_label,
+        }
+
+    def _iter_text_blocks_with_offsets(self, text: str) -> List[Dict[str, Any]]:
+        if not text:
+            return []
+
+        blocks: List[Dict[str, Any]] = []
+        for match in re.finditer(r"\S(?:.*?\S)?(?=(?:\n\s*\n)+|\Z)", text, flags=re.DOTALL):
+            content = match.group(0)
+            if not content.strip():
+                continue
+            blocks.append(
+                {
+                    "content": content,
+                    "start_offset": match.start(),
+                    "end_offset": match.end(),
+                }
+            )
+        return blocks
+
+    def _parse_heading_block(self, block_text: str) -> Optional[Dict[str, Any]]:
+        if not block_text:
+            return None
+
+        stripped = block_text.strip()
+        if not stripped:
+            return None
+
+        lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+        compact = " ".join(lines)
+        if len(lines) > 3 or len(compact) > 120:
+            return None
+
+        markdown_match = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", stripped)
+        if markdown_match:
+            return {
+                "title": markdown_match.group(2).strip(),
+                "heading_level": len(markdown_match.group(1)),
+            }
+
+        if re.match(r"^第[0-9一二三四五六七八九十百千]+[章节部分篇].*$", compact):
+            return {"title": compact, "heading_level": 2}
+
+        ordered_match = re.match(r"^([0-9]+(?:\.[0-9]+){0,4})\s*[、.．)）]\s*(.+)$", compact)
+        if ordered_match:
+            return {
+                "title": compact,
+                "heading_level": ordered_match.group(1).count(".") + 1,
+            }
+
+        if len(lines) == 1 and compact.endswith((":", "：")) and len(compact) <= 40:
+            return {
+                "title": compact[:-1].strip(),
+                "heading_level": 3,
+            }
+
+        return None
+
+    def _split_large_segment(
+        self,
+        *,
+        content: str,
+        start_offset: int,
+        chunk_size: int,
+        chunk_overlap: int,
+        next_segment_index: int,
+        section_title: Optional[str],
+        heading_level: Optional[int],
+        label_base_index: int,
+    ) -> List[Dict[str, Any]]:
+        sub_segments = self._chunk_text_with_offsets(content, chunk_size, chunk_overlap)
+        total_parts = len(sub_segments)
+        chunks: List[Dict[str, Any]] = []
+        for part_index, sub_segment in enumerate(sub_segments, start=1):
+            chunks.append(
+                self._make_segment(
+                    segment_index=next_segment_index + part_index - 1,
+                    start_offset=start_offset + int(sub_segment["start_offset"]),
+                    end_offset=start_offset + int(sub_segment["end_offset"]),
+                    content=sub_segment["content"],
+                    segment_type="chunk",
+                    section_title=section_title,
+                    heading_level=heading_level,
+                    citation_label=self._build_segment_label(
+                        section_title=section_title,
+                        segment_type="chunk",
+                        local_index=label_base_index,
+                        total_parts=total_parts,
+                        part_index=part_index,
+                    ),
+                )
+            )
+        return chunks
+
+    def _segment_text_with_offsets(
+        self,
+        title: str,
+        text: str,
+        indexing_settings: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        method = self._normalize_indexing_method(indexing_settings.get("indexing_method"))
+        chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
+        chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
+        chunk_size, chunk_overlap = self._normalize_chunk_settings(chunk_size, chunk_overlap)
+
+        if not text:
+            return []
+
+        if method == "full":
+            return [
+                self._make_segment(
+                    segment_index=1,
+                    start_offset=0,
+                    end_offset=len(text),
+                    content=text,
+                    segment_type="full",
+                    section_title=title.strip() or None,
+                    citation_label="全文",
+                )
+            ]
+
+        if method == "chunk":
+            return [
+                self._make_segment(
+                    segment_index=int(segment["segment_index"]),
+                    start_offset=int(segment["start_offset"]),
+                    end_offset=int(segment["end_offset"]),
+                    content=segment["content"],
+                    segment_type="chunk",
+                    section_title=title.strip() or None,
+                    citation_label=self._build_segment_label(
+                        section_title=title.strip() or None,
+                        segment_type="chunk",
+                        local_index=int(segment["segment_index"]),
+                    ),
+                )
+                for segment in self._chunk_text_with_offsets(text, chunk_size, chunk_overlap)
+            ]
+
+        blocks = self._iter_text_blocks_with_offsets(text)
+        if not blocks:
+            blocks = [{"content": text, "start_offset": 0, "end_offset": len(text)}]
+
+        segments: List[Dict[str, Any]] = []
+        next_segment_index = 1
+        paragraph_index = 0
+        section_title = title.strip() or None
+        heading_level: Optional[int] = None
+
+        for block in blocks:
+            block_content = block["content"].strip()
+            if not block_content:
+                continue
+
+            if method == "structured":
+                heading = self._parse_heading_block(block_content)
+                if heading:
+                    section_title = heading["title"]
+                    heading_level = heading["heading_level"]
+                    continue
+
+            paragraph_index += 1
+            if len(block_content) > chunk_size:
+                split_segments = self._split_large_segment(
+                    content=block_content,
+                    start_offset=int(block["start_offset"]) + block["content"].find(block_content),
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    next_segment_index=next_segment_index,
+                    section_title=section_title,
+                    heading_level=heading_level,
+                    label_base_index=paragraph_index,
+                )
+                segments.extend(split_segments)
+                next_segment_index += len(split_segments)
+                continue
+
+            block_start = int(block["start_offset"]) + block["content"].find(block_content)
+            segments.append(
+                self._make_segment(
+                    segment_index=next_segment_index,
+                    start_offset=block_start,
+                    end_offset=block_start + len(block_content),
+                    content=block_content,
+                    segment_type="paragraph",
+                    section_title=section_title,
+                    heading_level=heading_level,
+                    citation_label=self._build_segment_label(
+                        section_title=section_title,
+                        segment_type="paragraph",
+                        local_index=paragraph_index,
+                    ),
+                )
+            )
+            next_segment_index += 1
+
+        if segments:
+            return segments
+
+        return [
+            self._make_segment(
+                segment_index=1,
+                start_offset=0,
+                end_offset=len(text),
+                content=text,
+                segment_type="full",
+                section_title=title.strip() or None,
+                citation_label="全文",
+            )
+        ]
 
     def _extract_custom_terms(
         self,
@@ -1250,17 +1511,17 @@ class DocumentService:
 
     async def _build_embedding(
         self,
+        title: str,
         content: str,
         embedding_service: EmbeddingService,
         indexing_settings: Dict[str, Any],
     ) -> List[float]:
-        method = indexing_settings.get("indexing_method") or "chunk"
+        method = self._normalize_indexing_method(indexing_settings.get("indexing_method"))
         if method == "full":
             return await embedding_service.embed_text(content)
 
-        chunk_size = int(indexing_settings.get("chunk_size") or 500)
-        chunk_overlap = int(indexing_settings.get("chunk_overlap") or 50)
-        chunks = self._chunk_text(content, chunk_size, chunk_overlap)
+        segments = self._segment_text_with_offsets(title, content, indexing_settings)
+        chunks = [segment["content"] for segment in segments]
 
         if len(chunks) == 1:
             return await embedding_service.embed_text(chunks[0])
@@ -1280,22 +1541,33 @@ class DocumentService:
     ) -> tuple[List[Dict[str, Any]], Optional[List[float]], Optional[str]]:
         chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
         chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
-        segments = self._chunk_text_with_offsets(content, chunk_size, chunk_overlap)
+        method = self._normalize_indexing_method(indexing_settings.get("indexing_method"))
+        segments = self._segment_text_with_offsets(title, content, indexing_settings)
         custom_terms = self._extract_custom_terms(
             "\n".join(part for part in (title or "", content or "") if part),
             indexing_settings,
         )
 
         if not segments:
-            segments = [{
-                "segment_index": 1,
-                "start_offset": 0,
-                "end_offset": len(content or ""),
-                "char_count": len(content or ""),
-                "content": content or "",
-            }]
+            segments = [
+                self._make_segment(
+                    segment_index=1,
+                    start_offset=0,
+                    end_offset=len(content or ""),
+                    content=content or "",
+                    segment_type="full",
+                    section_title=title or None,
+                    citation_label="全文",
+                )
+            ]
 
-        segment_texts = [segment["content"] for segment in segments]
+        segment_texts = []
+        for segment in segments:
+            embedding_parts = [title.strip()]
+            if segment.get("section_title") and segment["section_title"] != title.strip():
+                embedding_parts.append(str(segment["section_title"]).strip())
+            embedding_parts.append(segment["content"])
+            segment_texts.append("\n".join(part for part in embedding_parts if part))
         embeddings: List[Optional[List[float]]] = [None] * len(segments)
         embedding_model: Optional[str] = None
         aggregate_embedding: Optional[List[float]] = None
@@ -1326,10 +1598,14 @@ class DocumentService:
                     "metadata": {
                         "source": source,
                         "source_type": source_type.value,
-                        "chunking_method": indexing_settings.get("indexing_method") or "chunk",
+                        "chunking_method": method,
                         "chunk_size": chunk_size,
                         "chunk_overlap": chunk_overlap,
                         "segment_index": segment["segment_index"],
+                        "segment_type": segment.get("segment_type"),
+                        "section_title": segment.get("section_title"),
+                        "heading_level": segment.get("heading_level"),
+                        "citation_label": segment.get("citation_label"),
                     },
                 }
             )
@@ -1461,6 +1737,8 @@ class DocumentService:
             llm = OpenAILLM(model=model_id, api_key=api_key, **llm_kwargs)
         elif provider == "deepseek":
             llm = DeepseekLLM(model=model_id, api_key=api_key, **llm_kwargs)
+        elif provider == "jina":
+            llm = JinaLLM(model=model_id, api_key=api_key, **llm_kwargs)
         elif provider in {"local", "mock"}:
             llm = LocalLLM(model=model_id, **llm_kwargs)
         else:
@@ -1682,13 +1960,11 @@ class DocumentService:
             raise RuntimeError("httpx library not installed") from exc
 
         documents = [
-            {
-                "text": (
-                    f"Title: {self._truncate_for_rerank(doc.title or '', RERANK_MAX_TITLE_CHARS)}\n"
-                    f"Source: {self._truncate_for_rerank(doc.source or '', 200)}\n"
-                    f"Content: {self._truncate_for_rerank(doc.content or '', RERANK_MAX_CONTENT_CHARS)}"
-                )
-            }
+            (
+                f"Title: {self._truncate_for_rerank(doc.title or '', RERANK_MAX_TITLE_CHARS)}\n"
+                f"Source: {self._truncate_for_rerank(doc.source or '', 200)}\n"
+                f"Content: {self._truncate_for_rerank(doc.content or '', RERANK_MAX_CONTENT_CHARS)}"
+            )
             for doc, _score in results
         ]
 
@@ -1709,7 +1985,13 @@ class DocumentService:
                 headers=headers,
                 json=payload,
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.text.strip()
+                if detail:
+                    raise ValueError(f"Jina rerank API error: {detail}") from exc
+                raise
             data = response.json()
 
         entries = data.get("results") if isinstance(data, dict) else None
@@ -1752,20 +2034,34 @@ class DocumentService:
             logger.warning("Rerank model not found or unavailable: %s", rerank_model_id)
             return results
 
+        model_row = runtime.get("model_row") or {}
+        model_name = model_row.get("display_name") or model_row.get("model_id") or rerank_model_id
+        logger.info(
+            "Applying rerank model %s (%s) to %d candidates",
+            model_name,
+            runtime.get("kind") or "unknown",
+            len(rerank_candidates),
+        )
+
         try:
             if runtime["kind"] == "jina":
                 reranked = await self._apply_jina_rerank(runtime, query, rerank_candidates)
             else:
                 reranked = await self._apply_llm_rerank(runtime["llm"], query, rerank_candidates)
         except Exception as exc:
-            model_row = runtime.get("model_row") or {}
             logger.warning(
                 "Falling back to original retrieval order because rerank model %s failed: %s",
-                model_row.get("display_name") or model_row.get("model_id") or rerank_model_id,
+                model_name,
                 exc,
             )
             return results
 
+        logger.info(
+            "Rerank completed with model %s: %d reranked candidates, %d total results",
+            model_name,
+            len(reranked),
+            len(reranked) + len(remaining_candidates),
+        )
         return reranked + remaining_candidates
 
     async def get_document_preview(
@@ -1801,6 +2097,7 @@ class DocumentService:
         document_id: str,
         tenant_id: str,
         user_id: Optional[str],
+        indexing_method: Optional[str] = None,
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         max_segments: int = 200,
@@ -1809,6 +2106,11 @@ class DocumentService:
         if not doc:
             return None
 
+        override_chunking = (
+            indexing_method is not None
+            or chunk_size is not None
+            or chunk_overlap is not None
+        )
         if chunk_size is None or chunk_overlap is None:
             indexing_settings = await self._get_indexing_settings(
                 tenant_id=tenant_id,
@@ -1819,11 +2121,26 @@ class DocumentService:
                 chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
             if chunk_overlap is None:
                 chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
+        else:
+            indexing_settings = await self._get_indexing_settings(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                knowledge_base_id=doc.knowledge_base_id,
+            )
 
+        effective_indexing_method = self._normalize_indexing_method(
+            indexing_method if indexing_method is not None else indexing_settings.get("indexing_method")
+        )
         safe_chunk_size, safe_chunk_overlap = self._normalize_chunk_settings(int(chunk_size), int(chunk_overlap))
-        segments = await self.repository.list_document_chunks(document_id, tenant_id, user_id)
+        segments: List[Dict[str, Any]] = []
+        if not override_chunking:
+            segments = await self.repository.list_document_chunks(document_id, tenant_id, user_id)
         if not segments:
-            segments = self._chunk_text_with_offsets(doc.content or "", safe_chunk_size, safe_chunk_overlap)
+            fallback_settings = dict(indexing_settings)
+            fallback_settings["indexing_method"] = effective_indexing_method
+            fallback_settings["chunk_size"] = safe_chunk_size
+            fallback_settings["chunk_overlap"] = safe_chunk_overlap
+            segments = self._segment_text_with_offsets(doc.title or "", doc.content or "", fallback_settings)
 
         safe_max_segments = max(1, min(max_segments, 1000))
         returned_segments = segments[:safe_max_segments]
@@ -1831,6 +2148,7 @@ class DocumentService:
         return {
             "document_id": doc.id,
             "title": doc.title,
+            "indexing_method": effective_indexing_method,
             "chunk_size": safe_chunk_size,
             "chunk_overlap": safe_chunk_overlap,
             "total_segments": len(segments),
@@ -1863,11 +2181,9 @@ class DocumentService:
             user_id=user_id,
             knowledge_base_id=document.knowledge_base_id,
         )
-        chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
-        chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
         segments = await self.repository.list_document_chunks(document.id, tenant_id, user_id)
         if not segments:
-            segments = self._chunk_text_with_offsets(document.content or "", chunk_size, chunk_overlap)
+            segments = self._segment_text_with_offsets(document.title or "", document.content or "", indexing_settings)
 
         if not segments:
             return []

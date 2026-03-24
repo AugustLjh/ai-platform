@@ -27,24 +27,35 @@
             ></textarea>
           </div>
 
+          <div class="form-group">
+            <label>访问权限 *</label>
+            <select v-model="form.access_level" required>
+              <option value="tenant">租户共享</option>
+              <option value="user">仅自己可见</option>
+            </select>
+            <p class="hint">知识库权限会作为新上传文档的默认权限。</p>
+          </div>
+
           <div class="section-title">索引设置</div>
 
           <div class="form-group">
             <label>索引方式 *</label>
             <select v-model="form.indexing_method" required>
-              <option value="chunk">分块索引</option>
+              <option value="structured">自然结构分块</option>
+              <option value="paragraph">按段落分块</option>
+              <option value="chunk">固定长度分块</option>
               <option value="full">整篇索引</option>
             </select>
             <p class="hint">索引方式创建后不可更换，请谨慎选择。</p>
           </div>
 
-          <div class="form-grid" v-if="form.indexing_method === 'chunk'">
+          <div class="form-grid" v-if="form.indexing_method !== 'full'">
             <div class="form-group">
-              <label>分块长度</label>
+              <label>单块最大长度</label>
               <input type="number" min="50" max="2000" step="50" v-model.number="form.chunk_size" />
             </div>
             <div class="form-group">
-              <label>重叠长度</label>
+              <label>超长块重叠</label>
               <input type="number" min="0" max="500" step="10" v-model.number="form.chunk_overlap" />
             </div>
           </div>
@@ -117,10 +128,11 @@ const knowledgeStore = useKnowledgeStore()
 const form = ref({
   name: '',
   description: '',
-  indexing_method: 'chunk',
+  access_level: 'tenant',
+  indexing_method: 'structured',
   chunk_size: 500,
   chunk_overlap: 50,
-  retrieval_method: 'vector',
+  retrieval_method: 'hybrid',
   top_k: 5,
   score_threshold: 0
 })
@@ -146,7 +158,8 @@ const handleSubmit = async () => {
   try {
     newKB = await knowledgeStore.createKnowledgeBase({
       name: form.value.name,
-      description: form.value.description
+      description: form.value.description,
+      access_level: form.value.access_level
     })
 
     await knowledgeStore.updateIndexingSettings(newKB.id, {
@@ -160,12 +173,22 @@ const handleSubmit = async () => {
       retrieval_method: form.value.retrieval_method,
       top_k: form.value.top_k,
       score_threshold: form.value.score_threshold,
+      vector_top_k: 40,
+      keyword_top_k: 40,
+      fusion_algorithm: 'rrf',
+      rrf_k: 60,
+      vector_weight: 0.65,
+      keyword_weight: 0.35,
+      max_candidates: 100,
       enable_rerank: false,
-      rerank_model_id: null
+      rerank_model_id: null,
+      query_rewrite: true
     })
 
     if (selectedFile.value) {
-      await knowledgeStore.uploadDocument(newKB.id, selectedFile.value)
+      await knowledgeStore.uploadDocument(newKB.id, selectedFile.value, {
+        accessLevel: form.value.access_level
+      })
     }
 
     router.push(`/knowledge/${newKB.id}`)

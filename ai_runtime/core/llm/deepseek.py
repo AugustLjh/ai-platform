@@ -4,10 +4,11 @@ from .base import BaseLLM, LLMResponse
 
 class DeepseekLLM(BaseLLM):
     def __init__(self, model: str = "deepseek-chat", api_key: Optional[str] = None, **kwargs):
+        api_base = kwargs.pop("api_base", "https://api.deepseek.com/v1")
         super().__init__(model, **kwargs)
         self.api_key = api_key
         # DeepSeek API base URL
-        self.api_base = kwargs.get("api_base", "https://api.deepseek.com/v1")
+        self.api_base = api_base
 
     async def stream_chat(self, messages: List[Dict[str, str]], **kwargs) -> AsyncIterator[LLMResponse]:
         """

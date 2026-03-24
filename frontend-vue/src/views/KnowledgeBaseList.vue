@@ -85,6 +85,7 @@
           <p class="description">{{ kb.description || '暂无描述' }}</p>
           <div class="card-footer">
             <div class="badge">{{ kb.document_count || 0 }} 个文档</div>
+            <div class="badge">{{ kb.access_level === 'user' ? '仅自己可见' : '租户共享' }}</div>
             <span class="meta">{{ formatDate(kb.created_at) }}</span>
           </div>
         </div>
@@ -108,16 +109,17 @@ const searchQuery = ref('')
 const activeFilter = ref('all')
 
 const filters = [
-  { value: 'all', label: '全部', icon: '📋' }
+  { value: 'all', label: '全部', icon: '📋' },
+  { value: 'tenant', label: '租户共享', icon: '🏢' },
+  { value: 'user', label: '仅自己可见', icon: '👤' }
 ]
 
 const filteredKnowledgeBases = computed(() => {
   let result = knowledgeBases.value
 
-  // 按类型筛选 - 知识库没有 source_type，移除此过滤
-  // if (activeFilter.value !== 'all') {
-  //   result = result.filter(kb => kb.source_type === activeFilter.value)
-  // }
+  if (activeFilter.value !== 'all') {
+    result = result.filter(kb => kb.access_level === activeFilter.value)
+  }
 
   // 按搜索关键词筛选
   if (searchQuery.value) {

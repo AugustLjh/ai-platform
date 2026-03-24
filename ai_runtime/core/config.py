@@ -67,7 +67,7 @@ class EmbeddingConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     """LLM configuration"""
-    provider: str = Field(default="mock", description="LLM provider: openai/local/mock")
+    provider: str = Field(default="mock", description="LLM provider: openai/deepseek/jina/local/mock")
     api_key: Optional[str] = Field(default=None, description="API key for LLM service")
     api_base: Optional[str] = Field(default=None, description="API base URL")
     model: str = Field(default="gpt-3.5-turbo", description="Model name")

@@ -13,12 +13,12 @@
           <div class="title-group">
             <div class="title-row">
               <button class="back-btn" @click="goBack" title="返回">←</button>
-              <h1>文档</h1>
+              <h1>{{ knowledgeBase.name }}</h1>
               <span class="count-pill">{{ totalCount }}</span>
+              <span class="count-pill">{{ getAccessLevelLabel(knowledgeBase.access_level) }}</span>
             </div>
             <p class="subtitle">
-              知识库的所有文件都在这里显示，整个知识库都可以链接到 Dify 引用或通过 Chat 插件进行索引。
-              <span class="learn-more">了解更多</span>
+              {{ knowledgeBase.description || '管理当前知识库中的文档、预览切分结果，并直接验证入库状态。' }}
             </p>
           </div>
           <div class="header-actions">
@@ -82,18 +82,18 @@
             <div class="col col-index">{{ index + 1 }}</div>
             <div class="col col-name">
               <div class="name-cell">
-                <span class="doc-title">{{ doc.title || doc.name }}</span>
+                <span class="doc-title">{{ doc.title }}</span>
               </div>
             </div>
             <div class="col col-mode">
               <span class="pill">{{ getFileType(doc) }}</span>
             </div>
-            <div class="col col-chars">{{ formatFileSize(doc.size) }}</div>
+            <div class="col col-chars">{{ formatFileSize(getDocumentSize(doc)) }}</div>
             <div class="col col-recall">
-              {{ formatDateTime(doc.updated_at || doc.uploaded_at || doc.created_at) }}
+              {{ formatDateTime(doc.updated_at || doc.created_at) }}
             </div>
             <div class="col col-date">
-              {{ formatDateTime(doc.uploaded_at || doc.created_at) }}
+              {{ formatDateTime(doc.created_at) }}
             </div>
             <div class="col col-status">
               <span :class="['status-dot', `status-${getStatus(doc)}`]"></span>
@@ -136,7 +136,7 @@
         <div v-if="showPreviewModal" class="modal-overlay" @click.self="closePreviewModal">
           <div class="modal-card">
             <div class="modal-header">
-              <h3>文档预览 · {{ selectedDocument?.title || selectedDocument?.name || '-' }}</h3>
+              <h3>文档预览 · {{ selectedDocument?.title || '-' }}</h3>
               <button class="modal-close" @click="closePreviewModal">✕</button>
             </div>
             <div v-if="modalLoading" class="modal-loading">加载中...</div>
@@ -188,10 +188,19 @@
         <div v-if="showSegmentsModal" class="modal-overlay" @click.self="closeSegmentsModal">
           <div class="modal-card modal-wide">
             <div class="modal-header">
-              <h3>分段详情 · {{ selectedDocument?.title || selectedDocument?.name || '-' }}</h3>
+              <h3>分段详情 · {{ selectedDocument?.title || '-' }}</h3>
               <button class="modal-close" @click="closeSegmentsModal">✕</button>
             </div>
             <div class="segment-toolbar">
+              <div class="segment-field">
+                <label>索引方式</label>
+                <select v-model="segmentIndexingMethod">
+                  <option value="structured">自然结构分块</option>
+                  <option value="paragraph">按段落分块</option>
+                  <option value="chunk">固定长度分块</option>
+                  <option value="full">整篇索引</option>
+                </select>
+              </div>
               <div class="segment-field">
                 <label>分段大小</label>
                 <input v-model.number="segmentChunkSize" type="number" min="50" max="2000" />
@@ -210,6 +219,7 @@
             </div>
             <div v-else-if="segmentsData" class="modal-content">
               <div class="preview-meta">
+                <span>索引方式：{{ segmentsData.indexing_method }}</span>
                 <span>分段大小：{{ segmentsData.chunk_size }}</span>
                 <span>重叠：{{ segmentsData.chunk_overlap }}</span>
                 <span>总分段：{{ segmentsData.total_segments }}</span>
@@ -219,6 +229,9 @@
                 <div v-for="segment in segmentsData.segments" :key="segment.segment_index" class="segment-card">
                   <div class="segment-head">
                     <strong>#{{ segment.segment_index }}</strong>
+                    <span v-if="segment.citation_label">{{ segment.citation_label }}</span>
+                    <span v-else-if="segment.section_title">{{ segment.section_title }}</span>
+                    <span v-if="segment.segment_type">{{ segment.segment_type }}</span>
                     <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
                     <span>{{ segment.char_count }} 字符</span>
                   </div>
@@ -256,8 +269,10 @@ const previewData = ref(null)
 const segmentsData = ref(null)
 const modalLoading = ref(false)
 const modalError = ref('')
+const segmentIndexingMethod = ref('structured')
 const segmentChunkSize = ref(500)
 const segmentChunkOverlap = ref(50)
+const textEncoder = new TextEncoder()
 
 const statusOptions = [
   { value: 'all', label: '全部状态' },
@@ -281,7 +296,7 @@ const filteredDocuments = computed(() => {
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(doc => {
-      const name = (doc.title || doc.name || '').toLowerCase()
+      const name = (doc.title || '').toLowerCase()
       return name.includes(query)
     })
   }
@@ -343,7 +358,9 @@ const handleFileUpload = async (event) => {
 
   uploadError.value = ''
   try {
-    await knowledgeStore.uploadDocument(knowledgeBaseId, file)
+    await knowledgeStore.uploadDocument(knowledgeBaseId, file, {
+      accessLevel: knowledgeBase.value?.access_level || 'tenant'
+    })
     await loadDocuments()
     event.target.value = ''
   } catch (err) {
@@ -352,7 +369,10 @@ const handleFileUpload = async (event) => {
       const shouldContinue = window.confirm(buildDuplicateConfirmMessage(detail))
       if (shouldContinue) {
         try {
-          await knowledgeStore.uploadDocument(knowledgeBaseId, file, { skipDuplicateCheck: true })
+          await knowledgeStore.uploadDocument(knowledgeBaseId, file, {
+            accessLevel: knowledgeBase.value?.access_level || 'tenant',
+            skipDuplicateCheck: true
+          })
           await loadDocuments()
         } catch (retryErr) {
           uploadError.value = extractApiErrorMessage(retryErr, '上传文档失败')
@@ -414,6 +434,7 @@ const handleViewSegments = async (doc) => {
   try {
     const data = await knowledgeStore.fetchDocumentSegments(doc.id)
     segmentsData.value = data
+    segmentIndexingMethod.value = data.indexing_method || 'structured'
     segmentChunkSize.value = data.chunk_size
     segmentChunkOverlap.value = data.chunk_overlap
   } catch (err) {
@@ -430,6 +451,7 @@ const reloadSegments = async () => {
   modalLoading.value = true
   try {
     segmentsData.value = await knowledgeStore.fetchDocumentSegments(selectedDocument.value.id, {
+      indexing_method: segmentIndexingMethod.value,
       chunk_size: segmentChunkSize.value,
       chunk_overlap: segmentChunkOverlap.value,
       max_segments: 400
@@ -458,19 +480,18 @@ const goToRetrievalTest = () => {
 }
 
 const getFileType = (doc) => {
-  if (doc.type) return doc.type.toUpperCase()
-  const name = doc.title || doc.name || ''
+  if (doc.source_type) return doc.source_type.toUpperCase()
+  const name = doc.title || ''
   const index = name.lastIndexOf('.')
   if (index === -1) return '-'
   return name.slice(index + 1).toUpperCase()
 }
 
 const getStatus = (doc) => {
-  const status = doc.status || doc.state || 'available'
-  if (status === 'available' || status === 'processing' || status === 'failed') {
-    return status
-  }
-  return 'available'
+  if (doc.index_status === 'failed' || doc.last_index_error) return 'failed'
+  if (doc.index_status === 'ready' || doc.indexed) return 'available'
+  if (doc.index_status === 'running' || doc.index_status === 'pending') return 'processing'
+  return 'processing'
 }
 
 const getStatusLabel = (doc) => {
@@ -479,6 +500,18 @@ const getStatusLabel = (doc) => {
   if (status === 'processing') return '处理中'
   if (status === 'failed') return '失败'
   return '可用'
+}
+
+const getAccessLevelLabel = (accessLevel) => (
+  accessLevel === 'user' ? '仅自己可见' : '租户共享'
+)
+
+const getDocumentSize = (doc) => {
+  const metadata = normalizeMetadata(doc.metadata)
+  if (typeof metadata.file_size === 'number') return metadata.file_size
+  if (typeof metadata.size === 'number') return metadata.size
+  if (typeof metadata.content_length === 'number') return metadata.content_length
+  return textEncoder.encode(doc.content || '').length
 }
 
 const formatDateTime = (dateString) => {
@@ -1155,7 +1188,8 @@ const buildDuplicateConfirmMessage = (detail) => {
   color: #64748b;
 }
 
-.segment-field input {
+.segment-field input,
+.segment-field select {
   width: 140px;
   background: #ffffff;
   color: #0f172a;

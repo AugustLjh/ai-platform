@@ -50,6 +50,47 @@
             </div>
           </div>
 
+          <div class="form-grid">
+            <div class="form-row">
+              <label>向量候选数</label>
+              <input type="number" min="1" max="200" step="1" v-model.number="form.vector_top_k" />
+            </div>
+            <div class="form-row">
+              <label>关键词候选数</label>
+              <input type="number" min="1" max="200" step="1" v-model.number="form.keyword_top_k" />
+            </div>
+            <div class="form-row">
+              <label>融合算法</label>
+              <select v-model="form.fusion_algorithm">
+                <option value="rrf">RRF</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>RRF K</label>
+              <input type="number" min="1" max="200" step="1" v-model.number="form.rrf_k" />
+            </div>
+          </div>
+
+          <div class="form-grid">
+            <div class="form-row">
+              <label>向量权重</label>
+              <input type="number" min="0" max="5" step="0.05" v-model.number="form.vector_weight" />
+            </div>
+            <div class="form-row">
+              <label>关键词权重</label>
+              <input type="number" min="0" max="5" step="0.05" v-model.number="form.keyword_weight" />
+            </div>
+            <div class="form-row">
+              <label>最大候选数</label>
+              <input type="number" min="1" max="300" step="1" v-model.number="form.max_candidates" />
+            </div>
+          </div>
+
+          <div class="form-row toggle-row">
+            <label>查询改写</label>
+            <input type="checkbox" v-model="form.query_rewrite" />
+          </div>
+
           <div class="section-title">Rerank 设置</div>
           <div class="form-row toggle-row">
             <label>启用 Rerank</label>
@@ -117,6 +158,8 @@
                 <div v-for="segment in item.matched_segments" :key="`${item.document.id}-${segment.segment_index}`" class="segment-item">
                   <div class="segment-head">
                     <span>#{{ segment.segment_index }}</span>
+                    <span v-if="segment.citation_label">{{ segment.citation_label }}</span>
+                    <span v-else-if="segment.section_title">{{ segment.section_title }}</span>
                     <span>{{ segment.start_offset }} - {{ segment.end_offset }}</span>
                     <span>匹配 {{ segment.match_score ?? 0 }}</span>
                   </div>
@@ -138,6 +181,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useKnowledgeStore } from '@/store/knowledge'
 import { useModelsStore } from '@/store/models'
+import { normalizeRetrievalSettings } from '@/utils/knowledgeSettings'
 
 const router = useRouter()
 const route = useRoute()
@@ -152,11 +196,19 @@ const error = ref('')
 const success = ref('')
 
 const form = ref({
-  retrieval_method: 'vector',
+  retrieval_method: 'hybrid',
   top_k: 5,
   score_threshold: 0,
+  vector_top_k: 40,
+  keyword_top_k: 40,
+  fusion_algorithm: 'rrf',
+  rrf_k: 60,
+  vector_weight: 0.65,
+  keyword_weight: 0.35,
+  max_candidates: 100,
   enable_rerank: false,
-  rerank_model_id: ''
+  rerank_model_id: '',
+  query_rewrite: true
 })
 const testQuery = ref('')
 const testTopK = ref(null)
@@ -173,14 +225,7 @@ const loadSettings = async () => {
   loading.value = true
   error.value = ''
   try {
-    const settings = await knowledgeStore.fetchRetrievalSettings(knowledgeBaseId)
-    form.value = {
-      retrieval_method: settings.retrieval_method || 'vector',
-      top_k: settings.top_k ?? 5,
-      score_threshold: settings.score_threshold ?? 0,
-      enable_rerank: settings.enable_rerank ?? false,
-      rerank_model_id: settings.rerank_model_id || ''
-    }
+    form.value = normalizeRetrievalSettings(await knowledgeStore.fetchRetrievalSettings(knowledgeBaseId))
   } catch (err) {
     error.value = err.response?.data?.detail || '加载检索设置失败'
   } finally {

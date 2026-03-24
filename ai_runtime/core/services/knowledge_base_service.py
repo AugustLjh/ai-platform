@@ -20,7 +20,7 @@ from ..models.knowledge_base import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_INDEXING_SETTINGS = {
-    "indexing_method": "chunk",
+    "indexing_method": "structured",
     "chunk_size": 500,
     "chunk_overlap": 50,
     "embedding_model_id": None,

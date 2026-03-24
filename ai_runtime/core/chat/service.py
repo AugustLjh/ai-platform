@@ -10,8 +10,8 @@ from core.chat.response_types import (
     RESPONSE_TYPE_CONTENT,
     RESPONSE_TYPE_ERROR,
 )
-from core.dependencies import get_container
-from core.llm import DeepseekLLM, LocalLLM, OpenAILLM
+from core.dependencies import DEV_DEFAULT_TENANT_ID, get_container
+from core.llm import DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
 from core.rag import RAGPipeline, Retriever, SimpleVectorStore
 from core.rag.retriever import DatabaseVectorStore
 
@@ -111,8 +111,9 @@ class ChatRuntimeService:
 
         context_parts: List[str] = []
         citations: List[Dict[str, Any]] = []
+        citation_index = 1
 
-        for index, (doc, score) in enumerate(results, 1):
+        for doc_rank, (doc, score) in enumerate(results, 1):
             matched_segments = await doc_service.get_matched_segments(
                 document=doc,
                 query=query,
@@ -120,25 +121,50 @@ class ChatRuntimeService:
                 user_id=user_id,
                 max_segments=2,
             )
-            snippets = [segment.get("content", "") for segment in matched_segments if segment.get("content")]
-            snippet_text = "\n---\n".join(snippets) if snippets else (doc.content or "")[:800]
+            if not matched_segments:
+                matched_segments = [
+                    {
+                        "chunk_id": None,
+                        "segment_index": 1,
+                        "start_offset": 0,
+                        "end_offset": len(doc.content or ""),
+                        "char_count": len(doc.content or ""),
+                        "content": (doc.content or "")[:800],
+                        "match_score": 0.0,
+                        "segment_type": "full",
+                        "section_title": doc.title,
+                        "citation_label": "全文",
+                        "heading_level": None,
+                    }
+                ]
 
-            context_parts.append(f"[Document {index}] title={doc.title} score={score:.4f}")
-            if doc.source:
-                context_parts.append(f"source={doc.source}")
-            context_parts.append(snippet_text)
-            context_parts.append("")
+            for segment in matched_segments:
+                context_parts.append(f"[Citation {citation_index}] title={doc.title} score={score:.4f}")
+                if doc.source:
+                    context_parts.append(f"source={doc.source}")
+                if segment.get("citation_label"):
+                    context_parts.append(f"segment={segment['citation_label']}")
+                context_parts.append(segment.get("content", "") or "")
+                context_parts.append("")
 
-            citations.append(
-                {
-                    "document_id": doc.id,
-                    "title": doc.title,
-                    "source": doc.source,
-                    "knowledge_base_id": doc.knowledge_base_id,
-                    "score": round(float(score), 4),
-                    "matched_segments": matched_segments,
-                }
-            )
+                citations.append(
+                    {
+                        "citation_id": f"{doc.id}:{segment.get('chunk_id') or segment.get('segment_index') or citation_index}",
+                        "document_id": doc.id,
+                        "chunk_id": segment.get("chunk_id"),
+                        "title": doc.title,
+                        "source": doc.source,
+                        "knowledge_base_id": doc.knowledge_base_id,
+                        "score": round(float(score), 4),
+                        "document_rank": doc_rank,
+                        "segment_index": segment.get("segment_index"),
+                        "segment_type": segment.get("segment_type"),
+                        "section_title": segment.get("section_title"),
+                        "citation_label": segment.get("citation_label"),
+                        "matched_segments": [segment],
+                    }
+                )
+                citation_index += 1
 
         return "\n".join(context_parts), citations, kb_name
 
@@ -334,6 +360,8 @@ class ChatRuntimeService:
             llm = OpenAILLM(model=model_id, api_key=api_key, **llm_kwargs)
         elif provider == "deepseek":
             llm = DeepseekLLM(model=model_id, api_key=api_key, **llm_kwargs)
+        elif provider == "jina":
+            llm = JinaLLM(model=model_id, api_key=api_key, **llm_kwargs)
         elif provider in {"local", "mock"}:
             llm = LocalLLM(model=model_id, **llm_kwargs)
         else:
@@ -577,7 +605,7 @@ class ChatRuntimeService:
             "use_rag": bool(self._get_config_field(config, "use_rag", False)),
             "knowledge_base_id": knowledge_base_id,
             "metadata": metadata,
-            "tenant_id": self._get_field(request, "tenant_id", "default-tenant") or "default-tenant",
+            "tenant_id": self._get_field(request, "tenant_id", DEV_DEFAULT_TENANT_ID) or DEV_DEFAULT_TENANT_ID,
             "user_id": self._get_field(request, "user_id", None) or None,
             "history": history,
         }
