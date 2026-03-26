@@ -1,0 +1,4 @@
+name: Code Review
+slug: code-review
+version: 1.0.0
+description: Review code changes with an emphasis on concrete findings, regressions, and missing tests.

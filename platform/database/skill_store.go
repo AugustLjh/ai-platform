@@ -239,3 +239,29 @@ func (s *SkillStore) ReplaceAgentSkillBindings(agentID string, skillIDs []string
 
 	return tx.Commit(ctx)
 }
+
+func (s *SkillStore) ListAgentSkillBindings(agentID string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT skill_id
+		FROM agent_skill_bindings
+		WHERE agent_definition_id = $1
+		ORDER BY created_at ASC
+	`, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent skill bindings: %w", err)
+	}
+	defer rows.Close()
+
+	var skillIDs []string
+	for rows.Next() {
+		var skillID string
+		if err := rows.Scan(&skillID); err != nil {
+			return nil, fmt.Errorf("failed to scan agent skill binding: %w", err)
+		}
+		skillIDs = append(skillIDs, skillID)
+	}
+	return skillIDs, rows.Err()
+}

@@ -172,6 +172,7 @@ Important current settings:
 - `EMBEDDING_PROVIDER` supports `local`, `openai`, and `jina`
 - `LLM_PROVIDER` supports `openai`, `deepseek`, `local`, and `mock`
 - `QDRANT_HOST` / `QDRANT_PORT` point the runtime to the dedicated vector database
+- `AI_RUNTIME_HTTP_ADDR` is required for agent, knowledge-base, and model APIs on the Go platform
 - `AI_RUNTIME_CHAT_TRANSPORT` on the Go service can switch chat calls between `grpc` and `http`
 
 ## Frontend Capabilities

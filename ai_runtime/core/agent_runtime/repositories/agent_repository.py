@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
+
 
 def _serialize_uuid(value: str | None) -> UUID | None:
     if not value:
@@ -21,6 +23,8 @@ def _record_to_dict(record) -> Dict[str, Any]:
             data[key] = value
         elif value is None:
             data[key] = None
+        elif key in {"config", "metadata"}:
+            data[key] = parse_json_field(value, {})
     return data
 
 
@@ -45,8 +49,8 @@ class AgentRepository:
             payload.get("system_prompt", ""),
             payload.get("model"),
             payload.get("status", "active"),
-            dict(payload.get("config", {})),
-            dict(payload.get("metadata", {})),
+            encode_json(payload.get("config"), {}),
+            encode_json(payload.get("metadata"), {}),
             _serialize_uuid(payload.get("created_by")),
         )
         return _record_to_dict(row)
@@ -78,8 +82,8 @@ class AgentRepository:
             payload.get("description"),
             payload.get("system_prompt"),
             payload.get("model"),
-            dict(payload["config"]) if "config" in payload else None,
-            dict(payload["metadata"]) if "metadata" in payload else None,
+            encode_json(payload.get("config"), {}) if "config" in payload else None,
+            encode_json(payload.get("metadata"), {}) if "metadata" in payload else None,
             _serialize_uuid(payload.get("updated_by")),
         )
         return _record_to_dict(row) if row else None
@@ -142,3 +146,40 @@ class AgentRepository:
             _serialize_uuid(definition_id),
         )
         return [str(row["server_id"]) for row in rows]
+
+    async def list_knowledge_bindings(self, definition_id: str) -> List[str]:
+        rows = await self.db_pool.fetch(
+            """
+            SELECT knowledge_base_id
+            FROM agent_knowledge_bindings
+            WHERE agent_definition_id = $1
+            ORDER BY created_at ASC
+            """,
+            _serialize_uuid(definition_id),
+        )
+        return [str(row["knowledge_base_id"]) for row in rows]
+
+    async def list_accessible_knowledge_bindings(
+        self,
+        definition_id: str,
+        tenant_id: str,
+        user_id: Optional[str],
+    ) -> List[str]:
+        rows = await self.db_pool.fetch(
+            """
+            SELECT kb.id
+            FROM agent_knowledge_bindings akb
+            JOIN knowledge_bases kb ON kb.id = akb.knowledge_base_id
+            WHERE akb.agent_definition_id = $1
+              AND kb.tenant_id = $2
+              AND (
+                    kb.access_level = 'tenant'
+                    OR (kb.access_level = 'user' AND kb.user_id = $3)
+              )
+            ORDER BY akb.created_at ASC
+            """,
+            _serialize_uuid(definition_id),
+            _serialize_uuid(tenant_id),
+            _serialize_uuid(user_id),
+        )
+        return [str(row["id"]) for row in rows]

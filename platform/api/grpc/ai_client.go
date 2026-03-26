@@ -49,24 +49,34 @@ type ChatConfig struct {
 	KnowledgeBaseID string
 }
 
-// AIClient handles communication with the AI Runtime (HTTP streaming preferred).
+// AIClient handles communication with the AI Runtime over gRPC and HTTP.
 type AIClient struct {
 	conn        *grpc.ClientConn
 	client      pb.ChatServiceClient
 	address     string
 	httpBaseURL string
 	httpClient  *http.Client
+	useHTTPChat bool
 }
 
 // NewAIClient creates a new AI client
-func NewAIClient(address, httpBaseURL string) (*AIClient, error) {
+func NewAIClient(address, httpBaseURL string, useHTTPChat bool) (*AIClient, error) {
 	httpBaseURL = strings.TrimRight(httpBaseURL, "/")
+
+	aiClient := &AIClient{
+		address:     address,
+		httpBaseURL: httpBaseURL,
+		useHTTPChat: useHTTPChat,
+	}
 	if httpBaseURL != "" {
-		return &AIClient{
-			address:     address,
-			httpBaseURL: httpBaseURL,
-			httpClient:  &http.Client{},
-		}, nil
+		aiClient.httpClient = &http.Client{}
+	}
+
+	if useHTTPChat {
+		if httpBaseURL == "" {
+			return nil, errors.New("AI runtime HTTP base URL is empty")
+		}
+		return aiClient, nil
 	}
 
 	if address == "" {
@@ -82,13 +92,10 @@ func NewAIClient(address, httpBaseURL string) (*AIClient, error) {
 		return nil, err
 	}
 
-	client := pb.NewChatServiceClient(conn)
+	aiClient.conn = conn
+	aiClient.client = pb.NewChatServiceClient(conn)
 
-	return &AIClient{
-		conn:    conn,
-		client:  client,
-		address: address,
-	}, nil
+	return aiClient, nil
 }
 
 // Close closes the gRPC connection
@@ -99,10 +106,13 @@ func (c *AIClient) Close() error {
 	return c.conn.Close()
 }
 
-// StreamChat streams chat with AI runtime using HTTP SSE when available.
+// StreamChat streams chat with AI runtime using the configured chat transport.
 func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
-	if c.httpBaseURL != "" {
+	if c.useHTTPChat {
 		return c.streamChatHTTP(ctx, req)
+	}
+	if c.client == nil {
+		return nil, errors.New("AI runtime gRPC client is not configured")
 	}
 
 	// Convert request to protobuf
@@ -216,6 +226,18 @@ type runtimeAgentRunSummaryResponse struct {
 
 type runtimeAgentResumeRequest struct {
 	InputPatch json.RawMessage `json:"input_patch"`
+}
+
+type AgentToolSpec struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
+	Kind        string          `json:"kind"`
+}
+
+type runtimeAgentToolListResponse struct {
+	Tools []AgentToolSpec `json:"tools"`
+	Total int             `json:"total"`
 }
 
 func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
@@ -382,6 +404,14 @@ func (c *AIClient) ResumeAgentRun(ctx context.Context, runID, tenantID string, i
 		return nil, err
 	}
 	return &response.Run, nil
+}
+
+func (c *AIClient) ListAgentTools(ctx context.Context, tenantID string) ([]AgentToolSpec, error) {
+	var response runtimeAgentToolListResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/tools", nil, tenantID, "", &response); err != nil {
+		return nil, err
+	}
+	return response.Tools, nil
 }
 
 func (c *AIClient) StreamAgentRunEvents(ctx context.Context, runID, tenantID string, afterSequence int64) (<-chan *database.AgentRunEvent, error) {

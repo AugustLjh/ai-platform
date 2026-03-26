@@ -49,13 +49,8 @@ func main() {
 	}
 	defer pgPool.Close()
 
-	// Initialize AI client
-	chatHTTPAddr := ""
-	if chatTransport == "http" {
-		chatHTTPAddr = aiRuntimeHttpAddr
-	}
 	log.Printf("Connecting to AI Runtime at %s (chat transport: %s)...", aiRuntimeAddr, chatTransport)
-	aiClient, err := grpc.NewAIClient(aiRuntimeAddr, chatHTTPAddr)
+	aiClient, err := grpc.NewAIClient(aiRuntimeAddr, aiRuntimeHttpAddr, chatTransport == "http")
 	if err != nil {
 		log.Fatalf("Failed to initialize AI Runtime client: %v", err)
 	}
@@ -236,6 +231,14 @@ func main() {
 			guardMiddleware.Handler,
 		))
 
+	mux.Handle("/api/v1/agents/tools",
+		chain(
+			http.HandlerFunc(agentHandler.HandleTools),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
 	mux.Handle("/api/v1/agents/",
 		chain(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +247,8 @@ func main() {
 					agentHandler.HandleCreateRun(w, r)
 				case strings.HasSuffix(r.URL.Path, "/skills"):
 					skillHandler.HandleUpdateAgentSkills(w, r)
+				case strings.HasSuffix(r.URL.Path, "/knowledge-bases"):
+					agentHandler.HandleUpdateAgentKnowledgeBases(w, r)
 				case strings.HasSuffix(r.URL.Path, "/mcp-servers"):
 					mcpHandler.HandleUpdateAgentMCPServers(w, r)
 				default:

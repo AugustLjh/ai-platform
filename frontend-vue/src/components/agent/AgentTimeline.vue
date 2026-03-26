@@ -50,8 +50,17 @@ const formatTime = (value) => {
 
 const summariseEvent = (event) => {
   const payload = event.payload || {}
+  if (payload.error) {
+    return payload.error
+  }
+  if (payload.question) {
+    return payload.question
+  }
   if (payload.final_output) {
     return payload.final_output
+  }
+  if (payload.output) {
+    return JSON.stringify(payload.output, null, 2)
   }
   if (payload.title) {
     return payload.title
@@ -59,11 +68,11 @@ const summariseEvent = (event) => {
   if (payload.tool_name) {
     return `工具 ${payload.tool_name}`
   }
-  if (payload.question) {
-    return payload.question
-  }
   if (payload.status) {
     return `状态 ${payload.status}`
+  }
+  if (payload.input_patch) {
+    return `输入已更新: ${JSON.stringify(payload.input_patch)}`
   }
   const keys = Object.keys(payload)
   if (keys.length === 0) {

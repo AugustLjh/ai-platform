@@ -27,6 +27,12 @@ const normalizeAgent = (raw = {}) => ({
   status: raw.status || 'active',
   config: parseJSON(raw.config, {}),
   metadata: parseJSON(raw.metadata, {}),
+  skillIds: Array.isArray(raw.skill_ids || raw.skillIds)
+    ? [...(raw.skill_ids || raw.skillIds)]
+    : [],
+  knowledgeBaseIds: Array.isArray(raw.knowledge_base_ids || raw.knowledgeBaseIds)
+    ? [...(raw.knowledge_base_ids || raw.knowledgeBaseIds)]
+    : [],
   createdAt: raw.created_at || raw.createdAt || null,
   updatedAt: raw.updated_at || raw.updatedAt || null,
   archivedAt: raw.archived_at || raw.archivedAt || null
@@ -84,6 +90,13 @@ const normalizeMCPServer = (raw = {}) => ({
   updatedAt: raw.updated_at || null
 })
 
+const normalizeToolSpec = (raw = {}) => ({
+  name: raw.name || '',
+  description: raw.description || '',
+  inputSchema: parseJSON(raw.input_schema || raw.inputSchema, {}),
+  kind: raw.kind || 'builtin'
+})
+
 const sortByUpdatedDesc = (items) => [...items].sort((a, b) => {
   const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime()
   const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime()
@@ -116,6 +129,7 @@ const deriveRunState = (run, events) => {
         status: 'pending',
         question: '',
         output: null,
+        error: '',
         createdAt: event.createdAt,
         updatedAt: event.createdAt
       }
@@ -132,11 +146,17 @@ const deriveRunState = (run, events) => {
       if (event.eventType === 'step.completed') {
         existing.status = 'completed'
         existing.output = payload.output || existing.output
-        existing.question = payload.question || existing.question
+        existing.question = payload.question || payload.output?.question || existing.question
       }
 
       if (event.eventType === 'step.failed') {
         existing.status = 'failed'
+        existing.error = payload.error || existing.error
+      }
+
+      if (event.eventType === 'step.cancelled') {
+        existing.status = 'cancelled'
+        existing.error = payload.error || existing.error
       }
 
       stepsMap.set(stepId, existing)
@@ -155,6 +175,7 @@ const deriveRunState = (run, events) => {
         status: 'pending',
         arguments: payload.arguments || {},
         result: null,
+        error: '',
         createdAt: event.createdAt,
         updatedAt: event.createdAt
       }
@@ -175,6 +196,12 @@ const deriveRunState = (run, events) => {
 
       if (event.eventType === 'tool.failed') {
         existing.status = 'failed'
+        existing.error = payload.error || existing.error
+      }
+
+      if (event.eventType === 'tool.cancelled') {
+        existing.status = 'cancelled'
+        existing.error = payload.error || existing.error
       }
 
       toolCallMap.set(toolCallId, existing)
@@ -183,7 +210,12 @@ const deriveRunState = (run, events) => {
 
   return {
     plan,
-    steps: [...stepsMap.values()].sort((a, b) => a.stepIndex - b.stepIndex),
+    steps: [...stepsMap.values()].sort((a, b) => {
+      if (a.stepIndex === b.stepIndex) {
+        return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+      }
+      return a.stepIndex - b.stepIndex
+    }),
     toolCalls: [...toolCallMap.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
   }
 }
@@ -199,6 +231,7 @@ export const useAgentsStore = defineStore('agents', {
     toolCalls: [],
     plan: null,
     artifacts: [],
+    availableTools: [],
     skills: [],
     mcpServers: [],
     loading: false,
@@ -262,6 +295,73 @@ export const useAgentsStore = defineStore('agents', {
       this.plan = derived.plan
       this.steps = derived.steps
       this.toolCalls = derived.toolCalls
+    },
+
+    upsertRun(run) {
+      const index = this.runs.findIndex((item) => item.id === run.id)
+      if (index === -1) {
+        this.runs.unshift(run)
+      } else {
+        this.runs[index] = run
+      }
+    },
+
+    applyRunPatch(runId, patch = {}) {
+      if (!runId || Object.keys(patch).length === 0) {
+        return
+      }
+
+      if (this.currentRun?.id === runId) {
+        this.currentRun = {
+          ...this.currentRun,
+          ...patch
+        }
+      }
+
+      const index = this.runs.findIndex((item) => item.id === runId)
+      if (index !== -1) {
+        this.runs[index] = {
+          ...this.runs[index],
+          ...patch
+        }
+      }
+    },
+
+    applyRunEvent(event) {
+      const payload = event.payload || {}
+      const patch = {}
+
+      if (payload.status) {
+        patch.status = payload.status
+      }
+
+      if (event.eventType === 'run.resumed' || event.eventType === 'run.started') {
+        patch.finalOutput = ''
+        patch.errorMessage = ''
+      }
+
+      if (payload.plan) {
+        patch.plan = payload.plan
+      }
+
+      if (event.eventType === 'run.waiting_user' && payload.question) {
+        patch.finalOutput = payload.question
+      } else if (payload.final_output !== undefined) {
+        patch.finalOutput = payload.final_output
+      }
+
+      if (payload.error) {
+        patch.errorMessage = payload.error
+      }
+
+      if (payload.input_patch && this.currentRun?.id === event.runId) {
+        patch.input = {
+          ...(this.currentRun.input || {}),
+          ...payload.input_patch
+        }
+      }
+
+      this.applyRunPatch(event.runId, patch)
     },
 
     async fetchAgents(includeArchived = false) {
@@ -381,7 +481,7 @@ export const useAgentsStore = defineStore('agents', {
         const { data } = await agentsAPI.createRun(agentId, payload)
         const run = normalizeRun(data)
         this.currentRun = run
-        this.runs.unshift(run)
+        this.upsertRun(run)
         this.runEvents = []
         this.steps = []
         this.toolCalls = []
@@ -401,12 +501,7 @@ export const useAgentsStore = defineStore('agents', {
       try {
         const { data } = await agentsAPI.getRun(runId)
         const run = normalizeRun(data)
-        const index = this.runs.findIndex((item) => item.id === run.id)
-        if (index === -1) {
-          this.runs.unshift(run)
-        } else {
-          this.runs[index] = run
-        }
+        this.upsertRun(run)
         this.currentRun = run
         this.plan = run.plan && Object.keys(run.plan).length > 0 ? run.plan : null
         return run
@@ -465,15 +560,7 @@ export const useAgentsStore = defineStore('agents', {
         onEvent: (event) => {
           const normalized = normalizeEvent(event)
           this.applyEvents([normalized])
-          const status = normalized.payload?.status
-          if (status && this.currentRun?.id === runId) {
-            this.currentRun = {
-              ...this.currentRun,
-              status,
-              finalOutput: normalized.payload?.final_output || this.currentRun.finalOutput,
-              errorMessage: normalized.payload?.error || this.currentRun.errorMessage
-            }
-          }
+          this.applyRunEvent(normalized)
         },
         onError: (error) => {
           if (controller.signal.aborted) {
@@ -513,10 +600,7 @@ export const useAgentsStore = defineStore('agents', {
         const { data } = await agentsAPI.cancelRun(runId)
         const run = normalizeRun(data)
         this.currentRun = run
-        const index = this.runs.findIndex((item) => item.id === run.id)
-        if (index !== -1) {
-          this.runs[index] = run
-        }
+        this.upsertRun(run)
         this.stopRunStream()
         return run
       } catch (error) {
@@ -532,12 +616,13 @@ export const useAgentsStore = defineStore('agents', {
       this.error = null
       try {
         const { data } = await agentsAPI.resumeRun(runId, { input_patch: inputPatch })
-        const run = normalizeRun(data)
-        this.currentRun = run
-        const index = this.runs.findIndex((item) => item.id === run.id)
-        if (index !== -1) {
-          this.runs[index] = run
+        const run = {
+          ...normalizeRun(data),
+          finalOutput: '',
+          errorMessage: ''
         }
+        this.currentRun = run
+        this.upsertRun(run)
         this.subscribeToRun(run.id)
         return run
       } catch (error) {
@@ -570,6 +655,60 @@ export const useAgentsStore = defineStore('agents', {
       }
     },
 
+    async updateAgentSkills(agentId, skillIds = []) {
+      this.loading = true
+      this.error = null
+      try {
+        await skillsAPI.updateAgentSkills(agentId, skillIds)
+        const nextSkillIds = Array.isArray(skillIds) ? [...skillIds] : []
+        const applyPatch = (agent) => {
+          if (!agent || agent.id !== agentId) return agent
+          return {
+            ...agent,
+            skillIds: nextSkillIds
+          }
+        }
+
+        if (this.currentAgent?.id === agentId) {
+          this.currentAgent = applyPatch(this.currentAgent)
+        }
+        this.agentDefinitions = this.agentDefinitions.map(applyPatch)
+        return nextSkillIds
+      } catch (error) {
+        this.setError(error, 'Failed to update agent skills')
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async updateAgentKnowledgeBases(agentId, knowledgeBaseIds = []) {
+      this.loading = true
+      this.error = null
+      try {
+        await agentsAPI.updateAgentKnowledgeBases(agentId, knowledgeBaseIds)
+        const nextKnowledgeBaseIds = Array.isArray(knowledgeBaseIds) ? [...knowledgeBaseIds] : []
+        const applyPatch = (agent) => {
+          if (!agent || agent.id !== agentId) return agent
+          return {
+            ...agent,
+            knowledgeBaseIds: nextKnowledgeBaseIds
+          }
+        }
+
+        if (this.currentAgent?.id === agentId) {
+          this.currentAgent = applyPatch(this.currentAgent)
+        }
+        this.agentDefinitions = this.agentDefinitions.map(applyPatch)
+        return nextKnowledgeBaseIds
+      } catch (error) {
+        this.setError(error, 'Failed to update agent knowledge bases')
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
     async fetchMCPServers() {
       try {
         const { data } = await mcpAPI.listServers()
@@ -577,6 +716,17 @@ export const useAgentsStore = defineStore('agents', {
         return this.mcpServers
       } catch (error) {
         this.setError(error, 'Failed to fetch MCP servers')
+        throw error
+      }
+    },
+
+    async fetchTools() {
+      try {
+        const { data } = await agentsAPI.listTools()
+        this.availableTools = (data.tools || []).map(normalizeToolSpec)
+        return this.availableTools
+      } catch (error) {
+        this.setError(error, 'Failed to fetch agent tools')
         throw error
       }
     }

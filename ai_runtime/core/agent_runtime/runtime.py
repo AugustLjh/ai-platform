@@ -4,6 +4,7 @@ import asyncio
 from typing import AsyncIterator, Optional
 
 from core.agent_runtime.executor import AgentExecutor
+from core.agent_runtime.llm_service import AgentLLMService
 from core.agent_runtime.memory import RuntimeStateStore
 from core.agent_runtime.models import (
     AgentRun,
@@ -14,11 +15,14 @@ from core.agent_runtime.models import (
     RuntimeCreateRunRequest,
 )
 from core.agent_runtime.orchestrator import AgentOrchestrator
+from core.agent_runtime.skills.registry import SkillRegistry
 from core.agent_runtime.planner import AgentPlanner
+from core.agent_runtime.summarizer import AgentSummarizer
 from core.agent_runtime.repositories.agent_repository import AgentRepository
 from core.agent_runtime.repositories.run_repository import RunRepository
 from core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
 from core.agent_runtime.tools.providers.builtin import register_builtin_tools
+from core.agent_runtime.tools.providers.knowledge import register_knowledge_tools
 from core.agent_runtime.tools.registry import ToolRegistry
 from core.agent_runtime.tracing import AgentTracer
 
@@ -31,6 +35,9 @@ class AgentRuntime:
         self.state_store = RuntimeStateStore()
         self.registry = ToolRegistry()
         register_builtin_tools(self.registry)
+        register_knowledge_tools(self.registry)
+        self.skill_registry = SkillRegistry(db_pool)
+        self.llm_service = AgentLLMService()
 
         self.tracer = AgentTracer(
             self.run_repository,
@@ -40,12 +47,18 @@ class AgentRuntime:
         self.orchestrator = AgentOrchestrator(
             planner=AgentPlanner(),
             executor=AgentExecutor(self.registry),
+            summarizer=AgentSummarizer(),
+            llm_service=self.llm_service,
             tracer=self.tracer,
             agent_repository=self.agent_repository,
             run_repository=self.run_repository,
             tool_call_repository=self.tool_call_repository,
             state_store=self.state_store,
+            skill_registry=self.skill_registry,
         )
+
+    async def list_tools(self) -> list[dict]:
+        return self.registry.list_specs()
 
     async def create_run(self, request: RuntimeCreateRunRequest) -> AgentRunSummaryResponse:
         run_row = await self.run_repository.create_run(

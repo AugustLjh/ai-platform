@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,20 +16,22 @@ var ErrAgentDefinitionNotFound = errors.New("agent definition not found")
 var ErrAgentRunNotFound = errors.New("agent run not found")
 
 type AgentDefinition struct {
-	ID           string          `json:"id"`
-	TenantID     string          `json:"tenant_id"`
-	Name         string          `json:"name"`
-	Description  string          `json:"description,omitempty"`
-	SystemPrompt string          `json:"system_prompt"`
-	Model        string          `json:"model,omitempty"`
-	Status       string          `json:"status"`
-	Config       json.RawMessage `json:"config"`
-	Metadata     json.RawMessage `json:"metadata"`
-	CreatedBy    *string         `json:"created_by,omitempty"`
-	UpdatedBy    *string         `json:"updated_by,omitempty"`
-	ArchivedAt   *time.Time      `json:"archived_at,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID               string          `json:"id"`
+	TenantID         string          `json:"tenant_id"`
+	Name             string          `json:"name"`
+	Description      string          `json:"description,omitempty"`
+	SystemPrompt     string          `json:"system_prompt"`
+	Model            string          `json:"model,omitempty"`
+	Status           string          `json:"status"`
+	Config           json.RawMessage `json:"config"`
+	Metadata         json.RawMessage `json:"metadata"`
+	SkillIDs         []string        `json:"skill_ids,omitempty"`
+	KnowledgeBaseIDs []string        `json:"knowledge_base_ids,omitempty"`
+	CreatedBy        *string         `json:"created_by,omitempty"`
+	UpdatedBy        *string         `json:"updated_by,omitempty"`
+	ArchivedAt       *time.Time      `json:"archived_at,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 }
 
 type AgentRun struct {
@@ -271,6 +274,113 @@ func (s *AgentStore) ArchiveAgentDefinition(id, tenantID, updatedBy string) erro
 		return ErrAgentDefinitionNotFound
 	}
 	return nil
+}
+
+func normalizeStringIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(ids))
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func (s *AgentStore) ReplaceAgentKnowledgeBindings(agentID, tenantID, userID string, knowledgeBaseIDs []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	normalizedIDs := normalizeStringIDs(knowledgeBaseIDs)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if len(normalizedIDs) > 0 {
+		rows, err := tx.Query(ctx, `
+			SELECT id
+			FROM knowledge_bases
+			WHERE tenant_id = $1
+			  AND id = ANY($2)
+			  AND (
+					access_level = 'tenant'
+					OR (access_level = 'user' AND user_id = $3)
+			  )
+		`, tenantID, normalizedIDs, nullIfEmpty(userID))
+		if err != nil {
+			return fmt.Errorf("failed to validate knowledge base bindings: %w", err)
+		}
+		defer rows.Close()
+
+		allowed := make(map[string]struct{}, len(normalizedIDs))
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("failed to scan allowed knowledge base id: %w", err)
+			}
+			allowed[id] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("failed to iterate allowed knowledge bases: %w", err)
+		}
+		for _, id := range normalizedIDs {
+			if _, ok := allowed[id]; !ok {
+				return fmt.Errorf("knowledge base %s not found or access denied", id)
+			}
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_knowledge_bindings WHERE agent_definition_id = $1`, agentID); err != nil {
+		return fmt.Errorf("failed to clear agent knowledge bindings: %w", err)
+	}
+
+	for _, knowledgeBaseID := range normalizedIDs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO agent_knowledge_bindings (agent_definition_id, knowledge_base_id, metadata)
+			VALUES ($1, $2, '{}'::jsonb)
+		`, agentID, knowledgeBaseID); err != nil {
+			return fmt.Errorf("failed to bind knowledge base %s: %w", knowledgeBaseID, err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *AgentStore) ListAgentKnowledgeBindings(agentID string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT knowledge_base_id
+		FROM agent_knowledge_bindings
+		WHERE agent_definition_id = $1
+		ORDER BY created_at ASC
+	`, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent knowledge bindings: %w", err)
+	}
+	defer rows.Close()
+
+	var knowledgeBaseIDs []string
+	for rows.Next() {
+		var knowledgeBaseID string
+		if err := rows.Scan(&knowledgeBaseID); err != nil {
+			return nil, fmt.Errorf("failed to scan agent knowledge binding: %w", err)
+		}
+		knowledgeBaseIDs = append(knowledgeBaseIDs, knowledgeBaseID)
+	}
+	return knowledgeBaseIDs, rows.Err()
 }
 
 func (s *AgentStore) CreateAgentRun(run *AgentRun) (*AgentRun, error) {

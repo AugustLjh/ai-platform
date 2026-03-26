@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
+
 
 def _serialize_uuid(value: str | None) -> UUID | None:
     if not value:
@@ -19,6 +21,8 @@ def _record_to_dict(record) -> Dict[str, Any]:
             data[key] = str(value)
         elif isinstance(value, datetime):
             data[key] = value
+        elif key in {"input", "plan", "context", "output", "payload", "metadata"}:
+            data[key] = parse_json_field(value, {})
     return data
 
 
@@ -32,7 +36,7 @@ class RunRepository:
                 agent_definition_id, tenant_id, user_id, session_id, status,
                 input, plan, context, metadata
             )
-            VALUES ($1, $2, $3, $4, COALESCE($5, 'queued'), $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, COALESCE($5::varchar, 'queued'::varchar), $6, $7, $8, $9)
             RETURNING *
         """
         row = await self.db_pool.fetchrow(
@@ -42,10 +46,10 @@ class RunRepository:
             _serialize_uuid(payload.get("user_id")),
             _serialize_uuid(payload.get("session_id")),
             payload.get("status", "queued"),
-            dict(payload.get("input", {})),
-            dict(payload.get("plan", {})),
-            dict(payload.get("context", {})),
-            dict(payload.get("metadata", {})),
+            encode_json(payload.get("input"), {}),
+            encode_json(payload.get("plan"), {}),
+            encode_json(payload.get("context"), {}),
+            encode_json(payload.get("metadata"), {}),
         )
         return _record_to_dict(row)
 
@@ -91,6 +95,7 @@ class RunRepository:
         status: str,
         *,
         plan: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
         final_output: Optional[str] = None,
         error_message: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -99,21 +104,22 @@ class RunRepository:
             """
             UPDATE agent_runs
             SET
-                status = $2,
+                status = $2::varchar,
                 plan = COALESCE($3, plan),
-                final_output = COALESCE($4, final_output),
-                error_message = $5,
-                metadata = COALESCE($6, metadata),
+                context = COALESCE($4, context),
+                final_output = COALESCE($5, final_output),
+                error_message = $6,
+                metadata = COALESCE($7, metadata),
                 started_at = CASE
-                    WHEN $2 = 'running' AND started_at IS NULL THEN now()
+                    WHEN $2::varchar = 'running' AND started_at IS NULL THEN now()
                     ELSE started_at
                 END,
                 finished_at = CASE
-                    WHEN $2 IN ('completed', 'failed') THEN now()
+                    WHEN $2::varchar IN ('completed', 'failed') THEN now()
                     ELSE finished_at
                 END,
                 cancelled_at = CASE
-                    WHEN $2 = 'cancelled' THEN now()
+                    WHEN $2::varchar = 'cancelled' THEN now()
                     ELSE cancelled_at
                 END
             WHERE id = $1
@@ -121,10 +127,11 @@ class RunRepository:
             """,
             _serialize_uuid(run_id),
             status,
-            dict(plan) if plan is not None else None,
+            encode_json(plan, {}) if plan is not None else None,
+            encode_json(context, {}) if context is not None else None,
             final_output,
             error_message,
-            dict(metadata) if metadata is not None else None,
+            encode_json(metadata, {}) if metadata is not None else None,
         )
         return _record_to_dict(row) if row else None
 
@@ -137,7 +144,7 @@ class RunRepository:
             RETURNING *
             """,
             _serialize_uuid(run_id),
-            dict(input_patch),
+            encode_json(input_patch, {}),
         )
         return _record_to_dict(row) if row else None
 
@@ -164,7 +171,16 @@ class RunRepository:
             INSERT INTO agent_run_steps (
                 run_id, step_index, kind, title, status, input, metadata, started_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $5 = 'running' THEN now() ELSE NULL END)
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5::varchar,
+                $6,
+                $7,
+                CASE WHEN $5::varchar = 'running' THEN now() ELSE NULL END
+            )
             RETURNING *
             """,
             _serialize_uuid(run_id),
@@ -172,8 +188,8 @@ class RunRepository:
             kind,
             title,
             status,
-            dict(input_payload or {}),
-            dict(metadata or {}),
+            encode_json(input_payload, {}),
+            encode_json(metadata, {}),
         )
         return _record_to_dict(row)
 
@@ -190,16 +206,16 @@ class RunRepository:
             """
             UPDATE agent_run_steps
             SET
-                status = COALESCE($2, status),
+                status = COALESCE($2::varchar, status),
                 output = COALESCE($3, output),
                 error_message = $4,
                 metadata = COALESCE($5, metadata),
                 started_at = CASE
-                    WHEN COALESCE($2, status) = 'running' AND started_at IS NULL THEN now()
+                    WHEN COALESCE($2::varchar, status) = 'running' AND started_at IS NULL THEN now()
                     ELSE started_at
                 END,
                 completed_at = CASE
-                    WHEN COALESCE($2, status) IN ('completed', 'failed', 'cancelled') THEN now()
+                    WHEN COALESCE($2::varchar, status) IN ('completed', 'failed', 'cancelled') THEN now()
                     ELSE completed_at
                 END
             WHERE id = $1
@@ -207,9 +223,9 @@ class RunRepository:
             """,
             _serialize_uuid(step_id),
             status,
-            dict(output_payload) if output_payload is not None else None,
+            encode_json(output_payload, {}) if output_payload is not None else None,
             error_message,
-            dict(metadata) if metadata is not None else None,
+            encode_json(metadata, {}) if metadata is not None else None,
         )
         return _record_to_dict(row) if row else None
 
@@ -233,7 +249,7 @@ class RunRepository:
                     _serialize_uuid(run_id),
                     int(sequence or 1),
                     event_type,
-                    dict(payload or {}),
+                    encode_json(payload, {}),
                 )
         return _record_to_dict(row)
 

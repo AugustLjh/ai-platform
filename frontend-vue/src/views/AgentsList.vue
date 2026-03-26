@@ -2,10 +2,10 @@
   <div class="agents-page">
     <section class="agents-hero">
       <div class="hero-copy">
-        <div class="hero-kicker">Agent Workspace</div>
-        <h1>把智能体从占位页变成可运行工作区</h1>
+        <div class="hero-kicker">Agent Chat</div>
+        <h1>每个智能体都应该先进入聊天，再按需配置</h1>
         <p>
-          在这里创建 agent definition，指定模型和 system prompt，然后进入专属 workspace 发起 run。
+          在这里创建智能体、进入专属聊天页发起运行，配置和删除操作收纳为次级入口，避免主路径过重。
         </p>
 
         <div class="hero-actions">
@@ -55,7 +55,7 @@
         <div class="section-head">
           <div>
             <h2>智能体列表</h2>
-            <p>点击任意卡片进入 workspace，查看 run 和记忆中的时间线。</p>
+            <p>点击任意卡片直接进入聊天页，编辑和删除收纳到卡片右上角菜单。</p>
           </div>
         </div>
 
@@ -64,7 +64,7 @@
         </div>
 
         <div v-else-if="agents.length === 0" class="panel-empty">
-          还没有任何智能体。先创建一个，再进入运行工作区。
+          还没有任何智能体。先创建一个，然后直接进入它的聊天页。
         </div>
 
         <div v-else class="agent-cards">
@@ -79,7 +79,27 @@
                 <div class="agent-status">{{ statusLabel(agent.status) }}</div>
                 <h3>{{ agent.name }}</h3>
               </div>
-              <span class="agent-model">{{ resolveModelName(agent.model) }}</span>
+              <div class="agent-card-actions">
+                <span class="agent-model">{{ resolveModelName(agent.model) }}</span>
+                <div class="agent-menu-wrap">
+                  <button
+                    type="button"
+                    class="agent-menu-trigger"
+                    :aria-expanded="openMenuAgentId === agent.id ? 'true' : 'false'"
+                    @click.stop="toggleAgentMenu(agent.id)"
+                  >
+                    ⋯
+                  </button>
+                  <div v-if="openMenuAgentId === agent.id" class="agent-menu">
+                    <button type="button" class="agent-menu-item" @click.stop="editAgent(agent.id)">
+                      编辑智能体
+                    </button>
+                    <button type="button" class="agent-menu-item danger" @click.stop="deleteAgent(agent)">
+                      删除智能体
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <p class="agent-desc">{{ agent.description || '还没有描述。建议补充任务边界与约束。' }}</p>
@@ -101,7 +121,7 @@
         <div class="section-head">
           <div>
             <h2>创建智能体</h2>
-            <p>先定义一个最小可用 agent，再到 workspace 发起 run。</p>
+            <p>先定义一个最小可用智能体，创建后会直接进入它的聊天页。</p>
           </div>
         </div>
 
@@ -155,7 +175,7 @@
           </div>
 
           <button type="submit" class="btn btn-primary submit-btn" :disabled="submitting">
-            {{ submitting ? '创建中...' : '创建并进入工作区' }}
+            {{ submitting ? '创建中...' : '创建并进入聊天' }}
           </button>
         </form>
       </aside>
@@ -164,7 +184,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgentsStore } from '@/store/agents'
 import { useModelsStore } from '@/store/models'
@@ -177,6 +197,7 @@ const modelsStore = useModelsStore()
 const toastStore = useToastStore()
 
 const submitting = ref(false)
+const openMenuAgentId = ref('')
 
 const presets = [
   {
@@ -265,6 +286,31 @@ const openAgent = (agentId) => {
   router.push(`/agents/${agentId}`)
 }
 
+const editAgent = (agentId) => {
+  openMenuAgentId.value = ''
+  router.push(`/agents/${agentId}/settings`)
+}
+
+const deleteAgent = async (agent) => {
+  openMenuAgentId.value = ''
+  const confirmed = window.confirm(`确认删除智能体“${agent.name}”吗？`)
+  if (!confirmed) {
+    return
+  }
+
+  try {
+    await agentsStore.archiveAgent(agent.id)
+    toastStore.showToast({ type: 'success', message: '智能体已删除' })
+  } catch (error) {
+    console.error('Failed to archive agent:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '删除智能体失败' })
+  }
+}
+
+const toggleAgentMenu = (agentId) => {
+  openMenuAgentId.value = openMenuAgentId.value === agentId ? '' : agentId
+}
+
 const handleCreateAgent = async () => {
   if (!form.name.trim()) {
     toastStore.showToast({ type: 'error', message: '请先填写智能体名称' })
@@ -327,14 +373,23 @@ const formatTime = (value) => {
 
 watch(() => route.query.starter, syncPresetFromRoute)
 
+const handleDocumentClick = () => {
+  openMenuAgentId.value = ''
+}
+
 onMounted(async () => {
   resetForm()
+  document.addEventListener('click', handleDocumentClick)
   try {
     await loadData()
     syncPresetFromRoute()
   } catch (error) {
     console.error('Failed to load agents page:', error)
   }
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleDocumentClick)
 })
 </script>
 
@@ -504,6 +559,13 @@ onMounted(async () => {
   align-items: flex-start;
 }
 
+.agent-card-actions {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
 .agent-status {
   font-size: 11px;
   font-weight: 700;
@@ -525,6 +587,55 @@ onMounted(async () => {
   color: var(--primary-700);
   font-size: 12px;
   font-weight: 700;
+}
+
+.agent-menu-wrap {
+  position: relative;
+}
+
+.agent-menu-trigger {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: white;
+  color: var(--gray-700);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.agent-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 148px;
+  padding: 8px;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: white;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+  display: grid;
+  gap: 4px;
+  z-index: 10;
+}
+
+.agent-menu-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: var(--gray-800);
+  cursor: pointer;
+}
+
+.agent-menu-item:hover {
+  background: var(--gray-50);
+}
+
+.agent-menu-item.danger {
+  color: #b91c1c;
 }
 
 .agent-desc {

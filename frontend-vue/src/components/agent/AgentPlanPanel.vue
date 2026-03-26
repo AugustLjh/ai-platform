@@ -26,6 +26,16 @@
         <p>{{ plan.reasoning }}</p>
       </div>
 
+      <div v-if="Array.isArray(plan.steps) && plan.steps.length > 0" class="plan-card">
+        <div class="plan-label">Plan Steps</div>
+        <div class="plan-steps">
+          <div v-for="(step, index) in plan.steps" :key="`${index}-${step.title}`" class="plan-step-row">
+            <strong>{{ step.title }}</strong>
+            <span>{{ step.status || 'pending' }}</span>
+          </div>
+        </div>
+      </div>
+
       <div v-if="plan.action?.content" class="plan-card">
         <div class="plan-label">Content</div>
         <p>{{ plan.action.content }}</p>
@@ -137,6 +147,24 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
 .plan-action span,
 .plan-card p {
   color: var(--gray-700);
+}
+
+.plan-steps {
+  display: grid;
+  gap: 10px;
+}
+
+.plan-step-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.plan-step-row span {
+  color: var(--gray-500);
+  font-size: 12px;
+  text-transform: uppercase;
 }
 
 pre {

@@ -1,0 +1,4 @@
+name: KB Research
+slug: kb-research
+version: 1.0.0
+description: Search the internal knowledge base first, then summarize evidence and open questions.

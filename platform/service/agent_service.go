@@ -46,6 +46,17 @@ type UpdateAgentMCPServersRequest struct {
 	ServerIDs []string `json:"server_ids"`
 }
 
+type UpdateAgentKnowledgeBasesRequest struct {
+	KnowledgeBaseIDs []string `json:"knowledge_base_ids"`
+}
+
+type AgentToolSpec struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
+	Kind        string          `json:"kind"`
+}
+
 type MCPServerUpsertRequest struct {
 	Name      string          `json:"name"`
 	Transport string          `json:"transport"`
@@ -94,7 +105,11 @@ func (s *AgentService) CreateAgentDefinition(tenantID, userID string, req *Agent
 	if def.Name == "" {
 		return nil, errors.New("name is required")
 	}
-	return s.agentStore.CreateAgentDefinition(def)
+	created, err := s.agentStore.CreateAgentDefinition(def)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateAgentBindings(created)
 }
 
 func (s *AgentService) UpdateAgentDefinition(tenantID, userID, agentID string, req *AgentDefinitionUpsertRequest) (*database.AgentDefinition, error) {
@@ -109,15 +124,32 @@ func (s *AgentService) UpdateAgentDefinition(tenantID, userID, agentID string, r
 	current.Config = database.NormalizeJSONRawForExport(req.Config, `{}`)
 	current.Metadata = database.NormalizeJSONRawForExport(req.Metadata, `{}`)
 	current.UpdatedBy = stringPtr(userID)
-	return s.agentStore.UpdateAgentDefinition(current)
+	updated, err := s.agentStore.UpdateAgentDefinition(current)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateAgentBindings(updated)
 }
 
 func (s *AgentService) GetAgentDefinition(tenantID, agentID string) (*database.AgentDefinition, error) {
-	return s.agentStore.GetAgentDefinition(agentID, tenantID)
+	definition, err := s.agentStore.GetAgentDefinition(agentID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateAgentBindings(definition)
 }
 
 func (s *AgentService) ListAgentDefinitions(tenantID string, includeArchived bool) ([]*database.AgentDefinition, error) {
-	return s.agentStore.ListAgentDefinitions(tenantID, includeArchived)
+	items, err := s.agentStore.ListAgentDefinitions(tenantID, includeArchived)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if _, err := s.hydrateAgentBindings(item); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
 }
 
 func (s *AgentService) ArchiveAgentDefinition(tenantID, userID, agentID string) error {
@@ -172,6 +204,25 @@ func (s *AgentService) ResumeRun(ctx context.Context, tenantID, runID string, re
 	return s.aiClient.ResumeAgentRun(ctx, runID, tenantID, req.InputPatch)
 }
 
+func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID string) ([]*AgentToolSpec, error) {
+	items, err := s.aiClient.ListAgentTools(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]*AgentToolSpec, 0, len(items))
+	for _, item := range items {
+		spec := item
+		result = append(result, &AgentToolSpec{
+			Name:        spec.Name,
+			Description: spec.Description,
+			InputSchema: spec.InputSchema,
+			Kind:        spec.Kind,
+		})
+	}
+	return result, nil
+}
+
 func (s *AgentService) ListSkills(tenantID string) ([]*database.Skill, error) {
 	return s.skillStore.ListSkills(tenantID)
 }
@@ -208,6 +259,23 @@ func (s *AgentService) UpdateAgentSkills(tenantID, agentID string, req *UpdateAg
 		return err
 	}
 	return s.skillStore.ReplaceAgentSkillBindings(agentID, req.SkillIDs)
+}
+
+func (s *AgentService) hydrateAgentBindings(definition *database.AgentDefinition) (*database.AgentDefinition, error) {
+	if definition == nil {
+		return nil, nil
+	}
+	skillIDs, err := s.skillStore.ListAgentSkillBindings(definition.ID)
+	if err != nil {
+		return nil, err
+	}
+	definition.SkillIDs = skillIDs
+	knowledgeBaseIDs, err := s.agentStore.ListAgentKnowledgeBindings(definition.ID)
+	if err != nil {
+		return nil, err
+	}
+	definition.KnowledgeBaseIDs = knowledgeBaseIDs
+	return definition, nil
 }
 
 func (s *AgentService) ListMCPServers(tenantID string) ([]*database.MCPServer, error) {
@@ -310,6 +378,13 @@ func (s *AgentService) UpdateAgentMCPServers(tenantID, agentID string, req *Upda
 	return s.mcpStore.ReplaceAgentMCPBindings(agentID, req.ServerIDs)
 }
 
+func (s *AgentService) UpdateAgentKnowledgeBases(tenantID, userID, agentID string, req *UpdateAgentKnowledgeBasesRequest) error {
+	if _, err := s.agentStore.GetAgentDefinition(agentID, tenantID); err != nil {
+		return err
+	}
+	return s.agentStore.ReplaceAgentKnowledgeBindings(agentID, tenantID, userID, req.KnowledgeBaseIDs)
+}
+
 func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, error) {
 	slug := filepath.Base(path)
 	name := slug
@@ -348,6 +423,10 @@ func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, err
 	if err != nil {
 		outputSchema = []byte(`{}`)
 	}
+	toolAllowlist, err := os.ReadFile(filepath.Join(path, "tool_allowlist.json"))
+	if err != nil {
+		toolAllowlist = []byte(`[]`)
+	}
 
 	return &database.Skill{
 		Name:          name,
@@ -357,7 +436,7 @@ func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, err
 		RootPath:      path,
 		SystemPrompt:  string(systemPrompt),
 		OutputSchema:  outputSchema,
-		ToolAllowlist: json.RawMessage(`[]`),
+		ToolAllowlist: toolAllowlist,
 		Metadata:      json.RawMessage(`{}`),
 	}, nil
 }

@@ -74,12 +74,22 @@ export const agentsAPI = {
     return api.put(`/api/v1/agents/${agentId}`, payload)
   },
 
+  updateAgentKnowledgeBases(agentId, knowledgeBaseIds = []) {
+    return api.put(`/api/v1/agents/${agentId}/knowledge-bases`, {
+      knowledge_base_ids: knowledgeBaseIds
+    })
+  },
+
   archiveAgent(agentId) {
     return api.delete(`/api/v1/agents/${agentId}`)
   },
 
   createRun(agentId, payload) {
     return api.post(`/api/v1/agents/${agentId}/runs`, payload)
+  },
+
+  listTools() {
+    return api.get('/api/v1/agents/tools')
   },
 
   listRuns(limit = 50, offset = 0) {

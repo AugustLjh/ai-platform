@@ -8,8 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 RunStatus = Literal["queued", "running", "waiting_user", "completed", "failed", "cancelled"]
 StepStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
-ToolCallStatus = Literal["pending", "running", "completed", "failed"]
+ToolCallStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 PlannerActionType = Literal["final_answer", "tool_call", "ask_user"]
+PlannerStepStatus = Literal["completed", "in_progress", "pending"]
 
 
 class AgentDefinition(BaseModel):
@@ -112,11 +113,23 @@ class PlannerAction(BaseModel):
     tool_arguments: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PlannerStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    kind: str = "analysis"
+    status: PlannerStepStatus = "pending"
+    details: Optional[str] = None
+
+
 class PlannerResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: PlannerAction
     reasoning: str = ""
+    steps: List[PlannerStep] = Field(default_factory=list)
+    iteration: int = 1
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RuntimeCreateRunRequest(BaseModel):

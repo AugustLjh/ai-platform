@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
+
 
 def _serialize_uuid(value: str | None) -> UUID | None:
     if not value:
@@ -18,6 +20,8 @@ def _record_to_dict(record) -> Dict[str, Any]:
             data[key] = str(value)
         elif isinstance(value, datetime):
             data[key] = value
+        elif key in {"arguments", "result"}:
+            data[key] = parse_json_field(value, {})
     return data
 
 
@@ -46,7 +50,7 @@ class ToolCallRepository:
             _serialize_uuid(step_id),
             tool_name,
             tool_kind,
-            dict(arguments),
+            encode_json(arguments, {}),
         )
         return _record_to_dict(row)
 
@@ -62,11 +66,11 @@ class ToolCallRepository:
             """
             UPDATE agent_tool_calls
             SET
-                status = $2,
+                status = $2::varchar,
                 result = COALESCE($3, result),
                 error_message = $4,
                 completed_at = CASE
-                    WHEN $2 IN ('completed', 'failed') THEN now()
+                    WHEN $2::varchar IN ('completed', 'failed', 'cancelled') THEN now()
                     ELSE completed_at
                 END
             WHERE id = $1
@@ -74,7 +78,7 @@ class ToolCallRepository:
             """,
             _serialize_uuid(tool_call_id),
             status,
-            dict(result) if result is not None else None,
+            encode_json(result, {}) if result is not None else None,
             error_message,
         )
         return _record_to_dict(row) if row else None

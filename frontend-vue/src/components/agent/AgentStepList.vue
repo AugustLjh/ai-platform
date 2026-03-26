@@ -33,6 +33,11 @@
           <pre>{{ formatJSON(step.output) }}</pre>
         </div>
 
+        <div v-if="step.error" class="step-output">
+          <div class="step-output-label">错误</div>
+          <pre>{{ step.error }}</pre>
+        </div>
+
         <div v-if="toolCallsByStep(step.id).length > 0" class="tool-call-list">
           <AgentToolCallCard
             v-for="toolCall in toolCallsByStep(step.id)"
@@ -79,6 +84,9 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
   border-radius: 24px;
   padding: 22px;
   box-shadow: var(--shadow-sm);
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 
 .panel-head {
@@ -122,6 +130,7 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 .step-list {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .step-card {
@@ -129,6 +138,8 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
   border-radius: 20px;
   padding: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .step-card-head {
@@ -136,6 +147,7 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  min-width: 0;
 }
 
 .step-index {
@@ -148,6 +160,8 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 .step-card h4 {
   font-size: 17px;
   margin-top: 4px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .step-status {
@@ -214,6 +228,10 @@ pre {
   font-size: 12px;
   line-height: 1.5;
   overflow: auto;
+  max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
 }
 
@@ -221,5 +239,6 @@ pre {
   display: grid;
   gap: 12px;
   margin-top: 14px;
+  min-width: 0;
 }
 </style>

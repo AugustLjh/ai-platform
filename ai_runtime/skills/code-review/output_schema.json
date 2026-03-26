@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array"
+    },
+    "test_gaps": {
+      "type": "array"
+    }
+  }
+}

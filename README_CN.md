@@ -172,6 +172,7 @@ make db-revision m=add_some_change
 - `EMBEDDING_PROVIDER`：支持 `local`、`openai`、`jina`
 - `LLM_PROVIDER`：支持 `openai`、`deepseek`、`local`、`mock`
 - `QDRANT_HOST` / `QDRANT_PORT`：指定独立向量库地址
+- `AI_RUNTIME_HTTP_ADDR`：Platform 调用 Agent、知识库、模型等 Runtime HTTP 接口时必需
 - `AI_RUNTIME_CHAT_TRANSPORT`：Go 平台层可切换 `grpc` 或 `http` 调用聊天能力
 
 ## 前端能力

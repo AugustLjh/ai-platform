@@ -43,6 +43,15 @@ async def create_run(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/tools")
+async def list_tools(
+    tenant_id: str = Depends(get_current_tenant_id),
+):
+    runtime = get_agent_runtime()
+    tools = await runtime.list_tools()
+    return {"tools": tools, "total": len(tools)}
+
+
 @router.get("/runs", response_model=AgentRunListResponse)
 async def list_runs(
     limit: int = Query(default=50, ge=1, le=200),

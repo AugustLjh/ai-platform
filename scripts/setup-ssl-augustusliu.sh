@@ -191,6 +191,7 @@ server {
         proxy_buffering off;
         proxy_cache off;
         chunked_transfer_encoding on;
+        proxy_request_buffering off;
 
         proxy_connect_timeout 300s;
         proxy_send_timeout 300s;

@@ -17,6 +17,11 @@
       <div class="tool-section-label">结果</div>
       <pre>{{ formattedResult }}</pre>
     </div>
+
+    <div v-if="hasError" class="tool-section">
+      <div class="tool-section-label">错误</div>
+      <pre>{{ toolCall.error }}</pre>
+    </div>
   </article>
 </template>
 
@@ -34,7 +39,8 @@ const statusMap = {
   pending: '等待中',
   running: '执行中',
   completed: '已完成',
-  failed: '失败'
+  failed: '失败',
+  cancelled: '已取消'
 }
 
 const statusLabel = computed(() => statusMap[props.toolCall.status] || props.toolCall.status || '未知')
@@ -42,6 +48,7 @@ const formattedArguments = computed(() => JSON.stringify(props.toolCall.argument
 const formattedResult = computed(() => JSON.stringify(props.toolCall.result || {}, null, 2))
 const hasArguments = computed(() => Object.keys(props.toolCall.arguments || {}).length > 0)
 const hasResult = computed(() => props.toolCall.result && Object.keys(props.toolCall.result).length > 0)
+const hasError = computed(() => !!props.toolCall.error)
 
 const formatTime = (value) => {
   if (!value) return '未知时间'
@@ -61,6 +68,9 @@ const formatTime = (value) => {
   background: linear-gradient(180deg, #ffffff 0%, #f6fbf9 100%);
   border-radius: var(--radius-lg);
   padding: 16px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 
 .tool-card-head {
@@ -68,12 +78,15 @@ const formatTime = (value) => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
 .tool-name {
   font-size: 15px;
   font-weight: 700;
   color: var(--gray-900);
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .tool-meta {
@@ -111,6 +124,11 @@ const formatTime = (value) => {
   color: #b91c1c;
 }
 
+.tool-status.cancelled {
+  background: rgba(148, 163, 184, 0.16);
+  color: #475569;
+}
+
 .tool-section {
   margin-top: 14px;
 }
@@ -133,6 +151,10 @@ pre {
   font-size: 12px;
   line-height: 1.5;
   overflow: auto;
+  max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
 }
 </style>

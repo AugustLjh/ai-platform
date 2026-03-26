@@ -2,12 +2,12 @@
   <div class="workspace-page">
     <section class="workspace-hero">
       <div>
-        <div class="hero-kicker">Agent Workspace</div>
-        <h1>{{ agent?.name || '智能体工作区' }}</h1>
-        <p>{{ agent?.description || '在这里维护 agent definition，并发起新的 run。' }}</p>
+        <div class="hero-kicker">Agent Settings</div>
+        <h1>{{ agent?.name || '智能体设置' }}</h1>
+        <p>{{ agent?.description || '在这里调整智能体定义、模型和运行配置。' }}</p>
       </div>
       <div class="hero-actions">
-        <router-link to="/agents" class="btn btn-secondary">返回列表</router-link>
+        <router-link :to="agent?.id ? `/agents/${agent.id}` : '/agents'" class="btn btn-secondary">返回会话</router-link>
         <button type="button" class="btn btn-primary" @click="saveAgent" :disabled="saving">
           {{ saving ? '保存中...' : '保存定义' }}
         </button>
@@ -63,8 +63,8 @@
         <div class="panel card">
           <div class="panel-head">
             <div>
-              <h2>启动新 Run</h2>
-              <p>当前 planner v1 适合先验证 direct answer、calculator、get_current_time 和 echo_json。</p>
+              <h2>快速启动</h2>
+              <p>这里仍可手动启动一次 run，但主入口已经切换为智能体聊天页。</p>
             </div>
           </div>
 
@@ -107,8 +107,40 @@
         <div class="panel card side-panel">
           <div class="panel-head">
             <div>
-              <h2>能力目录</h2>
-              <p>当前列出平台已经暴露的 skills 与 MCP servers 底座。</p>
+              <h2>工具列表</h2>
+              <p>这里展示 runtime 当前真实注册的工具，而不是占位信息。</p>
+            </div>
+          </div>
+
+          <div v-if="availableTools.length === 0" class="mini-empty">当前没有加载到任何工具。</div>
+          <div v-else class="tool-list">
+            <article v-for="tool in availableTools" :key="tool.name" class="tool-item">
+              <div class="tool-item-head">
+                <div>
+                  <strong>{{ tool.name }}</strong>
+                  <p>{{ tool.description || '暂无描述' }}</p>
+                </div>
+                <span :class="['tool-kind', `kind-${tool.kind}`]">{{ toolKindLabel(tool.kind) }}</span>
+              </div>
+
+              <div class="tool-schema">
+                <div class="tool-schema-label">参数字段</div>
+                <div v-if="toolSchemaKeys(tool).length === 0" class="tool-schema-empty">无参数</div>
+                <div v-else class="tool-schema-tags">
+                  <span v-for="key in toolSchemaKeys(tool)" :key="`${tool.name}-${key}`" class="schema-tag">
+                    {{ key }}
+                  </span>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <div class="panel card side-panel">
+          <div class="panel-head">
+            <div>
+              <h2>扩展来源</h2>
+              <p>技能包和 MCP 配置仍然保留，但不再冒充工具列表。</p>
             </div>
           </div>
 
@@ -118,12 +150,43 @@
               <button type="button" class="catalog-action" @click="syncSkills">同步</button>
             </div>
             <div v-if="skills.length === 0" class="mini-empty">当前还没有发现技能包。</div>
-            <div v-else class="catalog-list">
-              <div v-for="skill in skills.slice(0, 6)" :key="skill.id" class="catalog-item">
-                <strong>{{ skill.name }}</strong>
-                <span>{{ skill.slug }} · v{{ skill.version }}</span>
-              </div>
+            <div v-else class="catalog-list selectable-list">
+              <label v-for="skill in skills" :key="skill.id" class="catalog-item selectable-item">
+                <span class="catalog-item-main">
+                  <strong>{{ skill.name }}</strong>
+                  <span>{{ skill.slug }} · v{{ skill.version }}</span>
+                </span>
+                <input
+                  v-model="selectedSkillIds"
+                  type="checkbox"
+                  class="skill-checkbox"
+                  :value="skill.id"
+                />
+              </label>
             </div>
+            <div class="catalog-tip">已绑定 {{ selectedSkillIds.length }} 个 skill，保存定义时一并生效。</div>
+          </div>
+
+          <div class="catalog-section">
+            <div class="catalog-head">
+              <strong>挂载知识库</strong>
+            </div>
+            <div v-if="knowledgeBases.length === 0" class="mini-empty">当前没有可挂载的知识库。</div>
+            <div v-else class="catalog-list selectable-list">
+              <label v-for="knowledgeBase in knowledgeBases" :key="knowledgeBase.id" class="catalog-item selectable-item">
+                <span class="catalog-item-main">
+                  <strong>{{ knowledgeBase.name }}</strong>
+                  <span>{{ knowledgeAccessLabel(knowledgeBase.access_level) }}{{ knowledgeBase.description ? ` · ${knowledgeBase.description}` : '' }}</span>
+                </span>
+                <input
+                  v-model="selectedKnowledgeBaseIds"
+                  type="checkbox"
+                  class="skill-checkbox"
+                  :value="knowledgeBase.id"
+                />
+              </label>
+            </div>
+            <div class="catalog-tip">只允许查询当前用户可访问且已挂载的知识库。</div>
           </div>
 
           <div class="catalog-section">
@@ -177,12 +240,14 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgentsStore } from '@/store/agents'
+import { useKnowledgeStore } from '@/store/knowledge'
 import { useModelsStore } from '@/store/models'
 import { useToastStore } from '@/store/toast'
 
 const route = useRoute()
 const router = useRouter()
 const agentsStore = useAgentsStore()
+const knowledgeStore = useKnowledgeStore()
 const modelsStore = useModelsStore()
 const toastStore = useToastStore()
 
@@ -190,6 +255,8 @@ const saving = ref(false)
 const running = ref(false)
 const runMessage = ref('')
 const sessionId = ref('')
+const selectedSkillIds = ref([])
+const selectedKnowledgeBaseIds = ref([])
 
 const quickPrompts = [
   '现在几点',
@@ -207,16 +274,20 @@ const editForm = reactive({
 
 const agent = computed(() => agentsStore.currentAgent)
 const agentRuns = computed(() => agentsStore.currentAgentRuns)
+const availableTools = computed(() => agentsStore.availableTools)
 const skills = computed(() => agentsStore.skills)
 const mcpServers = computed(() => agentsStore.mcpServers)
+const knowledgeBases = computed(() => knowledgeStore.knowledgeBases)
 const enabledModels = computed(() => modelsStore.enabledModels)
-const errorMessage = computed(() => agentsStore.error || modelsStore.error || '')
+const errorMessage = computed(() => agentsStore.error || knowledgeStore.error || modelsStore.error || '')
 
 const syncEditForm = () => {
   editForm.name = agent.value?.name || ''
   editForm.description = agent.value?.description || ''
   editForm.model = agent.value?.model || modelsStore.defaultModel?.id || ''
   editForm.systemPrompt = agent.value?.systemPrompt || ''
+  selectedSkillIds.value = Array.isArray(agent.value?.skillIds) ? [...agent.value.skillIds] : []
+  selectedKnowledgeBaseIds.value = Array.isArray(agent.value?.knowledgeBaseIds) ? [...agent.value.knowledgeBaseIds] : []
 }
 
 const loadWorkspace = async () => {
@@ -226,8 +297,10 @@ const loadWorkspace = async () => {
   await Promise.all([
     agentsStore.fetchAgent(agentId),
     agentsStore.fetchRuns(),
+    agentsStore.fetchTools().catch(() => []),
     agentsStore.fetchSkills().catch(() => []),
     agentsStore.fetchMCPServers().catch(() => []),
+    knowledgeStore.fetchKnowledgeBases(1, 100).catch(() => []),
     modelsStore.fetchModels()
   ])
   syncEditForm()
@@ -245,6 +318,8 @@ const saveAgent = async () => {
       config: agent.value.config || {},
       metadata: agent.value.metadata || {}
     })
+    await agentsStore.updateAgentSkills(agent.value.id, selectedSkillIds.value)
+    await agentsStore.updateAgentKnowledgeBases(agent.value.id, selectedKnowledgeBaseIds.value)
     toastStore.showToast({ type: 'success', message: '智能体定义已保存' })
   } catch (error) {
     console.error('Failed to update agent:', error)
@@ -272,7 +347,7 @@ const startRun = async () => {
       auto_start: true
     })
     toastStore.showToast({ type: 'success', message: 'Run 已启动' })
-    router.push(`/agents/runs/${run.id}`)
+    router.push(`/agents/${agent.value.id}`)
   } catch (error) {
     console.error('Failed to create run:', error)
     toastStore.showToast({ type: 'error', message: agentsStore.error || '启动 run 失败' })
@@ -290,6 +365,23 @@ const syncSkills = async () => {
     toastStore.showToast({ type: 'error', message: agentsStore.error || '同步 skills 失败' })
   }
 }
+
+const toolKindLabel = (kind) => {
+  const mapping = {
+    builtin: '内置',
+    knowledge: '知识库'
+  }
+  return mapping[kind] || kind || '未知'
+}
+
+const knowledgeAccessLabel = (accessLevel) => {
+  if (accessLevel === 'user') {
+    return '个人知识库'
+  }
+  return '共享知识库'
+}
+
+const toolSchemaKeys = (tool) => Object.keys(tool?.inputSchema?.properties || {})
 
 const openRun = (runId) => {
   router.push(`/agents/runs/${runId}`)
@@ -520,12 +612,116 @@ onMounted(async () => {
   gap: 12px;
 }
 
+.selectable-list {
+  gap: 10px;
+}
+
+.tool-list {
+  display: grid;
+  gap: 14px;
+}
+
+.tool-item {
+  border: 1px solid rgba(16, 163, 127, 0.12);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fcfb 100%);
+  border-radius: 18px;
+  padding: 16px;
+}
+
+.tool-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.tool-item-head strong {
+  color: var(--gray-900);
+}
+
+.tool-item-head p {
+  margin-top: 6px;
+  color: var(--gray-600);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.tool-kind {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tool-kind.kind-builtin {
+  background: rgba(16, 163, 127, 0.1);
+  color: var(--primary-700);
+}
+
+.tool-kind.kind-knowledge {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.tool-schema {
+  margin-top: 14px;
+}
+
+.tool-schema-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gray-500);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tool-schema-empty {
+  margin-top: 8px;
+  color: var(--gray-500);
+  font-size: 13px;
+}
+
+.tool-schema-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.schema-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--gray-100);
+  color: var(--gray-700);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
 .catalog-item,
 .run-item {
   padding: 14px 16px;
   border-radius: 18px;
   border: 1px solid var(--gray-200);
   background: linear-gradient(180deg, #ffffff 0%, #fbfdfd 100%);
+}
+
+.selectable-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  cursor: pointer;
+}
+
+.catalog-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .catalog-item strong,
@@ -544,6 +740,19 @@ onMounted(async () => {
 .catalog-item span {
   margin-top: 4px;
   display: block;
+}
+
+.skill-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-600);
+  flex-shrink: 0;
+}
+
+.catalog-tip {
+  margin-top: 10px;
+  color: var(--gray-500);
+  font-size: 12px;
 }
 
 .run-item {

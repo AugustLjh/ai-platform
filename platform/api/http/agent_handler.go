@@ -131,6 +131,52 @@ func (h *AgentHandler) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, run, http.StatusCreated)
 }
 
+func (h *AgentHandler) HandleUpdateAgentKnowledgeBases(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	agentID := extractSuffixID(r.URL.Path, "/api/v1/agents/", "/knowledge-bases")
+	if agentID == "" {
+		respondError(w, "Invalid agent id", http.StatusBadRequest)
+		return
+	}
+	var req service.UpdateAgentKnowledgeBasesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	if err := h.agentService.UpdateAgentKnowledgeBases(user.TenantID, user.ID, agentID, &req); err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	respondJSON(w, map[string]string{"message": "updated"}, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	items, err := h.agentService.ListAvailableTools(r.Context(), user.TenantID)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, map[string]any{"tools": items, "total": len(items)}, http.StatusOK)
+}
+
 func (h *AgentHandler) HandleRuns(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -207,6 +253,7 @@ func (h *AgentHandler) HandleRunEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		respondError(w, "Streaming not supported", http.StatusInternalServerError)
@@ -220,13 +267,37 @@ func (h *AgentHandler) HandleRunEvents(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	for event := range events {
-		data, err := json.Marshal(event)
-		if err != nil {
-			continue
+
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	heartbeatTicker := time.NewTicker(25 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeatTicker.C:
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
+			flusher.Flush()
 		}
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		flusher.Flush()
 	}
 }
 

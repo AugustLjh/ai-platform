@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "steps": {
+      "type": "array"
+    },
+    "risks": {
+      "type": "array"
+    }
+  }
+}

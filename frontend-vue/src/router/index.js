@@ -9,6 +9,7 @@ const ModelsManage = () => import('../views/ModelsManage.vue')
 const Profile = () => import('../views/Profile.vue')
 const Settings = () => import('../views/Settings.vue')
 const AgentsList = () => import('../views/AgentsList.vue')
+const AgentChat = () => import('../views/AgentChat.vue')
 const AgentWorkspace = () => import('../views/AgentWorkspace.vue')
 const AgentRunDetail = () => import('../views/AgentRunDetail.vue')
 const KnowledgeBaseList = () => import('../views/KnowledgeBaseList.vue')
@@ -73,6 +74,12 @@ const routes = [
   },
   {
     path: '/agents/:id',
+    name: 'AgentChat',
+    component: AgentChat,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/:id/settings',
     name: 'AgentWorkspace',
     component: AgentWorkspace,
     meta: { requiresAuth: true }
