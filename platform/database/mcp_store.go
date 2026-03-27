@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,27 +15,31 @@ import (
 var ErrMCPServerNotFound = errors.New("mcp server not found")
 
 type MCPServer struct {
-	ID           string          `json:"id"`
-	TenantID     string          `json:"tenant_id"`
-	Name         string          `json:"name"`
-	Transport    string          `json:"transport"`
-	Endpoint     string          `json:"endpoint,omitempty"`
-	Command      string          `json:"command,omitempty"`
-	Args         json.RawMessage `json:"args"`
-	Env          json.RawMessage `json:"env"`
-	Status       string          `json:"status"`
-	LastTestedAt *time.Time      `json:"last_tested_at,omitempty"`
-	LastError    *string         `json:"last_error,omitempty"`
-	Metadata     json.RawMessage `json:"metadata"`
-	CreatedBy    *string         `json:"created_by,omitempty"`
-	UpdatedBy    *string         `json:"updated_by,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID           string           `json:"id"`
+	TenantID     string           `json:"tenant_id"`
+	Name         string           `json:"name"`
+	Transport    string           `json:"transport"`
+	Endpoint     string           `json:"endpoint,omitempty"`
+	Command      string           `json:"command,omitempty"`
+	Args         json.RawMessage  `json:"args"`
+	Env          json.RawMessage  `json:"env"`
+	Status       string           `json:"status"`
+	LastTestedAt *time.Time       `json:"last_tested_at,omitempty"`
+	LastError    *string          `json:"last_error,omitempty"`
+	Metadata     json.RawMessage  `json:"metadata"`
+	CreatedBy    *string          `json:"created_by,omitempty"`
+	UpdatedBy    *string          `json:"updated_by,omitempty"`
+	CreatedAt    time.Time        `json:"created_at"`
+	UpdatedAt    time.Time        `json:"updated_at"`
+	Tools        []*MCPServerTool `json:"tools,omitempty"`
 }
 
 type MCPServerTool struct {
 	ID           string          `json:"id"`
 	ServerID     string          `json:"server_id"`
+	RuntimeName  string          `json:"runtime_name,omitempty"`
+	ServerName   string          `json:"server_name,omitempty"`
+	Transport    string          `json:"transport,omitempty"`
 	ToolName     string          `json:"tool_name"`
 	Description  string          `json:"description,omitempty"`
 	InputSchema  json.RawMessage `json:"input_schema"`
@@ -48,6 +53,10 @@ type MCPStore struct {
 	pool *pgxpool.Pool
 }
 
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
 func NewMCPStore(pool *pgxpool.Pool) *MCPStore {
 	return &MCPStore{pool: pool}
 }
@@ -56,7 +65,7 @@ func (s *MCPStore) CreateServer(server *MCPServer) (*MCPServer, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	row := &MCPServer{}
-	err := s.pool.QueryRow(ctx, `
+	err := scanMCPServer(s.pool.QueryRow(ctx, `
 		INSERT INTO mcp_servers (
 			tenant_id, name, transport, endpoint, command, args, env,
 			status, metadata, created_by, updated_by
@@ -76,24 +85,7 @@ func (s *MCPStore) CreateServer(server *MCPServer) (*MCPServer, error) {
 		nullIfEmpty(server.Status),
 		normalizeJSONRaw(server.Metadata, `{}`),
 		nullIfPointer(server.CreatedBy),
-	).Scan(
-		&row.ID,
-		&row.TenantID,
-		&row.Name,
-		&row.Transport,
-		&row.Endpoint,
-		&row.Command,
-		&row.Args,
-		&row.Env,
-		&row.Status,
-		&row.LastTestedAt,
-		&row.LastError,
-		&row.Metadata,
-		&row.CreatedBy,
-		&row.UpdatedBy,
-		&row.CreatedAt,
-		&row.UpdatedAt,
-	)
+	), row)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create mcp server: %w", err)
 	}
@@ -104,7 +96,7 @@ func (s *MCPStore) UpdateServer(server *MCPServer) (*MCPServer, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	row := &MCPServer{}
-	err := s.pool.QueryRow(ctx, `
+	err := scanMCPServer(s.pool.QueryRow(ctx, `
 		UPDATE mcp_servers
 		SET
 			name = $3,
@@ -132,24 +124,7 @@ func (s *MCPStore) UpdateServer(server *MCPServer) (*MCPServer, error) {
 		server.Status,
 		normalizeJSONRaw(server.Metadata, `{}`),
 		nullIfPointer(server.UpdatedBy),
-	).Scan(
-		&row.ID,
-		&row.TenantID,
-		&row.Name,
-		&row.Transport,
-		&row.Endpoint,
-		&row.Command,
-		&row.Args,
-		&row.Env,
-		&row.Status,
-		&row.LastTestedAt,
-		&row.LastError,
-		&row.Metadata,
-		&row.CreatedBy,
-		&row.UpdatedBy,
-		&row.CreatedAt,
-		&row.UpdatedAt,
-	)
+	), row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrMCPServerNotFound
@@ -163,30 +138,13 @@ func (s *MCPStore) GetServer(id, tenantID string) (*MCPServer, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	row := &MCPServer{}
-	err := s.pool.QueryRow(ctx, `
+	err := scanMCPServer(s.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, name, transport, endpoint, command, args, env,
 		       status, last_tested_at, last_error, metadata, created_by, updated_by,
 		       created_at, updated_at
 		FROM mcp_servers
 		WHERE id = $1 AND tenant_id = $2
-	`, id, tenantID).Scan(
-		&row.ID,
-		&row.TenantID,
-		&row.Name,
-		&row.Transport,
-		&row.Endpoint,
-		&row.Command,
-		&row.Args,
-		&row.Env,
-		&row.Status,
-		&row.LastTestedAt,
-		&row.LastError,
-		&row.Metadata,
-		&row.CreatedBy,
-		&row.UpdatedBy,
-		&row.CreatedAt,
-		&row.UpdatedAt,
-	)
+	`, id, tenantID), row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrMCPServerNotFound
@@ -214,24 +172,7 @@ func (s *MCPStore) ListServers(tenantID string) ([]*MCPServer, error) {
 	var items []*MCPServer
 	for rows.Next() {
 		item := &MCPServer{}
-		if err := rows.Scan(
-			&item.ID,
-			&item.TenantID,
-			&item.Name,
-			&item.Transport,
-			&item.Endpoint,
-			&item.Command,
-			&item.Args,
-			&item.Env,
-			&item.Status,
-			&item.LastTestedAt,
-			&item.LastError,
-			&item.Metadata,
-			&item.CreatedBy,
-			&item.UpdatedBy,
-			&item.CreatedAt,
-			&item.UpdatedAt,
-		); err != nil {
+		if err := scanMCPServer(rows, item); err != nil {
 			return nil, fmt.Errorf("failed to scan mcp server: %w", err)
 		}
 		items = append(items, item)
@@ -275,6 +216,32 @@ func (s *MCPStore) ReplaceAgentMCPBindings(agentID string, serverIDs []string) e
 	return tx.Commit(ctx)
 }
 
+func (s *MCPStore) ListAgentMCPBindings(agentID string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT server_id
+		FROM agent_mcp_bindings
+		WHERE agent_definition_id = $1
+		ORDER BY created_at ASC
+	`, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent mcp bindings: %w", err)
+	}
+	defer rows.Close()
+
+	var items []string
+	for rows.Next() {
+		var serverID string
+		if err := rows.Scan(&serverID); err != nil {
+			return nil, fmt.Errorf("failed to scan agent mcp binding: %w", err)
+		}
+		items = append(items, serverID)
+	}
+	return items, rows.Err()
+}
+
 func (s *MCPStore) ReplaceServerTools(serverID string, tools []*MCPServerTool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -302,4 +269,88 @@ func (s *MCPStore) ReplaceServerTools(serverID string, tools []*MCPServerTool) e
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *MCPStore) ListServerTools(serverID string) ([]*MCPServerTool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, server_id, tool_name, description, input_schema, metadata, discovered_at, created_at, updated_at
+		FROM mcp_server_tools
+		WHERE server_id = $1
+		ORDER BY tool_name ASC
+	`, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list mcp server tools: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*MCPServerTool
+	for rows.Next() {
+		item := &MCPServerTool{}
+		if err := scanMCPServerTool(rows, item); err != nil {
+			return nil, fmt.Errorf("failed to scan mcp server tool: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func scanMCPServer(scanner rowScanner, row *MCPServer) error {
+	var endpoint sql.NullString
+	var command sql.NullString
+
+	if err := scanner.Scan(
+		&row.ID,
+		&row.TenantID,
+		&row.Name,
+		&row.Transport,
+		&endpoint,
+		&command,
+		&row.Args,
+		&row.Env,
+		&row.Status,
+		&row.LastTestedAt,
+		&row.LastError,
+		&row.Metadata,
+		&row.CreatedBy,
+		&row.UpdatedBy,
+		&row.CreatedAt,
+		&row.UpdatedAt,
+	); err != nil {
+		return err
+	}
+
+	row.Endpoint = nullableStringValue(endpoint)
+	row.Command = nullableStringValue(command)
+	return nil
+}
+
+func scanMCPServerTool(scanner rowScanner, row *MCPServerTool) error {
+	var description sql.NullString
+
+	if err := scanner.Scan(
+		&row.ID,
+		&row.ServerID,
+		&row.ToolName,
+		&description,
+		&row.InputSchema,
+		&row.Metadata,
+		&row.DiscoveredAt,
+		&row.CreatedAt,
+		&row.UpdatedAt,
+	); err != nil {
+		return err
+	}
+
+	row.Description = nullableStringValue(description)
+	return nil
+}
+
+func nullableStringValue(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
 }

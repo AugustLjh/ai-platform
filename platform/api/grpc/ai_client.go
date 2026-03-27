@@ -240,6 +240,13 @@ type runtimeAgentToolListResponse struct {
 	Total int             `json:"total"`
 }
 
+type runtimeMCPServerTestResponse map[string]any
+
+type runtimeMCPToolRefreshResponse struct {
+	Tools []*database.MCPServerTool `json:"tools"`
+	Total int                       `json:"total"`
+}
+
 func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
 	if c.httpClient == nil {
 		c.httpClient = &http.Client{}
@@ -406,9 +413,45 @@ func (c *AIClient) ResumeAgentRun(ctx context.Context, runID, tenantID string, i
 	return &response.Run, nil
 }
 
-func (c *AIClient) ListAgentTools(ctx context.Context, tenantID string) ([]AgentToolSpec, error) {
+func (c *AIClient) ListAgentTools(ctx context.Context, tenantID, agentDefinitionID string) ([]AgentToolSpec, error) {
+	path := "/api/v1/agents/tools"
+	if strings.TrimSpace(agentDefinitionID) != "" {
+		path += "?agent_definition_id=" + url.QueryEscape(agentDefinitionID)
+	}
 	var response runtimeAgentToolListResponse
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/tools", nil, tenantID, "", &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, tenantID, "", &response); err != nil {
+		return nil, err
+	}
+	return response.Tools, nil
+}
+
+func (c *AIClient) TestMCPServer(ctx context.Context, tenantID, serverID string) (map[string]any, error) {
+	var response runtimeMCPServerTestResponse
+	if err := c.doJSON(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/runtime/mcp/servers/%s/test", url.PathEscape(serverID)),
+		nil,
+		tenantID,
+		"",
+		&response,
+	); err != nil {
+		return nil, err
+	}
+	return map[string]any(response), nil
+}
+
+func (c *AIClient) RefreshMCPServerTools(ctx context.Context, tenantID, serverID string) ([]*database.MCPServerTool, error) {
+	var response runtimeMCPToolRefreshResponse
+	if err := c.doJSON(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf("/api/v1/runtime/mcp/servers/%s/refresh-tools", url.PathEscape(serverID)),
+		nil,
+		tenantID,
+		"",
+		&response,
+	); err != nil {
 		return nil, err
 	}
 	return response.Tools, nil

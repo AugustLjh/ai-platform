@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 from core.agent_runtime.models import PlannerResult
 from core.agent_runtime.policy import RuntimePolicy
-from core.agent_runtime.tools.base import ToolContext
+from core.agent_runtime.tools.base import ToolContext, ToolLookupContext
 from core.agent_runtime.tools.registry import ToolRegistry
 
 
@@ -28,7 +28,15 @@ class AgentExecutor:
         if not active_policy.is_tool_allowed(action.tool_name):
             raise PermissionError(f"Tool {action.tool_name} is not allowed by policy")
 
-        tool = self.registry.get(action.tool_name)
+        tool = await self.registry.get(
+            action.tool_name,
+            context=ToolLookupContext(
+                tenant_id=tool_context.tenant_id,
+                user_id=tool_context.user_id,
+                agent_definition_id=tool_context.agent_definition_id,
+                run_id=tool_context.run_id,
+            ),
+        )
         if tool is None:
             raise ValueError(f"Tool {action.tool_name} is not registered")
         return await tool.execute(tool_context, action.tool_arguments)

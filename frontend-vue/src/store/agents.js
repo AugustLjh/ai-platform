@@ -30,6 +30,9 @@ const normalizeAgent = (raw = {}) => ({
   skillIds: Array.isArray(raw.skill_ids || raw.skillIds)
     ? [...(raw.skill_ids || raw.skillIds)]
     : [],
+  mcpServerIds: Array.isArray(raw.mcp_server_ids || raw.mcpServerIds)
+    ? [...(raw.mcp_server_ids || raw.mcpServerIds)]
+    : [],
   knowledgeBaseIds: Array.isArray(raw.knowledge_base_ids || raw.knowledgeBaseIds)
     ? [...(raw.knowledge_base_ids || raw.knowledgeBaseIds)]
     : [],
@@ -84,17 +87,33 @@ const normalizeMCPServer = (raw = {}) => ({
   transport: raw.transport || '',
   endpoint: raw.endpoint || '',
   command: raw.command || '',
+  args: parseJSON(raw.args, []),
+  env: parseJSON(raw.env, {}),
   status: raw.status || 'active',
   lastError: raw.last_error || '',
   lastTestedAt: raw.last_tested_at || null,
-  updatedAt: raw.updated_at || null
+  updatedAt: raw.updated_at || null,
+  metadata: parseJSON(raw.metadata, {}),
+  tools: Array.isArray(raw.tools) ? raw.tools.map((tool) => ({
+    id: tool.id,
+    serverId: tool.server_id || tool.serverId || '',
+    runtimeName: tool.runtime_name || tool.runtimeName || '',
+    serverName: tool.server_name || tool.serverName || '',
+    transport: tool.transport || '',
+    toolName: tool.tool_name || tool.toolName || '',
+    description: tool.description || '',
+    inputSchema: parseJSON(tool.input_schema || tool.inputSchema, {}),
+    metadata: parseJSON(tool.metadata, {}),
+    discoveredAt: tool.discovered_at || tool.discoveredAt || null
+  })) : []
 })
 
 const normalizeToolSpec = (raw = {}) => ({
   name: raw.name || '',
   description: raw.description || '',
   inputSchema: parseJSON(raw.input_schema || raw.inputSchema, {}),
-  kind: raw.kind || 'builtin'
+  kind: raw.kind || 'builtin',
+  metadata: parseJSON(raw.metadata, {})
 })
 
 const sortByUpdatedDesc = (items) => [...items].sort((a, b) => {
@@ -709,6 +728,33 @@ export const useAgentsStore = defineStore('agents', {
       }
     },
 
+    async updateAgentMCPServers(agentId, serverIds = []) {
+      this.loading = true
+      this.error = null
+      try {
+        await mcpAPI.updateAgentMCPServers(agentId, serverIds)
+        const nextServerIds = Array.isArray(serverIds) ? [...serverIds] : []
+        const applyPatch = (agent) => {
+          if (!agent || agent.id !== agentId) return agent
+          return {
+            ...agent,
+            mcpServerIds: nextServerIds
+          }
+        }
+
+        if (this.currentAgent?.id === agentId) {
+          this.currentAgent = applyPatch(this.currentAgent)
+        }
+        this.agentDefinitions = this.agentDefinitions.map(applyPatch)
+        return nextServerIds
+      } catch (error) {
+        this.setError(error, 'Failed to update agent MCP servers')
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
     async fetchMCPServers() {
       try {
         const { data } = await mcpAPI.listServers()
@@ -720,9 +766,9 @@ export const useAgentsStore = defineStore('agents', {
       }
     },
 
-    async fetchTools() {
+    async fetchTools(agentDefinitionId = '') {
       try {
-        const { data } = await agentsAPI.listTools()
+        const { data } = await agentsAPI.listTools(agentDefinitionId)
         this.availableTools = (data.tools || []).map(normalizeToolSpec)
         return this.availableTools
       } catch (error) {

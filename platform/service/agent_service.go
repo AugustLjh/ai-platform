@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ai-platform/platform/api/grpc"
 	"github.com/ai-platform/platform/database"
@@ -17,6 +15,8 @@ import (
 
 var ErrAgentUnauthorized = errors.New("unauthorized")
 var ErrNotImplemented = errors.New("not implemented")
+
+const maskedSecretValue = "********"
 
 type AgentDefinitionUpsertRequest struct {
 	Name         string          `json:"name"`
@@ -204,8 +204,8 @@ func (s *AgentService) ResumeRun(ctx context.Context, tenantID, runID string, re
 	return s.aiClient.ResumeAgentRun(ctx, runID, tenantID, req.InputPatch)
 }
 
-func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID string) ([]*AgentToolSpec, error) {
-	items, err := s.aiClient.ListAgentTools(ctx, tenantID)
+func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDefinitionID string) ([]*AgentToolSpec, error) {
+	items, err := s.aiClient.ListAgentTools(ctx, tenantID, agentDefinitionID)
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +270,11 @@ func (s *AgentService) hydrateAgentBindings(definition *database.AgentDefinition
 		return nil, err
 	}
 	definition.SkillIDs = skillIDs
+	mcpServerIDs, err := s.mcpStore.ListAgentMCPBindings(definition.ID)
+	if err != nil {
+		return nil, err
+	}
+	definition.MCPServerIDs = mcpServerIDs
 	knowledgeBaseIDs, err := s.agentStore.ListAgentKnowledgeBindings(definition.ID)
 	if err != nil {
 		return nil, err
@@ -279,7 +284,16 @@ func (s *AgentService) hydrateAgentBindings(definition *database.AgentDefinition
 }
 
 func (s *AgentService) ListMCPServers(tenantID string) ([]*database.MCPServer, error) {
-	return s.mcpStore.ListServers(tenantID)
+	items, err := s.mcpStore.ListServers(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if _, err := s.hydrateMCPServer(item); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
 }
 
 func (s *AgentService) CreateMCPServer(tenantID, userID string, req *MCPServerUpsertRequest) (*database.MCPServer, error) {
@@ -298,28 +312,50 @@ func (s *AgentService) CreateMCPServer(tenantID, userID string, req *MCPServerUp
 	if server.Name == "" || server.Transport == "" {
 		return nil, errors.New("name and transport are required")
 	}
-	return s.mcpStore.CreateServer(server)
+	if err := validateMCPServer(server); err != nil {
+		return nil, err
+	}
+	created, err := s.mcpStore.CreateServer(server)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateMCPServer(created)
 }
 
 func (s *AgentService) UpdateMCPServer(tenantID, userID, serverID string, req *MCPServerUpsertRequest) (*database.MCPServer, error) {
+	current, err := s.mcpStore.GetServer(serverID, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	server := &database.MCPServer{
 		ID:        serverID,
 		TenantID:  tenantID,
-		Name:      strings.TrimSpace(req.Name),
-		Transport: strings.TrimSpace(req.Transport),
-		Endpoint:  strings.TrimSpace(req.Endpoint),
-		Command:   strings.TrimSpace(req.Command),
-		Args:      database.NormalizeJSONRawForExport(req.Args, `[]`),
-		Env:       database.NormalizeJSONRawForExport(req.Env, `{}`),
-		Status:    defaultString(strings.TrimSpace(req.Status), "active"),
-		Metadata:  database.NormalizeJSONRawForExport(req.Metadata, `{}`),
+		Name:      defaultString(strings.TrimSpace(req.Name), current.Name),
+		Transport: defaultString(strings.TrimSpace(req.Transport), current.Transport),
+		Endpoint:  firstNonEmpty(strings.TrimSpace(req.Endpoint), current.Endpoint),
+		Command:   firstNonEmpty(strings.TrimSpace(req.Command), current.Command),
+		Args:      mergeJSONRaw(current.Args, req.Args, `[]`),
+		Env:       mergeMaskedSecretJSONRaw(current.Env, req.Env, `{}`),
+		Status:    defaultString(strings.TrimSpace(req.Status), current.Status),
+		Metadata:  mergeMaskedSecretJSONRaw(current.Metadata, req.Metadata, `{}`),
 		UpdatedBy: stringPtr(userID),
 	}
-	return s.mcpStore.UpdateServer(server)
+	if err := validateMCPServer(server); err != nil {
+		return nil, err
+	}
+	updated, err := s.mcpStore.UpdateServer(server)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateMCPServer(updated)
 }
 
 func (s *AgentService) GetMCPServer(tenantID, serverID string) (*database.MCPServer, error) {
-	return s.mcpStore.GetServer(serverID, tenantID)
+	server, err := s.mcpStore.GetServer(serverID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateMCPServer(server)
 }
 
 func (s *AgentService) DeleteMCPServer(tenantID, serverID string) error {
@@ -327,55 +363,39 @@ func (s *AgentService) DeleteMCPServer(tenantID, serverID string) error {
 }
 
 func (s *AgentService) TestMCPServer(ctx context.Context, tenantID, serverID string) (map[string]any, error) {
-	server, err := s.mcpStore.GetServer(serverID, tenantID)
-	if err != nil {
-		return nil, err
-	}
-
-	result := map[string]any{
-		"server_id": server.ID,
-		"transport": server.Transport,
-		"ok":        true,
-	}
-
-	if server.Transport == "http" || server.Transport == "sse" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.Endpoint, nil)
-		if err != nil {
-			return nil, err
-		}
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			result["ok"] = false
-			result["error"] = err.Error()
-			return result, nil
-		}
-		resp.Body.Close()
-		result["status_code"] = resp.StatusCode
-		result["ok"] = resp.StatusCode < 500
-		return result, nil
-	}
-
-	if server.Transport == "stdio" && server.Command == "" {
-		result["ok"] = false
-		result["error"] = "stdio transport requires command"
-	}
-
-	return result, nil
+	return s.aiClient.TestMCPServer(ctx, tenantID, serverID)
 }
 
 func (s *AgentService) RefreshMCPServerTools(tenantID, serverID string) ([]*database.MCPServerTool, error) {
 	if _, err := s.mcpStore.GetServer(serverID, tenantID); err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("mcp tool refresh is not implemented yet: %w", ErrNotImplemented)
+	items, err := s.aiClient.RefreshMCPServerTools(context.Background(), tenantID, serverID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		item.InputSchema = maskSensitiveJSONRaw(item.InputSchema, false)
+		item.Metadata = maskSensitiveJSONRaw(item.Metadata, false)
+	}
+	return items, nil
 }
 
 func (s *AgentService) UpdateAgentMCPServers(tenantID, agentID string, req *UpdateAgentMCPServersRequest) error {
 	if _, err := s.agentStore.GetAgentDefinition(agentID, tenantID); err != nil {
 		return err
 	}
-	return s.mcpStore.ReplaceAgentMCPBindings(agentID, req.ServerIDs)
+	serverIDs := normalizeServerIDs(req.ServerIDs)
+	for _, serverID := range serverIDs {
+		server, err := s.mcpStore.GetServer(serverID, tenantID)
+		if err != nil {
+			return err
+		}
+		if server.Status != "active" {
+			return fmt.Errorf("mcp server %s is disabled", serverID)
+		}
+	}
+	return s.mcpStore.ReplaceAgentMCPBindings(agentID, serverIDs)
 }
 
 func (s *AgentService) UpdateAgentKnowledgeBases(tenantID, userID, agentID string, req *UpdateAgentKnowledgeBasesRequest) error {
@@ -453,4 +473,212 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func firstNonEmpty(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func normalizeServerIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(ids))
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func validateMCPServer(server *database.MCPServer) error {
+	switch server.Transport {
+	case "stdio":
+		if strings.TrimSpace(server.Command) == "" {
+			return errors.New("stdio transport requires command")
+		}
+	case "http", "sse":
+		if strings.TrimSpace(server.Endpoint) == "" {
+			return fmt.Errorf("%s transport requires endpoint", server.Transport)
+		}
+	default:
+		return errors.New("unsupported transport")
+	}
+	if server.Status != "active" && server.Status != "disabled" {
+		return errors.New("unsupported status")
+	}
+	return nil
+}
+
+func (s *AgentService) hydrateMCPServer(server *database.MCPServer) (*database.MCPServer, error) {
+	if server == nil {
+		return nil, nil
+	}
+	tools, err := s.mcpStore.ListServerTools(server.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, tool := range tools {
+		tool.InputSchema = maskSensitiveJSONRaw(tool.InputSchema, false)
+		tool.Metadata = maskSensitiveJSONRaw(tool.Metadata, false)
+	}
+	server.Tools = tools
+	server.Args = maskSensitiveJSONRaw(server.Args, false)
+	server.Env = maskSensitiveJSONRaw(server.Env, true)
+	server.Metadata = maskSensitiveJSONRaw(server.Metadata, false)
+	return server, nil
+}
+
+func mergeJSONRaw(current, incoming json.RawMessage, fallback string) json.RawMessage {
+	if len(incoming) == 0 {
+		return database.NormalizeJSONRawForExport(current, fallback)
+	}
+	return database.NormalizeJSONRawForExport(incoming, fallback)
+}
+
+func mergeMaskedSecretJSONRaw(current, incoming json.RawMessage, fallback string) json.RawMessage {
+	if len(incoming) == 0 {
+		return database.NormalizeJSONRawForExport(current, fallback)
+	}
+	return marshalJSONRaw(
+		mergeMaskedSecretValue(parseJSONRaw(current, fallback), parseJSONRaw(incoming, fallback)),
+		fallback,
+	)
+}
+
+func parseJSONRaw(raw json.RawMessage, fallback string) any {
+	if len(raw) == 0 {
+		raw = json.RawMessage(fallback)
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		_ = json.Unmarshal([]byte(fallback), &value)
+	}
+	return value
+}
+
+func marshalJSONRaw(value any, fallback string) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(fallback)
+	}
+	return json.RawMessage(encoded)
+}
+
+func mergeMaskedSecretValue(current, incoming any) any {
+	switch typed := incoming.(type) {
+	case map[string]any:
+		existing, _ := current.(map[string]any)
+		result := make(map[string]any, len(typed))
+		for key, value := range typed {
+			result[key] = mergeMaskedSecretValue(existing[key], value)
+		}
+		return result
+	case []any:
+		existing, _ := current.([]any)
+		result := make([]any, 0, len(typed))
+		for index, value := range typed {
+			var currentItem any
+			if index < len(existing) {
+				currentItem = existing[index]
+			}
+			result = append(result, mergeMaskedSecretValue(currentItem, value))
+		}
+		return result
+	case string:
+		if typed == maskedSecretValue && current != nil {
+			return current
+		}
+		return typed
+	default:
+		return typed
+	}
+}
+
+func maskSensitiveJSONRaw(raw json.RawMessage, forceMaskStrings bool) json.RawMessage {
+	defaultJSON := `{}`
+	parsed := parseJSONRaw(raw, defaultJSON)
+	if _, isList := parsed.([]any); isList {
+		defaultJSON = `[]`
+	}
+	return marshalJSONRaw(maskSensitiveValue(parsed, nil, forceMaskStrings), defaultJSON)
+}
+
+func maskSensitiveValue(value any, path []string, forceMaskStrings bool) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			result[key] = maskSensitiveValue(item, append(path, key), forceMaskStrings || isSensitiveContainerKey(key))
+		}
+		return result
+	case []any:
+		result := make([]any, 0, len(typed))
+		for _, item := range typed {
+			result = append(result, maskSensitiveValue(item, path, forceMaskStrings))
+		}
+		return result
+	case string:
+		if typed == "" {
+			return typed
+		}
+		if forceMaskStrings || pathHasSensitiveKey(path) {
+			return maskedSecretValue
+		}
+		return typed
+	default:
+		return value
+	}
+}
+
+func pathHasSensitiveKey(path []string) bool {
+	for _, part := range path {
+		if isSensitiveKey(part) || isSensitiveContainerKey(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSensitiveContainerKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "env", "headers", "credentials", "auth":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSensitiveKey(key string) bool {
+	lowered := strings.ToLower(strings.TrimSpace(key))
+	for _, token := range []string{
+		"secret",
+		"password",
+		"passwd",
+		"token",
+		"api_key",
+		"apikey",
+		"access_key",
+		"authorization",
+		"cookie",
+		"client_secret",
+		"private_key",
+		"bearer",
+	} {
+		if strings.Contains(lowered, token) {
+			return true
+		}
+	}
+	return false
 }

@@ -45,10 +45,16 @@ async def create_run(
 
 @router.get("/tools")
 async def list_tools(
+    agent_definition_id: Optional[str] = Query(default=None),
     tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
 ):
     runtime = get_agent_runtime()
-    tools = await runtime.list_tools()
+    tools = await runtime.list_tools(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_definition_id=agent_definition_id,
+    )
     return {"tools": tools, "total": len(tools)}
 
 

@@ -7,9 +7,10 @@ protobuf==4.25.1
 
 # FastAPI & HTTP
 fastapi==0.109.0
-uvicorn[standard]==0.27.0
-pydantic==2.5.0
-python-multipart==0.0.6
+starlette>=0.35,<0.36
+uvicorn[standard]>=0.31.1,<0.39
+pydantic>=2.11,<3
+python-multipart>=0.0.9,<0.1
 sse-starlette==1.8.2
 
 # Configuration
@@ -30,6 +31,7 @@ striprtf>=0.0.26
 
 # HTTP client
 aiohttp>=3.9.0
+mcp>=1.24,<2
 
 # Optional: OpenAI integration
 openai>=1.0.0

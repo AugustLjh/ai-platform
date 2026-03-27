@@ -38,6 +38,10 @@
           <span class="nav-icon">🤖</span>
           <span>模型管理</span>
         </router-link>
+        <router-link to="/mcp" class="sidebar-nav-item">
+          <span class="nav-icon">🔌</span>
+          <span>MCP</span>
+        </router-link>
         <router-link to="/settings" class="sidebar-nav-item">
           <span class="nav-icon">⚙️</span>
           <span>设置</span>

@@ -6,6 +6,7 @@ const Chat = () => import('../views/Chat.vue')
 const History = () => import('../views/History.vue')
 const CostStats = () => import('../views/CostStats.vue')
 const ModelsManage = () => import('../views/ModelsManage.vue')
+const MCPManage = () => import('../views/MCPManage.vue')
 const Profile = () => import('../views/Profile.vue')
 const Settings = () => import('../views/Settings.vue')
 const AgentsList = () => import('../views/AgentsList.vue')
@@ -46,6 +47,12 @@ const routes = [
     path: '/models',
     name: 'ModelsManage',
     component: ModelsManage,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/mcp',
+    name: 'MCPManage',
+    component: MCPManage,
     meta: { requiresAuth: true }
   },
   {

@@ -169,7 +169,11 @@ func (h *AgentHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.agentService.ListAvailableTools(r.Context(), user.TenantID)
+	items, err := h.agentService.ListAvailableTools(
+		r.Context(),
+		user.TenantID,
+		strings.TrimSpace(r.URL.Query().Get("agent_definition_id")),
+	)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return

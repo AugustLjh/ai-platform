@@ -11,7 +11,7 @@ from core.agent_runtime.planner import AgentPlanner
 from core.agent_runtime.policy import RuntimePolicy
 from core.agent_runtime.skills.models import SkillRuntimeContext
 from core.agent_runtime.summarizer import AgentSummarizer
-from core.agent_runtime.tools.base import ToolContext
+from core.agent_runtime.tools.base import ToolContext, ToolLookupContext
 from core.agent_runtime.tracing import AgentTracer
 
 logger = logging.getLogger(__name__)
@@ -185,11 +185,19 @@ class AgentOrchestrator:
             observation["error"] = error
         return observation
 
-    def _get_tool_kind(self, tool_name: str) -> str:
-        tool = self.executor.registry.get(tool_name)
-        if tool is None:
+    async def _get_tool_kind(self, run: AgentRun, tool_name: str) -> str:
+        spec = await self.executor.registry.get_spec(
+            tool_name,
+            context=ToolLookupContext(
+                tenant_id=run.tenant_id,
+                user_id=run.user_id,
+                agent_definition_id=run.agent_definition_id,
+                run_id=run.id,
+            ),
+        )
+        if spec is None:
             return "builtin"
-        return tool.spec.kind
+        return str(spec.get("kind") or "builtin")
 
     def _raise_if_cancelled(self, run_id: str) -> None:
         if self.state_store.is_cancelled(run_id):
@@ -294,7 +302,7 @@ class AgentOrchestrator:
             run_id=run.id,
             step_id=step["id"],
             tool_name=tool_name,
-            tool_kind=self._get_tool_kind(tool_name),
+            tool_kind=await self._get_tool_kind(run, tool_name),
             arguments=tool_arguments,
         )
         await self.tracer.emit_event(
@@ -542,7 +550,14 @@ class AgentOrchestrator:
     async def _execute_run(self, definition: AgentDefinition, run: AgentRun) -> Dict[str, Any]:
         definition, skill_context = await self._resolve_skill_context(definition, run)
 
-        available_tools = self.executor.registry.list_specs()
+        available_tools = await self.executor.registry.list_specs(
+            context=ToolLookupContext(
+                tenant_id=run.tenant_id,
+                user_id=run.user_id,
+                agent_definition_id=run.agent_definition_id,
+                run_id=run.id,
+            )
+        )
         runtime_policy = RuntimePolicy()
         mounted_knowledge_base_ids = await self._resolve_accessible_mounted_knowledge_base_ids(run)
         if not mounted_knowledge_base_ids:

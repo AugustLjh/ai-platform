@@ -6,6 +6,7 @@ from typing import AsyncIterator, Optional
 from core.agent_runtime.executor import AgentExecutor
 from core.agent_runtime.llm_service import AgentLLMService
 from core.agent_runtime.memory import RuntimeStateStore
+from core.agent_runtime.mcp.registry import MCPRegistry
 from core.agent_runtime.models import (
     AgentRun,
     AgentRunEvent,
@@ -23,6 +24,8 @@ from core.agent_runtime.repositories.run_repository import RunRepository
 from core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
 from core.agent_runtime.tools.providers.builtin import register_builtin_tools
 from core.agent_runtime.tools.providers.knowledge import register_knowledge_tools
+from core.agent_runtime.tools.providers.mcp import MCPToolProvider
+from core.agent_runtime.tools.base import ToolLookupContext
 from core.agent_runtime.tools.registry import ToolRegistry
 from core.agent_runtime.tracing import AgentTracer
 
@@ -34,8 +37,10 @@ class AgentRuntime:
         self.tool_call_repository = ToolCallRepository(db_pool)
         self.state_store = RuntimeStateStore()
         self.registry = ToolRegistry()
+        self.mcp_registry = MCPRegistry(db_pool)
         register_builtin_tools(self.registry)
         register_knowledge_tools(self.registry)
+        self.registry.register_provider(MCPToolProvider(self.mcp_registry))
         self.skill_registry = SkillRegistry(db_pool)
         self.llm_service = AgentLLMService()
 
@@ -57,8 +62,27 @@ class AgentRuntime:
             skill_registry=self.skill_registry,
         )
 
-    async def list_tools(self) -> list[dict]:
-        return self.registry.list_specs()
+    async def list_tools(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str | None = None,
+        agent_definition_id: str | None = None,
+    ) -> list[dict]:
+        return await self.registry.list_specs(
+            context=ToolLookupContext(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_definition_id=agent_definition_id,
+            )
+        )
+
+    async def test_mcp_server(self, *, tenant_id: str, server_id: str) -> dict:
+        return (await self.mcp_registry.test_server(tenant_id=tenant_id, server_id=server_id)).model_dump(mode="json")
+
+    async def refresh_mcp_server_tools(self, *, tenant_id: str, server_id: str) -> list[dict]:
+        items = await self.mcp_registry.refresh_server_tools(tenant_id=tenant_id, server_id=server_id)
+        return [item.model_dump(mode="json") for item in items]
 
     async def create_run(self, request: RuntimeCreateRunRequest) -> AgentRunSummaryResponse:
         run_row = await self.run_repository.create_run(

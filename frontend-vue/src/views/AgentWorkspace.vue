@@ -119,6 +119,9 @@
                 <div>
                   <strong>{{ tool.name }}</strong>
                   <p>{{ tool.description || '暂无描述' }}</p>
+                  <p v-if="tool.kind === 'mcp' && tool.metadata?.server_name" class="tool-source">
+                    来源 {{ tool.metadata.server_name }} · {{ tool.metadata.source_tool_name || tool.name }}
+                  </p>
                 </div>
                 <span :class="['tool-kind', `kind-${tool.kind}`]">{{ toolKindLabel(tool.kind) }}</span>
               </div>
@@ -192,14 +195,27 @@
           <div class="catalog-section">
             <div class="catalog-head">
               <strong>MCP Servers</strong>
+              <router-link to="/mcp" class="catalog-action">管理</router-link>
             </div>
             <div v-if="mcpServers.length === 0" class="mini-empty">当前没有配置 MCP server。</div>
-            <div v-else class="catalog-list">
-              <div v-for="server in mcpServers.slice(0, 6)" :key="server.id" class="catalog-item">
-                <strong>{{ server.name }}</strong>
-                <span>{{ server.transport }} · {{ server.status }}</span>
-              </div>
+            <div v-else class="catalog-list selectable-list">
+              <label v-for="server in mcpServers" :key="server.id" class="catalog-item selectable-item">
+                <span class="catalog-item-main">
+                  <strong>{{ server.name }}</strong>
+                  <span>
+                    {{ server.transport }} · {{ server.status }}
+                    {{ server.tools?.length ? ` · ${server.tools.length} tools` : '' }}
+                  </span>
+                </span>
+                <input
+                  v-model="selectedMCPServerIds"
+                  type="checkbox"
+                  class="skill-checkbox"
+                  :value="server.id"
+                />
+              </label>
             </div>
+            <div class="catalog-tip">只有显式绑定的 MCP server 才会在当前 agent 的 runtime 工具列表中出现。</div>
           </div>
         </div>
 
@@ -256,6 +272,7 @@ const running = ref(false)
 const runMessage = ref('')
 const sessionId = ref('')
 const selectedSkillIds = ref([])
+const selectedMCPServerIds = ref([])
 const selectedKnowledgeBaseIds = ref([])
 
 const quickPrompts = [
@@ -287,6 +304,7 @@ const syncEditForm = () => {
   editForm.model = agent.value?.model || modelsStore.defaultModel?.id || ''
   editForm.systemPrompt = agent.value?.systemPrompt || ''
   selectedSkillIds.value = Array.isArray(agent.value?.skillIds) ? [...agent.value.skillIds] : []
+  selectedMCPServerIds.value = Array.isArray(agent.value?.mcpServerIds) ? [...agent.value.mcpServerIds] : []
   selectedKnowledgeBaseIds.value = Array.isArray(agent.value?.knowledgeBaseIds) ? [...agent.value.knowledgeBaseIds] : []
 }
 
@@ -297,7 +315,7 @@ const loadWorkspace = async () => {
   await Promise.all([
     agentsStore.fetchAgent(agentId),
     agentsStore.fetchRuns(),
-    agentsStore.fetchTools().catch(() => []),
+    agentsStore.fetchTools(agentId).catch(() => []),
     agentsStore.fetchSkills().catch(() => []),
     agentsStore.fetchMCPServers().catch(() => []),
     knowledgeStore.fetchKnowledgeBases(1, 100).catch(() => []),
@@ -319,7 +337,9 @@ const saveAgent = async () => {
       metadata: agent.value.metadata || {}
     })
     await agentsStore.updateAgentSkills(agent.value.id, selectedSkillIds.value)
+    await agentsStore.updateAgentMCPServers(agent.value.id, selectedMCPServerIds.value)
     await agentsStore.updateAgentKnowledgeBases(agent.value.id, selectedKnowledgeBaseIds.value)
+    await agentsStore.fetchTools(agent.value.id)
     toastStore.showToast({ type: 'success', message: '智能体定义已保存' })
   } catch (error) {
     console.error('Failed to update agent:', error)
@@ -369,7 +389,8 @@ const syncSkills = async () => {
 const toolKindLabel = (kind) => {
   const mapping = {
     builtin: '内置',
-    knowledge: '知识库'
+    knowledge: '知识库',
+    mcp: 'MCP'
   }
   return mapping[kind] || kind || '未知'
 }
@@ -646,6 +667,10 @@ onMounted(async () => {
   line-height: 1.5;
 }
 
+.tool-source {
+  color: var(--gray-500);
+}
+
 .tool-kind {
   flex-shrink: 0;
   display: inline-flex;
@@ -664,6 +689,11 @@ onMounted(async () => {
 .tool-kind.kind-knowledge {
   background: rgba(59, 130, 246, 0.12);
   color: #1d4ed8;
+}
+
+.tool-kind.kind-mcp {
+  background: rgba(249, 115, 22, 0.12);
+  color: #c2410c;
 }
 
 .tool-schema {

@@ -88,8 +88,12 @@ export const agentsAPI = {
     return api.post(`/api/v1/agents/${agentId}/runs`, payload)
   },
 
-  listTools() {
-    return api.get('/api/v1/agents/tools')
+  listTools(agentDefinitionId = '') {
+    const params = {}
+    if (agentDefinitionId) {
+      params.agent_definition_id = agentDefinitionId
+    }
+    return api.get('/api/v1/agents/tools', { params })
   },
 
   listRuns(limit = 50, offset = 0) {
