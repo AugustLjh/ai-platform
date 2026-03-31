@@ -1,0 +1,12 @@
+{
+  "system_skill": true,
+  "fixed_binding": true,
+  "activation_intents": [
+    "plan"
+  ],
+  "activation_phases": [
+    "planning",
+    "synthesis",
+    "output"
+  ]
+}

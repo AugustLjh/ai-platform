@@ -1,3 +1,10 @@
+"""
+Legacy compatibility executor.
+
+The production runtime entrypoints use `core.agent_runtime.*` and do not route
+through this module anymore. Keep it importable for compatibility only.
+"""
+
 from typing import AsyncIterator, Dict, List, Optional, Callable, Any
 from abc import ABC, abstractmethod
 import json

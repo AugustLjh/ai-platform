@@ -1,14 +1,72 @@
 {
   "type": "object",
+  "required": [
+    "answer",
+    "task_plan",
+    "risks"
+  ],
   "properties": {
-    "summary": {
+    "answer": {
       "type": "string"
     },
-    "steps": {
-      "type": "array"
+    "task_plan": {
+      "type": "object",
+      "required": [
+        "steps"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "title",
+              "status"
+            ],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "verification": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     },
     "risks": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   }
 }

@@ -12,6 +12,9 @@ WORKDIR /app
 # 如果你有 grpc / cryptography / numpy / torch 等，通常需要这些
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    git \
+    nodejs \
+    npm \
     protobuf-compiler \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*

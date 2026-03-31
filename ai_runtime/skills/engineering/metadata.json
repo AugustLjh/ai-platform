@@ -1,0 +1,18 @@
+{
+  "system_skill": true,
+  "display_name": "Project Context",
+  "capability_type": "project_context",
+  "activation_intents": [
+    "implement",
+    "plan",
+    "review"
+  ],
+  "activation_phases": [
+    "planning",
+    "execution",
+    "synthesis"
+  ],
+  "managed_tool_kinds": [
+    "engineering"
+  ]
+}

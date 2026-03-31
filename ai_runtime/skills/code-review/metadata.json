@@ -1,0 +1,10 @@
+{
+  "activation_intents": [
+    "review"
+  ],
+  "activation_phases": [
+    "planning",
+    "synthesis",
+    "output"
+  ]
+}

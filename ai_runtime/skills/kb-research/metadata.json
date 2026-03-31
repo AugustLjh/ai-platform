@@ -1,0 +1,12 @@
+{
+  "activation_intents": [
+    "research",
+    "compare",
+    "summarize"
+  ],
+  "activation_phases": [
+    "planning",
+    "synthesis",
+    "output"
+  ]
+}

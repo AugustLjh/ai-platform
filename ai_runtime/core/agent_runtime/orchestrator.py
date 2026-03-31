@@ -6,15 +6,36 @@ import logging
 from typing import Any, Dict, Optional
 
 from core.agent_runtime.executor import AgentExecutor
-from core.agent_runtime.models import AgentDefinition, AgentRun, PlannerResult
+from core.agent_runtime.intent import IntentPreprocessor
+from core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
 from core.agent_runtime.planner import AgentPlanner
 from core.agent_runtime.policy import RuntimePolicy
+from core.agent_runtime.result_contract import build_structured_run_result
 from core.agent_runtime.skills.models import SkillRuntimeContext
 from core.agent_runtime.summarizer import AgentSummarizer
 from core.agent_runtime.tools.base import ToolContext, ToolLookupContext
 from core.agent_runtime.tracing import AgentTracer
 
 logger = logging.getLogger(__name__)
+
+
+def apply_skill_tool_policy(
+    available_tools: list[dict[str, Any]],
+    skill_context: SkillRuntimeContext | None,
+) -> tuple[list[dict[str, Any]], RuntimePolicy, list[str] | None]:
+    if skill_context is None or not skill_context.skills:
+        return available_tools, RuntimePolicy(), None
+
+    effective_allowlist = [tool_name for tool_name in skill_context.tool_allowlist if str(tool_name).strip()]
+    if not effective_allowlist:
+        return available_tools, RuntimePolicy(), None
+
+    runtime_policy = RuntimePolicy(effective_allowlist)
+    filtered_tools = [
+        tool for tool in available_tools
+        if runtime_policy.is_tool_allowed(tool["name"])
+    ]
+    return filtered_tools, runtime_policy, effective_allowlist
 
 
 class AgentOrchestrator:
@@ -30,6 +51,7 @@ class AgentOrchestrator:
         tool_call_repository,
         state_store,
         skill_registry=None,
+        intent_preprocessor: IntentPreprocessor | None = None,
     ) -> None:
         self.planner = planner
         self.executor = executor
@@ -41,6 +63,7 @@ class AgentOrchestrator:
         self.tool_call_repository = tool_call_repository
         self.state_store = state_store
         self.skill_registry = skill_registry
+        self.intent_preprocessor = intent_preprocessor or IntentPreprocessor()
 
     async def _emit_step_event(
         self,
@@ -88,14 +111,36 @@ class AgentOrchestrator:
 
     async def _resolve_skill_context(
         self,
-        definition: AgentDefinition,
         run: AgentRun,
-    ) -> tuple[AgentDefinition, SkillRuntimeContext | None]:
-        skill_context = await self.skill_registry.resolve_for_agent(run.agent_definition_id, run.tenant_id) if self.skill_registry else None
+    ) -> SkillRuntimeContext | None:
+        return await self.skill_registry.resolve_for_agent(run.agent_definition_id, run.tenant_id) if self.skill_registry else None
+
+    def _apply_skill_prompt(
+        self,
+        definition: AgentDefinition,
+        skill_context: SkillRuntimeContext | None,
+    ) -> AgentDefinition:
         if skill_context and skill_context.system_prompt:
             system_prompt_parts = [definition.system_prompt.strip(), skill_context.system_prompt.strip()]
-            definition = definition.model_copy(update={"system_prompt": "\n\n".join(part for part in system_prompt_parts if part)})
-        return definition, skill_context
+            return definition.model_copy(update={"system_prompt": "\n\n".join(part for part in system_prompt_parts if part)})
+        return definition
+
+    def _select_skill_context_for_phase(
+        self,
+        skill_context: SkillRuntimeContext | None,
+        *,
+        inferred_intent: str | None,
+        phase: str,
+    ) -> SkillRuntimeContext | None:
+        if skill_context is None:
+            return None
+        if self.skill_registry is None:
+            return skill_context
+        return self.skill_registry.compose_for_intent_phase(
+            skill_context.skills,
+            inferred_intent=inferred_intent,
+            phase=phase,
+        )
 
     async def _resolve_accessible_mounted_knowledge_base_ids(self, run: AgentRun) -> list[str]:
         return await self.agent_repository.list_accessible_knowledge_bindings(
@@ -132,10 +177,150 @@ class AgentOrchestrator:
             self._append_conversation_message(runtime_context, role="user", content=current_message)
             runtime_context["last_user_message"] = current_message
             runtime_context.pop("pending_question", None)
+            runtime_context.pop("ask_user_guard", None)
 
         runtime_context.setdefault("execution_count", 0)
         runtime_context.setdefault("tool_failures", 0)
         return runtime_context
+
+    async def _preprocess_intent(
+        self,
+        *,
+        definition: AgentDefinition,
+        run: AgentRun,
+        runtime_context: Dict[str, Any],
+        available_tools: list[dict[str, Any]],
+        llm_resolution: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        intent_state = await self.intent_preprocessor.preprocess(
+            definition,
+            run.input,
+            available_tools,
+            runtime_context=runtime_context,
+            llm_service=self.llm_service,
+            llm_resolution=llm_resolution,
+        )
+        runtime_context["intent_state"] = intent_state
+        runtime_context["normalized_task_input"] = {
+            **run.input,
+            "message": intent_state.get("normalized_message") or run.input.get("message") or run.input.get("prompt") or "",
+            "original_message": str(run.input.get("message") or run.input.get("prompt") or "").strip(),
+            "intent": intent_state.get("inferred_intent"),
+            "assumptions": intent_state.get("assumptions", []),
+            "search_queries": intent_state.get("search_queries", []),
+            "resolved_references": intent_state.get("resolved_references", []),
+        }
+        return intent_state
+
+    def _tool_attempt_count(self, runtime_context: Dict[str, Any]) -> int:
+        step_history = runtime_context.get("step_history", [])
+        if not isinstance(step_history, list):
+            return 0
+        return sum(1 for step in step_history if isinstance(step, dict) and str(step.get("tool_name") or "").strip())
+
+    def _approve_ask_user(
+        self,
+        *,
+        action: PlannerAction,
+        runtime_context: Dict[str, Any],
+        available_tools: list[dict[str, Any]],
+    ) -> tuple[bool, str]:
+        intent_state = runtime_context.get("intent_state", {})
+        if not isinstance(intent_state, dict):
+            intent_state = {}
+
+        blocking_missing = intent_state.get("blocking_missing_information")
+        if not isinstance(blocking_missing, list):
+            blocking_missing = []
+        blocking_missing = [str(item).strip() for item in blocking_missing if str(item).strip()]
+
+        requires_user_decision = bool(intent_state.get("requires_user_decision"))
+        should_answer_with_assumptions = bool(
+            intent_state.get("should_answer_with_assumptions")
+            if intent_state.get("should_answer_with_assumptions") is not None
+            else True
+        )
+
+        if not blocking_missing and should_answer_with_assumptions:
+            return False, "non-blocking ambiguity should be handled with assumptions instead of asking the user"
+
+        tool_attempts = self._tool_attempt_count(runtime_context)
+        if available_tools and tool_attempts == 0:
+            return False, "available tools have not been used yet"
+
+        if available_tools and tool_attempts < 2 and not requires_user_decision:
+            return False, "the run should attempt at least one additional self-directed action before asking the user"
+
+        if not blocking_missing and not requires_user_decision:
+            return False, "the missing information is not proven to be blocking"
+
+        return True, "approved"
+
+    async def _plan_next_action(
+        self,
+        *,
+        definition: AgentDefinition,
+        run: AgentRun,
+        runtime_context: Dict[str, Any],
+        available_tools: list[dict[str, Any]],
+        llm_resolution: Dict[str, Any],
+        iteration: int,
+    ) -> PlannerResult:
+        for attempt in range(2):
+            planner_result = await self.planner.plan(
+                definition,
+                runtime_context.get("normalized_task_input") or run.input,
+                available_tools,
+                runtime_context=runtime_context,
+                iteration=iteration,
+                llm_service=self.llm_service,
+                llm_resolution=llm_resolution,
+            )
+
+            if planner_result.action.type != "ask_user":
+                runtime_context.pop("ask_user_guard", None)
+                return planner_result
+
+            approved, reason = self._approve_ask_user(
+                action=planner_result.action,
+                runtime_context=runtime_context,
+                available_tools=available_tools,
+            )
+            if approved:
+                runtime_context.pop("ask_user_guard", None)
+                return planner_result
+
+            runtime_context["ask_user_guard"] = {
+                "attempt": attempt + 1,
+                "rejected_question": planner_result.action.question,
+                "reason": reason,
+                "policy": "Do not ask the user yet. Resolve references, use assumptions, and continue with tools or a best-effort answer.",
+            }
+            await self.tracer.emit_event(
+                run.id,
+                "plan.ask_user_rejected",
+                iteration=iteration,
+                question=planner_result.action.question,
+                reason=reason,
+            )
+
+        fallback_action = PlannerAction(
+            type="final_answer",
+            title="Answer with current evidence",
+            content=(
+                "Provide the best possible answer using the current evidence, resolved references, and explicit assumptions. "
+                "Do not ask a follow-up question."
+            ),
+        )
+        return planner_result.model_copy(
+            update={
+                "action": fallback_action,
+                "reasoning": (
+                    f"{planner_result.reasoning} "
+                    "Ask-user was rejected by runtime policy, so return the best possible answer with explicit assumptions."
+                ).strip(),
+            }
+        )
 
     async def _persist_run_state(
         self,
@@ -145,6 +330,8 @@ class AgentOrchestrator:
         runtime_context: Dict[str, Any],
         plan: Optional[Dict[str, Any]] = None,
         final_output: Optional[str] = None,
+        final_output_text: Optional[str] = None,
+        final_output_json: Any = None,
         error_message: Optional[str] = None,
     ) -> None:
         await self.run_repository.update_run_status(
@@ -153,6 +340,8 @@ class AgentOrchestrator:
             plan=plan,
             context=runtime_context,
             final_output=final_output,
+            final_output_text=final_output_text,
+            final_output_json=final_output_json,
             error_message=error_message,
         )
 
@@ -226,14 +415,21 @@ class AgentOrchestrator:
                 plan=result.get("plan"),
                 context=result.get("context"),
                 final_output=result.get("final_output"),
+                final_output_text=result.get("final_output_text"),
+                final_output_json=result.get("final_output_json"),
                 error_message=result.get("error_message"),
             )
+            if result.get("artifacts") is not None:
+                await self.run_repository.replace_artifacts(run.id, result.get("artifacts") or [])
             if result["status"] == "completed":
                 await self.tracer.emit_event(
                     run.id,
                     "run.completed",
                     status=result["status"],
                     final_output=result.get("final_output"),
+                    final_output_text=result.get("final_output_text"),
+                    final_output_json=result.get("final_output_json"),
+                    artifacts=result.get("artifacts") or [],
                 )
             elif result["status"] == "waiting_user":
                 await self.tracer.emit_event(
@@ -241,6 +437,8 @@ class AgentOrchestrator:
                     "run.waiting_user",
                     status=result["status"],
                     question=result.get("final_output"),
+                    final_output_text=result.get("final_output_text"),
+                    artifacts=result.get("artifacts") or [],
                 )
             return AgentRun.model_validate(updated)
         except asyncio.CancelledError:
@@ -298,11 +496,12 @@ class AgentOrchestrator:
 
         tool_name = action.tool_name or ""
         tool_arguments = action.tool_arguments
+        tool_kind = await self._get_tool_kind(run, tool_name)
         tool_call = await self.tool_call_repository.create_tool_call(
             run_id=run.id,
             step_id=step["id"],
             tool_name=tool_name,
-            tool_kind=await self._get_tool_kind(run, tool_name),
+            tool_kind=tool_kind,
             arguments=tool_arguments,
         )
         await self.tracer.emit_event(
@@ -311,6 +510,7 @@ class AgentOrchestrator:
             step_id=step["id"],
             tool_call_id=tool_call["id"],
             tool_name=tool_name,
+            tool_kind=tool_kind,
             arguments=tool_arguments,
         )
 
@@ -338,6 +538,7 @@ class AgentOrchestrator:
                 step_id=step["id"],
                 tool_call_id=tool_call["id"],
                 tool_name=tool_name,
+                tool_kind=tool_kind,
                 error="Run cancelled",
             )
             await self.run_repository.update_step(
@@ -365,6 +566,7 @@ class AgentOrchestrator:
                 step_id=step["id"],
                 tool_call_id=tool_call["id"],
                 tool_name=tool_name,
+                tool_kind=tool_kind,
                 error=error_message,
             )
             await self.run_repository.update_step(
@@ -399,6 +601,7 @@ class AgentOrchestrator:
             step_id=step["id"],
             tool_call_id=tool_call["id"],
             tool_name=tool_name,
+            tool_kind=tool_kind,
             result=result,
         )
         step_output = {"tool_result": result}
@@ -482,13 +685,18 @@ class AgentOrchestrator:
                 final_value = json.loads(summary)
             except json.JSONDecodeError:
                 final_value = summary
-        final_output = self.executor.format_output(final_value, output_schema)
+            final_value = self.executor.shape_output(final_value, output_schema)
+        structured_result = build_structured_run_result(final_value, fallback_text=summary)
+        final_output = structured_result["final_output"] or self.executor.format_output(final_value, output_schema)
 
         await self.run_repository.update_step(
             step["id"],
             status="completed",
             output_payload={
                 "final_output": final_output,
+                "final_output_text": structured_result.get("final_output_text"),
+                "final_output_json": structured_result.get("final_output_json"),
+                "artifacts": structured_result.get("artifacts") or [],
                 "model": model_info,
             },
         )
@@ -496,14 +704,27 @@ class AgentOrchestrator:
             run.id,
             "step.completed",
             step,
-            output={"final_output": final_output},
+            output={
+                "final_output": final_output,
+                "final_output_text": structured_result.get("final_output_text"),
+                "final_output_json": structured_result.get("final_output_json"),
+                "artifacts": structured_result.get("artifacts") or [],
+            },
         )
         self._append_conversation_message(runtime_context, role="assistant", content=final_output)
         runtime_context["last_summary_model"] = model_info
+        runtime_context["last_result_contract"] = {
+            "final_output_text": structured_result.get("final_output_text"),
+            "final_output_json": structured_result.get("final_output_json"),
+            "artifact_count": len(structured_result.get("artifacts") or []),
+        }
         return {
             "status": "completed",
             "plan": planner_result.model_dump(mode="json"),
             "final_output": final_output,
+            "final_output_text": structured_result.get("final_output_text"),
+            "final_output_json": structured_result.get("final_output_json"),
+            "artifacts": structured_result.get("artifacts") or [],
             "context": runtime_context,
         }
 
@@ -544,11 +765,14 @@ class AgentOrchestrator:
             "status": "waiting_user",
             "plan": planner_result.model_dump(mode="json"),
             "final_output": action.question,
+            "final_output_text": action.question,
+            "final_output_json": None,
+            "artifacts": [],
             "context": runtime_context,
         }
 
     async def _execute_run(self, definition: AgentDefinition, run: AgentRun) -> Dict[str, Any]:
-        definition, skill_context = await self._resolve_skill_context(definition, run)
+        raw_skill_context = await self._resolve_skill_context(run)
 
         available_tools = await self.executor.registry.list_specs(
             context=ToolLookupContext(
@@ -564,19 +788,6 @@ class AgentOrchestrator:
             available_tools = [tool for tool in available_tools if tool.get("kind") != "knowledge"]
         runtime_context = self._prepare_runtime_context(run)
         runtime_context["mounted_knowledge_base_ids"] = mounted_knowledge_base_ids
-        if skill_context is not None and skill_context.skills:
-            runtime_policy = RuntimePolicy(skill_context.tool_allowlist)
-            available_tools = [
-                tool for tool in available_tools
-                if runtime_policy.is_tool_allowed(tool["name"])
-            ]
-            await self.tracer.emit_event(
-                run.id,
-                "skills.applied",
-                skill_slugs=[skill.slug for skill in skill_context.skills],
-                tool_allowlist=skill_context.tool_allowlist,
-                output_schema=skill_context.output_schema,
-            )
 
         requested_model = self._extract_requested_model(definition, run.input)
         knowledge_base_id = self._extract_knowledge_base_id(run.input)
@@ -602,6 +813,68 @@ class AgentOrchestrator:
             "requested_model": synthesis_resolution.get("requested_model"),
             "candidate_count": len(synthesis_resolution.get("candidates", [])),
         }
+        await self._preprocess_intent(
+            definition=definition,
+            run=run,
+            runtime_context=runtime_context,
+            available_tools=available_tools,
+            llm_resolution=planning_resolution,
+        )
+        inferred_intent = runtime_context.get("intent_state", {}).get("inferred_intent")
+        planning_skill_context = self._select_skill_context_for_phase(
+            raw_skill_context,
+            inferred_intent=inferred_intent,
+            phase="planning",
+        )
+        execution_skill_context = self._select_skill_context_for_phase(
+            raw_skill_context,
+            inferred_intent=inferred_intent,
+            phase="execution",
+        )
+        synthesis_skill_context = self._select_skill_context_for_phase(
+            raw_skill_context,
+            inferred_intent=inferred_intent,
+            phase="synthesis",
+        )
+        output_skill_context = self._select_skill_context_for_phase(
+            raw_skill_context,
+            inferred_intent=inferred_intent,
+            phase="output",
+        )
+        planning_definition = self._apply_skill_prompt(definition, planning_skill_context)
+        synthesis_definition = self._apply_skill_prompt(definition, synthesis_skill_context)
+        if execution_skill_context is not None and execution_skill_context.skills:
+            available_tools, runtime_policy, effective_allowlist = apply_skill_tool_policy(
+                available_tools,
+                execution_skill_context,
+            )
+            await self.tracer.emit_event(
+                run.id,
+                "skills.applied",
+                planning_skill_slugs=[skill.slug for skill in planning_skill_context.skills] if planning_skill_context else [],
+                execution_skill_slugs=[skill.slug for skill in execution_skill_context.skills],
+                synthesis_skill_slugs=[skill.slug for skill in synthesis_skill_context.skills] if synthesis_skill_context else [],
+                output_skill_slugs=[skill.slug for skill in output_skill_context.skills] if output_skill_context else [],
+                tool_allowlist=execution_skill_context.tool_allowlist,
+                effective_tool_allowlist=effective_allowlist,
+                output_schema=output_skill_context.output_schema if output_skill_context else {},
+                all_skill_slugs=(raw_skill_context.metadata.get("skill_slugs") if raw_skill_context else None),
+                filtered_for_intent=(execution_skill_context.metadata.get("filtered_for_intent") if execution_skill_context else inferred_intent),
+            )
+        elif raw_skill_context is not None and raw_skill_context.skills:
+            await self.tracer.emit_event(
+                run.id,
+                "skills.applied",
+                planning_skill_slugs=[skill.slug for skill in planning_skill_context.skills] if planning_skill_context else [],
+                execution_skill_slugs=[],
+                synthesis_skill_slugs=[skill.slug for skill in synthesis_skill_context.skills] if synthesis_skill_context else [],
+                output_skill_slugs=[skill.slug for skill in output_skill_context.skills] if output_skill_context else [],
+                tool_allowlist=[],
+                effective_tool_allowlist=None,
+                output_schema=output_skill_context.output_schema if output_skill_context else {},
+                all_skill_slugs=raw_skill_context.metadata.get("skill_slugs"),
+                filtered_for_intent=inferred_intent,
+            )
         await self._persist_run_state(run.id, status="running", runtime_context=runtime_context)
 
         max_iterations = self._resolve_max_iterations(definition)
@@ -610,14 +883,13 @@ class AgentOrchestrator:
             self._raise_if_cancelled(run.id)
             runtime_context["execution_count"] = iteration
 
-            planner_result = await self.planner.plan(
-                definition,
-                run.input,
-                available_tools,
+            planner_result = await self._plan_next_action(
+                definition=planning_definition,
+                run=run,
                 runtime_context=runtime_context,
-                iteration=iteration,
-                llm_service=self.llm_service,
+                available_tools=available_tools,
                 llm_resolution=planning_resolution,
+                iteration=iteration,
             )
             last_plan = planner_result.model_dump(mode="json")
             runtime_context["last_plan"] = last_plan
@@ -644,10 +916,10 @@ class AgentOrchestrator:
 
             if action.type == "final_answer":
                 return await self._execute_final_answer(
-                    definition=definition,
+                    definition=synthesis_definition,
                     run=run,
                     runtime_context=runtime_context,
-                    skill_context=skill_context,
+                    skill_context=output_skill_context,
                     planner_result=planner_result,
                     synthesis_resolution=synthesis_resolution,
                 )

@@ -4,7 +4,7 @@ from collections import OrderedDict
 from typing import Any, Dict
 
 from core.agent_runtime.repositories.agent_repository import AgentRepository
-from core.agent_runtime.tools.base import BaseTool, ToolContext, ToolSpec
+from core.agent_runtime.tools.base import BaseTool, ToolContext, ToolLookupContext, ToolSpec
 from core.database import get_db_manager
 from core.dependencies import get_container
 
@@ -17,15 +17,20 @@ def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
-async def _resolve_accessible_knowledge_base_ids(context: ToolContext) -> list[str]:
-    agent_definition_id = str(context.agent_definition_id or "").strip()
+async def _resolve_accessible_knowledge_base_ids(
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    agent_definition_id: str | None,
+) -> list[str]:
+    agent_definition_id = str(agent_definition_id or "").strip()
     if not agent_definition_id:
         return []
     repository = AgentRepository(get_db_manager().pool)
     return await repository.list_accessible_knowledge_bindings(
         definition_id=agent_definition_id,
-        tenant_id=context.tenant_id,
-        user_id=context.user_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
     )
 
 
@@ -54,7 +59,11 @@ class KnowledgeSearchTool(BaseTool):
         top_k = _clamp_int(arguments.get("top_k"), default=5, minimum=1, maximum=10)
         container = get_container()
         document_service = container.document_service
-        mounted_knowledge_base_ids = await _resolve_accessible_knowledge_base_ids(context)
+        mounted_knowledge_base_ids = await _resolve_accessible_knowledge_base_ids(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            agent_definition_id=context.agent_definition_id,
+        )
         if not mounted_knowledge_base_ids:
             raise PermissionError("agent has no mounted knowledge bases available to the current user")
 
@@ -140,7 +149,11 @@ class KnowledgeFetchDocumentTool(BaseTool):
         container = get_container()
         document_service = container.document_service
         document_repository = container.document_repository
-        mounted_knowledge_base_ids = await _resolve_accessible_knowledge_base_ids(context)
+        mounted_knowledge_base_ids = await _resolve_accessible_knowledge_base_ids(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            agent_definition_id=context.agent_definition_id,
+        )
         if not mounted_knowledge_base_ids:
             raise PermissionError("agent has no mounted knowledge bases available to the current user")
 
@@ -197,7 +210,11 @@ class KnowledgeFetchSegmentsTool(BaseTool):
         max_segments = _clamp_int(arguments.get("max_segments"), default=50, minimum=1, maximum=1000)
         container = get_container()
         document_repository = container.document_repository
-        mounted_knowledge_base_ids = await _resolve_accessible_knowledge_base_ids(context)
+        mounted_knowledge_base_ids = await _resolve_accessible_knowledge_base_ids(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            agent_definition_id=context.agent_definition_id,
+        )
         if not mounted_knowledge_base_ids:
             raise PermissionError("agent has no mounted knowledge bases available to the current user")
 
@@ -218,7 +235,58 @@ class KnowledgeFetchSegmentsTool(BaseTool):
         return segments
 
 
+class KnowledgeToolProvider:
+    def __init__(self) -> None:
+        self._tools = {
+            "knowledge_search": KnowledgeSearchTool(),
+            "knowledge_fetch_document": KnowledgeFetchDocumentTool(),
+            "knowledge_fetch_segments": KnowledgeFetchSegmentsTool(),
+        }
+
+    async def _has_accessible_knowledge_tools(self, context: ToolLookupContext | None) -> bool:
+        if context is None:
+            return False
+        mounted_knowledge_base_ids = await _resolve_accessible_knowledge_base_ids(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            agent_definition_id=context.agent_definition_id,
+        )
+        return len(mounted_knowledge_base_ids) > 0
+
+    async def get(self, name: str, context: ToolLookupContext | None = None) -> BaseTool | None:
+        tool = self._tools.get(name)
+        if tool is None:
+            return None
+        if not await self._has_accessible_knowledge_tools(context):
+            return None
+        return tool
+
+    async def get_spec(self, name: str, context: ToolLookupContext | None = None) -> dict | None:
+        tool = await self.get(name, context=context)
+        if tool is None:
+            return None
+        return {
+            "name": tool.spec.name,
+            "description": tool.spec.description,
+            "input_schema": tool.spec.input_schema,
+            "kind": tool.spec.kind,
+            "metadata": tool.spec.metadata,
+        }
+
+    async def list_specs(self, context: ToolLookupContext | None = None) -> list[dict]:
+        if not await self._has_accessible_knowledge_tools(context):
+            return []
+        return [
+            {
+                "name": tool.spec.name,
+                "description": tool.spec.description,
+                "input_schema": tool.spec.input_schema,
+                "kind": tool.spec.kind,
+                "metadata": tool.spec.metadata,
+            }
+            for tool in self._tools.values()
+        ]
+
+
 def register_knowledge_tools(registry) -> None:
-    registry.register(KnowledgeSearchTool())
-    registry.register(KnowledgeFetchDocumentTool())
-    registry.register(KnowledgeFetchSegmentsTool())
+    registry.register_provider(KnowledgeToolProvider())

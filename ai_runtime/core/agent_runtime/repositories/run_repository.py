@@ -21,8 +21,13 @@ def _record_to_dict(record) -> Dict[str, Any]:
             data[key] = str(value)
         elif isinstance(value, datetime):
             data[key] = value
+        elif key == "final_output_json":
+            data[key] = parse_json_field(value, None)
         elif key in {"input", "plan", "context", "output", "payload", "metadata"}:
             data[key] = parse_json_field(value, {})
+        elif key == "artifact_payload":
+            data["payload"] = parse_json_field(value, {})
+            data.pop(key, None)
     return data
 
 
@@ -97,6 +102,8 @@ class RunRepository:
         plan: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
         final_output: Optional[str] = None,
+        final_output_text: Optional[str] = None,
+        final_output_json: Any = None,
         error_message: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -108,8 +115,10 @@ class RunRepository:
                 plan = COALESCE($3, plan),
                 context = COALESCE($4, context),
                 final_output = COALESCE($5, final_output),
-                error_message = $6,
-                metadata = COALESCE($7, metadata),
+                final_output_text = COALESCE($6, final_output_text),
+                final_output_json = COALESCE($7, final_output_json),
+                error_message = $8,
+                metadata = COALESCE($9, metadata),
                 started_at = CASE
                     WHEN $2::varchar = 'running' AND started_at IS NULL THEN now()
                     ELSE started_at
@@ -130,6 +139,8 @@ class RunRepository:
             encode_json(plan, {}) if plan is not None else None,
             encode_json(context, {}) if context is not None else None,
             final_output,
+            final_output_text,
+            encode_json(final_output_json, None) if final_output_json is not None else None,
             error_message,
             encode_json(metadata, {}) if metadata is not None else None,
         )
@@ -148,12 +159,82 @@ class RunRepository:
         )
         return _record_to_dict(row) if row else None
 
+    async def clear_run_result(self, run_id: str) -> Optional[Dict[str, Any]]:
+        row = await self.db_pool.fetchrow(
+            """
+            UPDATE agent_runs
+            SET
+                final_output = NULL,
+                final_output_text = NULL,
+                final_output_json = NULL,
+                error_message = NULL
+            WHERE id = $1
+            RETURNING *
+            """,
+            _serialize_uuid(run_id),
+        )
+        return _record_to_dict(row) if row else None
+
+    async def reset_run_execution(
+        self,
+        run_id: str,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        async with self.db_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM agent_artifacts WHERE run_id = $1",
+                    _serialize_uuid(run_id),
+                )
+                await conn.execute(
+                    "DELETE FROM agent_tool_calls WHERE run_id = $1",
+                    _serialize_uuid(run_id),
+                )
+                await conn.execute(
+                    "DELETE FROM agent_run_steps WHERE run_id = $1",
+                    _serialize_uuid(run_id),
+                )
+                row = await conn.fetchrow(
+                    """
+                    UPDATE agent_runs
+                    SET
+                        status = 'queued',
+                        plan = '{}'::jsonb,
+                        context = COALESCE($2, context),
+                        final_output = NULL,
+                        final_output_text = NULL,
+                        final_output_json = NULL,
+                        error_message = NULL,
+                        started_at = NULL,
+                        finished_at = NULL,
+                        cancelled_at = NULL
+                    WHERE id = $1
+                    RETURNING *
+                    """,
+                    _serialize_uuid(run_id),
+                    encode_json(context, {}) if context is not None else None,
+                )
+        return _record_to_dict(row) if row else None
+
     async def get_next_step_index(self, run_id: str) -> int:
         value = await self.db_pool.fetchval(
             "SELECT COALESCE(MAX(step_index), 0) + 1 FROM agent_run_steps WHERE run_id = $1",
             _serialize_uuid(run_id),
         )
         return int(value or 1)
+
+    async def list_steps(self, run_id: str) -> List[Dict[str, Any]]:
+        rows = await self.db_pool.fetch(
+            """
+            SELECT *
+            FROM agent_run_steps
+            WHERE run_id = $1
+            ORDER BY step_index ASC, created_at ASC
+            """,
+            _serialize_uuid(run_id),
+        )
+        return [_record_to_dict(row) for row in rows]
 
     async def create_step(
         self,
@@ -268,3 +349,67 @@ class RunRepository:
             limit,
         )
         return [_record_to_dict(row) for row in rows]
+
+    async def replace_artifacts(self, run_id: str, artifacts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        async with self.db_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM agent_artifacts WHERE run_id = $1",
+                    _serialize_uuid(run_id),
+                )
+                created: list[Dict[str, Any]] = []
+                for artifact in artifacts:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO agent_artifacts (
+                            run_id, step_id, artifact_type, name, mime_type, uri, payload, metadata
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        RETURNING id, run_id, step_id, artifact_type, name, mime_type, uri,
+                                  payload AS artifact_payload, metadata, created_at, updated_at
+                        """,
+                        _serialize_uuid(run_id),
+                        _serialize_uuid(artifact.get("step_id")),
+                        artifact.get("artifact_type"),
+                        artifact.get("name"),
+                        artifact.get("mime_type"),
+                        artifact.get("uri"),
+                        encode_json(artifact.get("payload"), {}),
+                        encode_json(artifact.get("metadata"), {}),
+                    )
+                    created.append(_record_to_dict(row))
+        return created
+
+    async def list_artifacts(self, run_id: str) -> List[Dict[str, Any]]:
+        rows = await self.db_pool.fetch(
+            """
+            SELECT id, run_id, step_id, artifact_type, name, mime_type, uri,
+                   payload AS artifact_payload, metadata, created_at, updated_at
+            FROM agent_artifacts
+            WHERE run_id = $1
+            ORDER BY created_at ASC, updated_at ASC
+            """,
+            _serialize_uuid(run_id),
+        )
+        return [_record_to_dict(row) for row in rows]
+
+    async def list_artifacts_for_runs(self, run_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        serialized_run_ids = [_serialize_uuid(run_id) for run_id in run_ids if run_id]
+        if not serialized_run_ids:
+            return {}
+
+        rows = await self.db_pool.fetch(
+            """
+            SELECT id, run_id, step_id, artifact_type, name, mime_type, uri,
+                   payload AS artifact_payload, metadata, created_at, updated_at
+            FROM agent_artifacts
+            WHERE run_id = ANY($1::uuid[])
+            ORDER BY run_id, created_at ASC, updated_at ASC
+            """,
+            serialized_run_ids,
+        )
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            item = _record_to_dict(row)
+            grouped.setdefault(item["run_id"], []).append(item)
+        return grouped

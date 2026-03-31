@@ -11,6 +11,15 @@ StepStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 ToolCallStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 PlannerActionType = Literal["final_answer", "tool_call", "ask_user"]
 PlannerStepStatus = Literal["completed", "in_progress", "pending"]
+ArtifactType = Literal[
+    "answer",
+    "code_files",
+    "citations",
+    "review_findings",
+    "task_plan",
+    "table",
+    "document_excerpt",
+]
 
 
 class AgentDefinition(BaseModel):
@@ -45,6 +54,8 @@ class AgentRun(BaseModel):
     plan: Dict[str, Any] = Field(default_factory=dict)
     context: Dict[str, Any] = Field(default_factory=dict)
     final_output: Optional[str] = None
+    final_output_text: Optional[str] = None
+    final_output_json: Any = None
     error_message: Optional[str] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
@@ -52,6 +63,25 @@ class AgentRun(BaseModel):
     created_at: datetime
     updated_at: datetime
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    artifacts: List["AgentArtifact"] = Field(default_factory=list)
+    steps: List["AgentRunStep"] = Field(default_factory=list)
+    tool_calls: List["AgentToolCall"] = Field(default_factory=list)
+
+
+class AgentArtifact(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: Optional[str] = None
+    run_id: Optional[str] = None
+    step_id: Optional[str] = None
+    artifact_type: ArtifactType
+    name: str
+    mime_type: Optional[str] = None
+    uri: Optional[str] = None
+    payload: Any = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class AgentRunStep(BaseModel):

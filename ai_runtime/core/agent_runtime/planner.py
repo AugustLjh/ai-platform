@@ -15,6 +15,81 @@ JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 class AgentPlanner:
+    def _is_recoverable_format_error(self, error: Exception) -> bool:
+        message = str(error)
+        return (
+            "planner returned an empty response" in message
+            or "planner did not return valid JSON" in message
+            or "planner response is missing action" in message
+        )
+
+    def _build_repair_prompt(self) -> str:
+        return (
+            "Your previous reply was not valid planner JSON.\n"
+            "Return exactly one valid JSON object and nothing else.\n"
+            "Do not use markdown code fences.\n"
+            "The JSON must include: reasoning, steps, and action.\n"
+            "Keep reasoning and steps compact."
+        )
+
+    def _build_tool_strategy_notes(self, available_tools: List[Dict[str, Any]]) -> List[str]:
+        tool_names = {str(tool.get("name") or "").strip() for tool in available_tools}
+        notes: List[str] = []
+
+        if {"project_list_context", "project_search_context"} & tool_names:
+            notes.append(
+                "For project-context tasks, inspect the current conversation or uploaded documents first instead of assuming missing details."
+            )
+        if "project_search_context" in tool_names and "project_read_context_item" in tool_names:
+            notes.append(
+                "Prefer searching for the relevant message or document before reading a specific item in full."
+            )
+        if "knowledge_search" in tool_names and (
+            "knowledge_fetch_document" in tool_names or "knowledge_fetch_segments" in tool_names
+        ):
+            notes.append(
+                "Prefer searching the knowledge base first, then fetch the exact document or segments that support the answer."
+            )
+        return notes
+
+    def _compact_value(self, value: Any, limit: int = 1200) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value if len(value) <= limit else value[: limit - 3] + "..."
+        try:
+            serialized = json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            serialized = str(value)
+        return serialized if len(serialized) <= limit else serialized[: limit - 3] + "..."
+
+    def _summarize_recent_steps(
+        self,
+        step_history: Any,
+        *,
+        limit: int = 6,
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(step_history, Sequence) or isinstance(step_history, (str, bytes, bytearray)):
+            return []
+
+        recent_steps = []
+        for raw_step in list(step_history)[-limit:]:
+            if not isinstance(raw_step, dict):
+                continue
+            recent_steps.append(
+                {
+                    "step_index": raw_step.get("step_index"),
+                    "title": raw_step.get("title"),
+                    "kind": raw_step.get("kind"),
+                    "status": raw_step.get("status"),
+                    "tool_name": raw_step.get("tool_name"),
+                    "tool_arguments": raw_step.get("tool_arguments"),
+                    "result": self._compact_value(raw_step.get("result")),
+                    "error": str(raw_step.get("error") or "").strip() or None,
+                }
+            )
+        return recent_steps
+
     def _build_system_prompt(
         self,
         *,
@@ -23,12 +98,33 @@ class AgentPlanner:
     ) -> str:
         tools_json = json.dumps(available_tools, ensure_ascii=False, indent=2)
         instructions = [
-            "You are the planning brain for an autonomous agent.",
+            "You are Codex-style planning brain for an autonomous engineering agent.",
             "Decide the single best next action for the current iteration.",
+            "Operate with a direct, execution-first mindset: inspect available context before acting, avoid unsupported assumptions, and keep the run moving on the critical path.",
+            "Assume the user wants action, not discussion, unless the execution state proves the task is blocked.",
+            "Be deeply pragmatic: choose the action that most directly advances the task right now, not a side quest or a generic planning detour.",
+            "Choose the action that most directly reduces uncertainty or advances the main task right now.",
+            "Persist until the task is actually complete within the current run whenever the available tools make that possible.",
             "You must not claim a task is done unless the execution record supports it.",
             "If tool use is needed, choose exactly one tool_call action.",
-            "If more user input is required, choose ask_user.",
+            "When context is incomplete, prefer discovery actions that inspect conversation history, uploaded documents, or retrieved knowledge before synthesis.",
+            "Use recent conversation and resolved references to handle pronouns, omitted subjects, and shorthand requests.",
+            "Incomplete user input alone is not sufficient reason to choose ask_user.",
+            "If the task can proceed under reasonable assumptions, prefer tool_call or final_answer and carry the assumptions forward.",
+            "Prefer narrow, evidence-gathering tool calls over broad speculative ones.",
+            "Prefer making progress with the existing tools before asking the user.",
+            "If a tool failed or returned insufficient results, attempt exactly one self-recovery iteration before ask_user.",
+            "A self-recovery iteration means choosing one more tool_call that adjusts the query, arguments, or tool choice using the latest step history.",
+            "Choose ask_user only when the missing information is still required after available tools have been tried and one self-recovery attempt has been used, or when the user must make a decision that tools cannot infer safely.",
+            "Do not ask the user for information that can be recovered from current context, previous tool results, or a better-targeted tool call.",
+            "If ask_user_guard is present, treat it as a hard runtime rejection of a previous clarification attempt and choose a different action.",
             "If enough information has been gathered, choose final_answer.",
+            "Choose final_answer only when the objective is actually satisfied, or when the remaining blocker must be explained to the user explicitly.",
+            "Avoid repeating the same failed tool call with materially identical arguments.",
+            "Use the steps field to show a compact execution plan with completed, in_progress, and pending work.",
+            "Keep steps implementation-oriented and concrete; mention validation or verification as a pending step when relevant.",
+            "Use the provided step_history, pending_question, and tool_failures to avoid repeating failed actions or asking the user too early.",
+            "Keep reasoning compact, explicit, and evidence-backed.",
             "Return JSON only.",
             "JSON schema:",
             json.dumps(
@@ -54,6 +150,8 @@ class AgentPlanner:
                 ensure_ascii=False,
                 indent=2,
             ),
+            "Planner heuristics:",
+            "\n".join(f"- {note}" for note in self._build_tool_strategy_notes(available_tools)) or "- No extra tool-specific heuristics.",
             "Available tools:",
             tools_json,
         ]
@@ -68,14 +166,34 @@ class AgentPlanner:
         runtime_context: Dict[str, Any],
         iteration: int,
     ) -> str:
+        step_history = runtime_context.get("step_history", [])
+        recent_observations = self._summarize_recent_steps(step_history)
         payload = {
             "iteration": iteration,
             "task_input": run_input,
             "conversation": runtime_context.get("conversation", []),
-            "step_history": runtime_context.get("step_history", []),
+            "step_history": step_history,
+            "recent_observations": recent_observations,
+            "latest_observation": recent_observations[-1] if recent_observations else None,
+            "intent_state": runtime_context.get("intent_state", {}),
+            "ask_user_guard": runtime_context.get("ask_user_guard"),
+            "context_state": {
+                "conversation_message_count": len(runtime_context.get("conversation", []))
+                if isinstance(runtime_context.get("conversation"), list)
+                else 0,
+                "step_history_count": len(step_history) if isinstance(step_history, list) else 0,
+                "execution_count": runtime_context.get("execution_count", 0),
+                "tool_failures": runtime_context.get("tool_failures", 0),
+                "mounted_knowledge_base_ids": runtime_context.get("mounted_knowledge_base_ids", []),
+            },
+            "tool_failures": runtime_context.get("tool_failures", 0),
             "pending_question": runtime_context.get("pending_question"),
         }
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        return (
+            "Decide the single best next action from the execution state below.\n"
+            "Work in a Codex-style execution loop: inspect evidence first, act directly on the critical path, avoid repetition, and only ask the user if the blocker cannot be removed with current tools.\n\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
 
     def _extract_json_payload(self, raw_response: str) -> Dict[str, Any]:
         text = (raw_response or "").strip()
@@ -98,7 +216,16 @@ class AgentPlanner:
             if isinstance(payload, dict):
                 return payload
 
-        raise ValueError(f"planner did not return valid JSON: {text[:400]}")
+        hints: List[str] = []
+        if text.count("{") != text.count("}"):
+            hints.append("unbalanced braces")
+        if text.count("[") != text.count("]"):
+            hints.append("unbalanced brackets")
+        if text.count("```") % 2 != 0:
+            hints.append("unclosed code fence")
+
+        suffix = f" ({', '.join(hints)})" if hints else ""
+        raise ValueError(f"planner did not return valid JSON{suffix}: {text[:400]}")
 
     def _normalize_steps(self, raw_steps: Any) -> List[PlannerStep]:
         if not isinstance(raw_steps, Sequence) or isinstance(raw_steps, (str, bytes, bytearray)):
@@ -226,9 +353,46 @@ class AgentPlanner:
             temperature=0.1,
             max_tokens=1400,
         )
-        return self._parse_planner_response(
-            raw_response,
-            available_tools=available_tools,
-            iteration=iteration,
-            model_info=model_info,
-        )
+        try:
+            return self._parse_planner_response(
+                raw_response,
+                available_tools=available_tools,
+                iteration=iteration,
+                model_info=model_info,
+            )
+        except ValueError as exc:
+            if not self._is_recoverable_format_error(exc):
+                raise
+
+            repair_messages = [
+                *messages,
+                {
+                    "role": "assistant",
+                    "content": raw_response,
+                },
+                {
+                    "role": "user",
+                    "content": self._build_repair_prompt(),
+                },
+            ]
+            repaired_response, repaired_model_info = await llm_service.chat_with_candidates(
+                llm_resolution,
+                repair_messages,
+                temperature=0.0,
+                max_tokens=1800,
+            )
+            try:
+                return self._parse_planner_response(
+                    repaired_response,
+                    available_tools=available_tools,
+                    iteration=iteration,
+                    model_info={
+                        **repaired_model_info,
+                        "repair_attempted": True,
+                        "initial_raw_response": raw_response,
+                    },
+                )
+            except ValueError as repair_exc:
+                raise ValueError(
+                    f"{exc}; planner retry also failed: {repair_exc}"
+                ) from repair_exc

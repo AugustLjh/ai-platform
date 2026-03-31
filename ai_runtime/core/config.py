@@ -202,36 +202,6 @@ class ServerConfig(BaseModel):
         )
 
 
-class RedisConfig(BaseModel):
-    """Redis configuration"""
-    host: str = Field(default="localhost", description="Redis host")
-    port: int = Field(default=6379, description="Redis port")
-    password: Optional[str] = Field(default=None, description="Redis password")
-    db: int = Field(default=0, description="Redis database number")
-
-    @classmethod
-    def from_env(cls) -> "RedisConfig":
-        """Load from environment variables"""
-        return cls(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", "6379")),
-            password=os.getenv("REDIS_PASSWORD") or None,
-            db=int(os.getenv("REDIS_DB", "0")),
-        )
-
-
-class CacheConfig(BaseModel):
-    """Cache configuration"""
-    ttl: int = Field(default=3600, description="Cache expiration time in seconds")
-
-    @classmethod
-    def from_env(cls) -> "CacheConfig":
-        """Load from environment variables"""
-        return cls(
-            ttl=int(os.getenv("CACHE_TTL", "3600")),
-        )
-
-
 class SecurityConfig(BaseModel):
     """Security configuration"""
     enable_api_key_auth: bool = Field(default=False, description="Enable API key authentication")
@@ -312,8 +282,6 @@ class AppConfig(BaseModel):
     rag: RAGConfig = Field(default_factory=RAGConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
-    redis: RedisConfig = Field(default_factory=RedisConfig)
-    cache: CacheConfig = Field(default_factory=CacheConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
@@ -338,8 +306,6 @@ class AppConfig(BaseModel):
             rag=RAGConfig.from_env(),
             agent=AgentConfig.from_env(),
             server=ServerConfig.from_env(),
-            redis=RedisConfig.from_env(),
-            cache=CacheConfig.from_env(),
             security=SecurityConfig.from_env(),
             logging=LoggingConfig.from_env(),
             performance=PerformanceConfig.from_env(),

@@ -8,6 +8,7 @@ from core.agent_runtime.llm_service import AgentLLMService
 from core.agent_runtime.memory import RuntimeStateStore
 from core.agent_runtime.mcp.registry import MCPRegistry
 from core.agent_runtime.models import (
+    AgentArtifact,
     AgentRun,
     AgentRunEvent,
     AgentRunEventListResponse,
@@ -18,14 +19,13 @@ from core.agent_runtime.models import (
 from core.agent_runtime.orchestrator import AgentOrchestrator
 from core.agent_runtime.skills.registry import SkillRegistry
 from core.agent_runtime.planner import AgentPlanner
+from core.agent_runtime.result_contract import hydrate_legacy_result
 from core.agent_runtime.summarizer import AgentSummarizer
 from core.agent_runtime.repositories.agent_repository import AgentRepository
 from core.agent_runtime.repositories.run_repository import RunRepository
 from core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
-from core.agent_runtime.tools.providers.builtin import register_builtin_tools
-from core.agent_runtime.tools.providers.knowledge import register_knowledge_tools
-from core.agent_runtime.tools.providers.mcp import MCPToolProvider
 from core.agent_runtime.tools.base import ToolLookupContext
+from core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
 from core.agent_runtime.tools.registry import ToolRegistry
 from core.agent_runtime.tracing import AgentTracer
 
@@ -38,9 +38,7 @@ class AgentRuntime:
         self.state_store = RuntimeStateStore()
         self.registry = ToolRegistry()
         self.mcp_registry = MCPRegistry(db_pool)
-        register_builtin_tools(self.registry)
-        register_knowledge_tools(self.registry)
-        self.registry.register_provider(MCPToolProvider(self.mcp_registry))
+        configure_tool_registry(self.registry, mcp_registry=self.mcp_registry)
         self.skill_registry = SkillRegistry(db_pool)
         self.llm_service = AgentLLMService()
 
@@ -60,6 +58,60 @@ class AgentRuntime:
             tool_call_repository=self.tool_call_repository,
             state_store=self.state_store,
             skill_registry=self.skill_registry,
+        )
+
+    def _build_resume_context(self, run_row: dict) -> dict:
+        context = dict(run_row.get("context") or {})
+        if not isinstance(context.get("conversation"), list):
+            context["conversation"] = []
+        if not isinstance(context.get("step_history"), list):
+            context["step_history"] = []
+
+        for key in (
+            "pending_question",
+            "ask_user_guard",
+            "last_plan",
+            "last_result_contract",
+            "last_summary_model",
+            "planning_model",
+            "synthesis_model",
+            "normalized_task_input",
+            "mounted_knowledge_base_ids",
+        ):
+            context.pop(key, None)
+
+        context["tool_failures"] = 0
+        context["execution_count"] = 0
+        return context
+
+    def _hydrate_run_row(
+        self,
+        run_row: dict,
+        *,
+        artifacts: list[dict] | None = None,
+        steps: list[dict] | None = None,
+        tool_calls: list[dict] | None = None,
+    ) -> AgentRun:
+        legacy = hydrate_legacy_result(
+            final_output=run_row.get("final_output"),
+            final_output_text=run_row.get("final_output_text"),
+            final_output_json=run_row.get("final_output_json"),
+            artifacts=artifacts,
+        )
+        hydrated = {
+            **run_row,
+            "final_output": legacy.get("final_output"),
+            "final_output_text": legacy.get("final_output_text"),
+            "final_output_json": legacy.get("final_output_json"),
+            "artifacts": legacy.get("artifacts") or [],
+            "steps": steps or [],
+            "tool_calls": tool_calls or [],
+        }
+        return AgentRun.model_validate(
+            {
+                **hydrated,
+                "artifacts": [AgentArtifact.model_validate(item) for item in hydrated["artifacts"]],
+            }
         )
 
     async def list_tools(
@@ -95,12 +147,15 @@ class AgentRuntime:
                 "metadata": request.metadata,
             }
         )
-        run = AgentRun.model_validate(run_row)
+        run = self._hydrate_run_row(run_row, artifacts=[])
         await self.tracer.emit_event(run.id, "run.created", status=run.status, input=run.input)
         if request.auto_start:
             await self.start_run(run.id)
             refreshed = await self.run_repository.get_run(run.id, run.tenant_id)
-            run = AgentRun.model_validate(refreshed)
+            artifacts = await self.run_repository.list_artifacts(run.id)
+            steps = await self.run_repository.list_steps(run.id)
+            tool_calls = await self.tool_call_repository.list_tool_calls(run.id)
+            run = self._hydrate_run_row(refreshed, artifacts=artifacts, steps=steps, tool_calls=tool_calls)
         return AgentRunSummaryResponse(run=run)
 
     async def start_run(self, run_id: str) -> None:
@@ -115,7 +170,10 @@ class AgentRuntime:
         run = await self.run_repository.get_run(run_id, tenant_id)
         if run is None:
             raise ValueError("run not found")
-        return AgentRunSummaryResponse(run=AgentRun.model_validate(run))
+        artifacts = await self.run_repository.list_artifacts(run_id)
+        steps = await self.run_repository.list_steps(run_id)
+        tool_calls = await self.tool_call_repository.list_tool_calls(run_id)
+        return AgentRunSummaryResponse(run=self._hydrate_run_row(run, artifacts=artifacts, steps=steps, tool_calls=tool_calls))
 
     async def list_runs(
         self,
@@ -125,7 +183,8 @@ class AgentRuntime:
         offset: int = 0,
     ) -> AgentRunListResponse:
         rows = await self.run_repository.list_runs(tenant_id, user_id=user_id, limit=limit, offset=offset)
-        runs = [AgentRun.model_validate(row) for row in rows]
+        artifact_map = await self.run_repository.list_artifacts_for_runs([row["id"] for row in rows])
+        runs = [self._hydrate_run_row(row, artifacts=artifact_map.get(row["id"], [])) for row in rows]
         return AgentRunListResponse(runs=runs, total=len(runs))
 
     async def list_events(
@@ -181,7 +240,8 @@ class AgentRuntime:
             task.cancel()
         updated = await self.run_repository.update_run_status(run_id, "cancelled", error_message="Run cancelled")
         await self.tracer.emit_event(run_id, "run.cancelled", status="cancelled")
-        return AgentRunSummaryResponse(run=AgentRun.model_validate(updated))
+        artifacts = await self.run_repository.list_artifacts(run_id)
+        return AgentRunSummaryResponse(run=self._hydrate_run_row(updated, artifacts=artifacts))
 
     async def resume_run(
         self,
@@ -195,7 +255,10 @@ class AgentRuntime:
         if input_patch:
             run = await self.run_repository.patch_run_input(run_id, input_patch)
             await self.tracer.emit_event(run_id, "run.input_patched", input_patch=input_patch)
-        updated = await self.run_repository.update_run_status(run_id, "queued", error_message=None)
+        updated = await self.run_repository.reset_run_execution(
+            run_id,
+            context=self._build_resume_context(run),
+        )
         await self.tracer.emit_event(run_id, "run.resumed", status="queued")
         await self.start_run(run_id)
-        return AgentRunSummaryResponse(run=AgentRun.model_validate(updated))
+        return AgentRunSummaryResponse(run=self._hydrate_run_row(updated, artifacts=[], steps=[], tool_calls=[]))
