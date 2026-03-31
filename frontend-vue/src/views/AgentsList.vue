@@ -91,8 +91,17 @@
                     ⋯
                   </button>
                   <div v-if="openMenuAgentId === agent.id" class="agent-menu">
-                    <button type="button" class="agent-menu-item" @click.stop="editAgent(agent.id)">
-                      编辑智能体
+                    <button type="button" class="agent-menu-item" @click.stop="openAgent(agent.id)">
+                      进入聊天
+                    </button>
+                    <button type="button" class="agent-menu-item" @click.stop="editAgentBasic(agent.id)">
+                      基础设置
+                    </button>
+                    <button type="button" class="agent-menu-item" @click.stop="editAgentExtensions(agent.id)">
+                      扩展绑定
+                    </button>
+                    <button type="button" class="agent-menu-item" @click.stop="openAgentRuns(agent.id)">
+                      运行记录
                     </button>
                     <button type="button" class="agent-menu-item danger" @click.stop="deleteAgent(agent)">
                       删除智能体
@@ -286,14 +295,24 @@ const openAgent = (agentId) => {
   router.push(`/agents/${agentId}`)
 }
 
-const editAgent = (agentId) => {
+const editAgentBasic = (agentId) => {
   openMenuAgentId.value = ''
-  router.push(`/agents/${agentId}/settings`)
+  router.push(`/agents/${agentId}/settings/basic`)
+}
+
+const editAgentExtensions = (agentId) => {
+  openMenuAgentId.value = ''
+  router.push(`/agents/${agentId}/settings/extensions`)
+}
+
+const openAgentRuns = (agentId) => {
+  openMenuAgentId.value = ''
+  router.push(`/agents/${agentId}/runs`)
 }
 
 const deleteAgent = async (agent) => {
   openMenuAgentId.value = ''
-  const confirmed = window.confirm(`确认删除智能体“${agent.name}”吗？`)
+  const confirmed = window.confirm(`确认彻底删除智能体“${agent.name}”吗？这会清理关联的运行记录和对话数据。`)
   if (!confirmed) {
     return
   }
@@ -302,7 +321,7 @@ const deleteAgent = async (agent) => {
     await agentsStore.archiveAgent(agent.id)
     toastStore.showToast({ type: 'success', message: '智能体已删除' })
   } catch (error) {
-    console.error('Failed to archive agent:', error)
+    console.error('Failed to delete agent:', error)
     toastStore.showToast({ type: 'error', message: agentsStore.error || '删除智能体失败' })
   }
 }

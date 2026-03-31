@@ -3,7 +3,10 @@
     <div class="tool-card-head">
       <div>
         <div class="tool-name">{{ toolCall.toolName }}</div>
-        <div class="tool-meta">调用于 {{ formatTime(toolCall.updatedAt || toolCall.createdAt) }}</div>
+        <div class="tool-meta">
+          <span>{{ toolKindLabel }}</span>
+          <span>调用于 {{ formatTime(toolCall.updatedAt || toolCall.createdAt) }}</span>
+        </div>
       </div>
       <span :class="['tool-status', toolCall.status]">{{ statusLabel }}</span>
     </div>
@@ -15,7 +18,7 @@
 
     <div v-if="hasResult" class="tool-section">
       <div class="tool-section-label">结果</div>
-      <pre>{{ formattedResult }}</pre>
+      <AgentToolResultPreview :result="toolCall.result" :tool-call="toolCall" />
     </div>
 
     <div v-if="hasError" class="tool-section">
@@ -27,6 +30,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import AgentToolResultPreview from './AgentToolResultPreview.vue'
 
 const props = defineProps({
   toolCall: {
@@ -44,8 +48,12 @@ const statusMap = {
 }
 
 const statusLabel = computed(() => statusMap[props.toolCall.status] || props.toolCall.status || '未知')
+const toolKindLabel = computed(() => {
+  if (props.toolCall.toolKind === 'mcp') return 'MCP Tool'
+  if (props.toolCall.toolKind === 'knowledge') return 'Knowledge Tool'
+  return 'Builtin Tool'
+})
 const formattedArguments = computed(() => JSON.stringify(props.toolCall.arguments || {}, null, 2))
-const formattedResult = computed(() => JSON.stringify(props.toolCall.result || {}, null, 2))
 const hasArguments = computed(() => Object.keys(props.toolCall.arguments || {}).length > 0)
 const hasResult = computed(() => props.toolCall.result && Object.keys(props.toolCall.result).length > 0)
 const hasError = computed(() => !!props.toolCall.error)
@@ -93,6 +101,9 @@ const formatTime = (value) => {
   font-size: 12px;
   color: var(--gray-500);
   margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .tool-status {

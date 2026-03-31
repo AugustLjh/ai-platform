@@ -105,18 +105,9 @@
           <div class="demo-info">
             <div class="demo-header">
               <span class="demo-icon">💡</span>
-              <span class="demo-title">演示账号</span>
+              <span class="demo-title">演示访问</span>
             </div>
-            <div class="demo-credentials">
-              <div class="demo-item">
-                <span class="demo-label">邮箱：</span>
-                <span class="demo-value">demo@example.com</span>
-              </div>
-              <div class="demo-item">
-                <span class="demo-label">密码：</span>
-                <span class="demo-value">demo123456</span>
-              </div>
-            </div>
+            <p class="demo-copy">演示账号由管理员统一分配，登录页不再展示默认账号和密码。</p>
           </div>
         </div>
       </div>
@@ -569,30 +560,11 @@ const handleLogin = async () => {
   color: var(--gray-700);
 }
 
-.demo-credentials {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.demo-item {
-  display: flex;
-  align-items: center;
+.demo-copy {
+  margin: 0;
   font-size: 13px;
-}
-
-.demo-label {
-  color: var(--gray-600);
-  min-width: 50px;
-}
-
-.demo-value {
-  color: var(--gray-900);
-  font-weight: 500;
-  font-family: var(--font-mono);
-  background: white;
-  padding: 4px 8px;
-  border-radius: 6px;
+  line-height: 1.7;
+  color: var(--gray-700);
 }
 
 /* 响应式设计 */

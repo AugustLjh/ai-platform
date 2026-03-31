@@ -11,7 +11,9 @@ const Profile = () => import('../views/Profile.vue')
 const Settings = () => import('../views/Settings.vue')
 const AgentsList = () => import('../views/AgentsList.vue')
 const AgentChat = () => import('../views/AgentChat.vue')
-const AgentWorkspace = () => import('../views/AgentWorkspace.vue')
+const AgentSettingsBasic = () => import('../views/AgentSettingsBasic.vue')
+const AgentExtensions = () => import('../views/AgentExtensions.vue')
+const AgentRuns = () => import('../views/AgentRuns.vue')
 const AgentRunDetail = () => import('../views/AgentRunDetail.vue')
 const KnowledgeBaseList = () => import('../views/KnowledgeBaseList.vue')
 const KnowledgeBaseCreate = () => import('../views/KnowledgeBaseCreate.vue')
@@ -80,6 +82,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/agents/:id/runs',
+    name: 'AgentRuns',
+    component: AgentRuns,
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/agents/:id',
     name: 'AgentChat',
     component: AgentChat,
@@ -87,8 +95,18 @@ const routes = [
   },
   {
     path: '/agents/:id/settings',
-    name: 'AgentWorkspace',
-    component: AgentWorkspace,
+    redirect: (to) => `/agents/${to.params.id}/settings/basic`
+  },
+  {
+    path: '/agents/:id/settings/basic',
+    name: 'AgentSettingsBasic',
+    component: AgentSettingsBasic,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/:id/settings/extensions',
+    name: 'AgentExtensions',
+    component: AgentExtensions,
     meta: { requiresAuth: true }
   },
   {

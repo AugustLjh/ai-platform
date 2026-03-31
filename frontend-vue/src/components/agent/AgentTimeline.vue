@@ -50,14 +50,26 @@ const formatTime = (value) => {
 
 const summariseEvent = (event) => {
   const payload = event.payload || {}
+  if (event.eventType === 'run.resumed') {
+    return '恢复执行，当前 workspace 状态已切换到新一轮运行'
+  }
+  if (event.eventType === 'run.input_patched') {
+    return `恢复前更新了输入: ${JSON.stringify(payload.input_patch || {})}`
+  }
   if (payload.error) {
     return payload.error
   }
   if (payload.question) {
     return payload.question
   }
+  if (payload.final_output_text) {
+    return payload.final_output_text
+  }
   if (payload.final_output) {
     return payload.final_output
+  }
+  if (Array.isArray(payload.artifacts) && payload.artifacts.length > 0) {
+    return `生成了 ${payload.artifacts.length} 个结构化结果`
   }
   if (payload.output) {
     return JSON.stringify(payload.output, null, 2)

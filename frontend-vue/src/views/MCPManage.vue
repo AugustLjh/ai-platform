@@ -47,10 +47,18 @@
             </div>
             <div class="server-item-meta">
               <span>{{ server.transport }}</span>
-              <span>{{ server.tools?.length || 0 }} tools</span>
+              <span>{{ (server.catalog?.toolCount ?? server.tools?.length) || 0 }} tools</span>
             </div>
             <div class="server-item-sub">
               {{ server.command || server.endpoint || '未配置连接地址' }}
+            </div>
+            <div class="server-item-badges">
+              <span :class="['mini-badge', statusTone('availability', server.availability?.status)]">
+                {{ statusLabel('availability', server.availability?.status) }}
+              </span>
+              <span :class="['mini-badge', statusTone('catalog', server.catalog?.status)]">
+                {{ statusLabel('catalog', server.catalog?.status) }}
+              </span>
             </div>
             <div v-if="server.lastError" class="server-item-error">
               {{ server.lastError }}
@@ -175,6 +183,41 @@
             <div><span>Command / Endpoint</span><strong>{{ selectedServer.command || selectedServer.endpoint || '未配置' }}</strong></div>
             <div><span>Last Tested</span><strong>{{ formatTime(selectedServer.lastTestedAt) }}</strong></div>
           </div>
+          <div class="summary-grid">
+            <article class="summary-card">
+              <div class="summary-head">
+                <span class="summary-kicker">Connection</span>
+                <span :class="['summary-badge', statusTone('connection', selectedServer.connection?.status)]">
+                  {{ statusLabel('connection', selectedServer.connection?.status) }}
+                </span>
+              </div>
+              <strong>{{ selectedServer.connection?.summary || '尚未执行连接测试。' }}</strong>
+              <p v-if="selectedServer.connection?.testedAt">最近测试：{{ formatTime(selectedServer.connection?.testedAt) }}</p>
+            </article>
+
+            <article class="summary-card">
+              <div class="summary-head">
+                <span class="summary-kicker">Catalog</span>
+                <span :class="['summary-badge', statusTone('catalog', selectedServer.catalog?.status)]">
+                  {{ statusLabel('catalog', selectedServer.catalog?.status) }}
+                </span>
+              </div>
+              <strong>{{ selectedServer.catalog?.summary || '尚未建立工具 catalog。' }}</strong>
+              <p>缓存工具：{{ (selectedServer.catalog?.toolCount ?? selectedServer.tools?.length) || 0 }} 个</p>
+              <p>最近刷新：{{ summarizeCatalogAge(selectedServer.catalog) }}</p>
+            </article>
+
+            <article class="summary-card">
+              <div class="summary-head">
+                <span class="summary-kicker">Availability</span>
+                <span :class="['summary-badge', statusTone('availability', selectedServer.availability?.status)]">
+                  {{ statusLabel('availability', selectedServer.availability?.status) }}
+                </span>
+              </div>
+              <strong>{{ selectedServer.availability?.summary || '尚未准备好。' }}</strong>
+              <p>绑定到 agent：{{ selectedServer.availability?.bindable ? '允许' : '暂不建议' }}</p>
+            </article>
+          </div>
           <div v-if="selectedServer.lastError" class="detail-error">
             {{ selectedServer.lastError }}
           </div>
@@ -185,14 +228,22 @@
 
         <div class="detail-panel">
           <h3>缓存工具 Catalog</h3>
+          <div v-if="selectedServer.catalog?.sampleTools?.length" class="catalog-samples">
+            <span v-for="name in selectedServer.catalog.sampleTools" :key="name" class="sample-tool">{{ name }}</span>
+          </div>
           <div v-if="!selectedServer.tools?.length" class="mini-empty">当前没有缓存工具，先执行 refresh。</div>
           <div v-else class="tool-catalog">
             <article v-for="tool in selectedServer.tools" :key="tool.runtimeName || tool.toolName" class="catalog-tool">
               <div class="catalog-tool-head">
-                <strong>{{ tool.toolName }}</strong>
+                <strong>{{ tool.title || tool.toolName }}</strong>
                 <span>{{ tool.runtimeName || tool.metadata?.runtime_name || 'runtime name pending' }}</span>
               </div>
               <p>{{ tool.description || '暂无描述' }}</p>
+              <div class="catalog-tool-meta">
+                <span>{{ Object.keys(tool.inputSchema?.properties || {}).length }} input fields</span>
+                <span>{{ Object.keys(tool.outputSchema?.properties || {}).length }} output fields</span>
+                <span>{{ formatTime(tool.discoveredAt) }}</span>
+              </div>
               <div class="tool-schema-tags">
                 <span
                   v-for="key in Object.keys(tool.inputSchema?.properties || {})"
@@ -255,9 +306,12 @@ const normalizeTool = (tool = {}) => ({
   runtimeName: tool.runtime_name || tool.runtimeName || '',
   serverName: tool.server_name || tool.serverName || '',
   toolName: tool.tool_name || tool.toolName || '',
+  title: tool.title || '',
   description: tool.description || '',
   inputSchema: typeof tool.input_schema === 'object' ? tool.input_schema : (tool.inputSchema || {}),
-  metadata: typeof tool.metadata === 'object' ? tool.metadata : {}
+  outputSchema: typeof tool.output_schema === 'object' ? tool.output_schema : (tool.outputSchema || {}),
+  metadata: typeof tool.metadata === 'object' ? tool.metadata : {},
+  discoveredAt: tool.discovered_at || tool.discoveredAt || null
 })
 
 const normalizeServer = (server = {}) => ({
@@ -272,8 +326,91 @@ const normalizeServer = (server = {}) => ({
   status: server.status || 'active',
   lastError: server.last_error || server.lastError || '',
   lastTestedAt: server.last_tested_at || server.lastTestedAt || null,
+  connection: server.connection && typeof server.connection === 'object' ? {
+    status: server.connection.status || 'untested',
+    summary: server.connection.summary || '',
+    testedAt: server.connection.tested_at || server.connection.testedAt || null,
+    error: server.connection.error || ''
+  } : null,
+  catalog: server.catalog && typeof server.catalog === 'object' ? {
+    status: server.catalog.status || 'missing',
+    summary: server.catalog.summary || '',
+    toolCount: Number(server.catalog.tool_count || server.catalog.toolCount || 0),
+    refreshedAt: server.catalog.refreshed_at || server.catalog.refreshedAt || null,
+    ageSeconds: server.catalog.age_seconds ?? server.catalog.ageSeconds ?? null,
+    staleAfterSeconds: Number(server.catalog.stale_after_seconds || server.catalog.staleAfterSeconds || 0),
+    isStale: Boolean(server.catalog.is_stale || server.catalog.isStale),
+    sampleTools: Array.isArray(server.catalog.sample_tools || server.catalog.sampleTools)
+      ? [...(server.catalog.sample_tools || server.catalog.sampleTools)]
+      : []
+  } : null,
+  availability: server.availability && typeof server.availability === 'object' ? {
+    status: server.availability.status || 'unavailable',
+    summary: server.availability.summary || '',
+    bindable: Boolean(server.availability.bindable),
+    reason: server.availability.reason || ''
+  } : null,
   tools: Array.isArray(server.tools) ? server.tools.map(normalizeTool) : []
 })
+
+const connectionStatusMap = {
+  healthy: '连接正常',
+  degraded: '连接异常',
+  untested: '未测试',
+  disabled: '已禁用'
+}
+
+const catalogStatusMap = {
+  ready: 'Catalog 就绪',
+  stale: 'Catalog 过期',
+  empty: 'Catalog 为空',
+  missing: '未刷新',
+  disabled: '已禁用'
+}
+
+const availabilityStatusMap = {
+  available: '可投入使用',
+  warning: '可用但需关注',
+  degraded: '不建议使用',
+  unavailable: '不可用',
+  disabled: '已禁用'
+}
+
+const summarizeCatalogAge = (catalog) => {
+  if (!catalog?.refreshedAt) return '尚未刷新'
+  if (catalog.ageSeconds === null || catalog.ageSeconds === undefined) return '刚刚刷新'
+  const seconds = Number(catalog.ageSeconds)
+  if (seconds < 60) return `${seconds} 秒前`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`
+  return `${Math.floor(seconds / 86400)} 天前`
+}
+
+const statusTone = (kind, status) => {
+  const normalized = String(status || '').trim() || 'default'
+  return `${kind}-${normalized}`
+}
+
+const statusLabel = (kind, status) => {
+  if (kind === 'connection') return connectionStatusMap[status] || status || '未知状态'
+  if (kind === 'catalog') return catalogStatusMap[status] || status || '未知状态'
+  return availabilityStatusMap[status] || status || '未知状态'
+}
+
+const applyServerSnapshot = (rawServer) => {
+  if (!rawServer) return null
+  const normalized = normalizeServer(rawServer)
+  const index = servers.value.findIndex((item) => item.id === normalized.id)
+  if (index >= 0) {
+    servers.value[index] = normalized
+  } else {
+    servers.value = [normalized, ...servers.value]
+  }
+  if (selectedServer.value?.id === normalized.id || !selectedServer.value) {
+    selectedServer.value = normalized
+  }
+  return normalized
+}
 
 const loadServers = async () => {
   loading.value = true
@@ -305,11 +442,7 @@ const loadServerDetail = async (serverId) => {
   errorMessage.value = ''
   try {
     const { data } = await mcpAPI.getServer(serverId)
-    selectedServer.value = normalizeServer(data)
-    const index = servers.value.findIndex((item) => item.id === serverId)
-    if (index >= 0) {
-      servers.value[index] = selectedServer.value
-    }
+    selectedServer.value = applyServerSnapshot(data)
     fillForm(selectedServer.value)
     editingServerId.value = serverId
   } catch (error) {
@@ -378,7 +511,7 @@ const saveServer = async () => {
     const response = editingServerId.value
       ? await mcpAPI.updateServer(editingServerId.value, payload)
       : await mcpAPI.createServer(payload)
-    const saved = normalizeServer(response.data)
+    const saved = applyServerSnapshot(response.data)
     selectedServer.value = saved
     editingServerId.value = saved.id
     await loadServers()
@@ -399,9 +532,9 @@ const testServer = async () => {
   errorMessage.value = ''
   try {
     const { data } = await mcpAPI.testServer(selectedServer.value.id)
-    lastTestResult.value = data
-    await loadServerDetail(selectedServer.value.id)
-    toastStore.showToast({ type: 'success', message: data.ok ? '连接测试通过' : '连接测试返回失败结果' })
+    lastTestResult.value = data.result || data
+    applyServerSnapshot(data.server)
+    toastStore.showToast({ type: 'success', message: data?.result?.ok ? '连接测试通过' : '连接测试已完成' })
   } catch (error) {
     console.error('Failed to test MCP server:', error)
     errorMessage.value = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '连接测试失败'
@@ -417,8 +550,8 @@ const refreshTools = async () => {
   errorMessage.value = ''
   try {
     const { data } = await mcpAPI.refreshTools(selectedServer.value.id)
+    applyServerSnapshot(data.server)
     toastStore.showToast({ type: 'success', message: `已刷新 ${data.total || 0} 个工具` })
-    await loadServerDetail(selectedServer.value.id)
   } catch (error) {
     console.error('Failed to refresh MCP tools:', error)
     errorMessage.value = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '刷新工具失败'
@@ -450,7 +583,7 @@ const deleteServer = async () => {
   }
 }
 
-const formatJSON = (value) => JSON.stringify(value || {}, null, 2)
+const formatJSON = (value) => JSON.stringify(value ?? {}, null, 2)
 
 const formatTime = (value) => {
   if (!value) return '未测试'
@@ -593,6 +726,30 @@ onMounted(async () => {
   gap: 12px;
 }
 
+.server-item-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mini-badge,
+.summary-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mini-badge {
+  padding: 5px 10px;
+}
+
+.summary-badge {
+  padding: 4px 10px;
+}
+
 .server-item-error,
 .detail-error {
   margin-top: 10px;
@@ -674,6 +831,47 @@ onMounted(async () => {
   color: var(--gray-500);
 }
 
+.summary-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.summary-card {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+}
+
+.summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.summary-kicker {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gray-500);
+  font-weight: 700;
+}
+
+.summary-card strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--gray-900);
+}
+
+.summary-card p {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
 .test-result {
   margin-top: 14px;
   padding: 14px;
@@ -693,6 +891,22 @@ onMounted(async () => {
   gap: 12px;
 }
 
+.catalog-samples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sample-tool {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.08);
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .catalog-tool {
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 16px;
@@ -701,6 +915,15 @@ onMounted(async () => {
 }
 
 .catalog-tool-head span {
+  font-size: 12px;
+  color: var(--gray-500);
+}
+
+.catalog-tool-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
   font-size: 12px;
   color: var(--gray-500);
 }
@@ -724,6 +947,36 @@ onMounted(async () => {
   border: 1px solid rgba(239, 68, 68, 0.2);
   background: rgba(254, 242, 242, 0.9);
   color: #b91c1c;
+}
+
+.connection-healthy,
+.availability-available,
+.catalog-ready {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+}
+
+.connection-degraded,
+.availability-degraded,
+.availability-unavailable,
+.catalog-empty,
+.catalog-missing {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.connection-untested,
+.availability-warning,
+.catalog-stale {
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
+}
+
+.connection-disabled,
+.availability-disabled,
+.catalog-disabled {
+  background: rgba(148, 163, 184, 0.16);
+  color: #475569;
 }
 
 @media (max-width: 960px) {

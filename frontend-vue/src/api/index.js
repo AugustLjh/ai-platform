@@ -1,4 +1,5 @@
 import api from './axios'
+import { buildApiUrl } from './base'
 export { agentsAPI } from './agents'
 export { skillsAPI } from './skills'
 export { mcpAPI } from './mcp'
@@ -15,8 +16,8 @@ export const authAPI = {
   },
 
   // Logout
-  logout() {
-    return api.post('/api/v1/auth/logout')
+  logout(refreshToken = '') {
+    return api.post('/api/v1/auth/logout', refreshToken ? { refresh_token: refreshToken } : {})
   },
 
   // Get current user
@@ -92,7 +93,7 @@ export const chatAPI = {
   // Send message with SSE (streaming)
   async sendMessageSSE(sessionId, message, config = {}, onChunk) {
     const token = localStorage.getItem('access_token')
-    const response = await fetch(`/api/v1/chat/sse`, {
+    const response = await fetch(buildApiUrl('/api/v1/chat/sse'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

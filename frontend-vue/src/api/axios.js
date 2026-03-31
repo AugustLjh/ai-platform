@@ -1,7 +1,8 @@
 import axios from 'axios'
+import { buildApiUrl, getApiBaseUrl } from './base'
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/', // 修改为相对路径
+  baseURL: getApiBaseUrl() || '/',
   timeout: 30000
 })
 
@@ -27,7 +28,7 @@ api.interceptors.response.use(
       if (refreshToken) {
         try {
           const { data } = await axios.post(
-            '/api/v1/auth/refresh', // 修改为相对路径
+            buildApiUrl('/api/v1/auth/refresh'),
             { refresh_token: refreshToken }
           )
           localStorage.setItem('access_token', data.access_token)

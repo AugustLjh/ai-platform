@@ -17,8 +17,26 @@
           <span v-else>尚未开始运行</span>
         </div>
         <div class="topbar-actions">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            :disabled="composerDisabled"
+            @click="startNewConversation"
+          >
+            新会话
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary"
+            :disabled="!currentSessionId"
+            @click="clearContext"
+          >
+            清理上下文
+          </button>
           <button type="button" class="btn btn-secondary" @click="refreshConversation">刷新</button>
-          <router-link :to="settingsLink" class="btn btn-secondary">设置</router-link>
+          <router-link :to="basicSettingsLink" class="btn btn-secondary">基础设置</router-link>
+          <router-link :to="extensionsLink" class="btn btn-secondary">扩展绑定</router-link>
+          <router-link :to="runsLink" class="btn btn-secondary">运行记录</router-link>
           <button
             v-if="canCancel"
             type="button"
@@ -104,6 +122,13 @@
             <span>{{ steps.length }} 步 · {{ toolCalls.length }} 次工具 · {{ runEvents.length }} 个事件</span>
           </button>
         </div>
+
+        <div v-if="showStructuredSurface" class="result-surface">
+          <AgentArtifactPanel
+            :artifacts="surfaceArtifacts"
+            :final-output-json="surfaceOutputJson"
+          />
+        </div>
       </div>
 
       <footer class="composer-shell">
@@ -170,6 +195,14 @@
         </div>
       </div>
 
+      <div class="details-grid">
+        <AgentArtifactPanel
+          :artifacts="artifacts"
+          :final-output-json="currentRun?.finalOutputJson"
+        />
+        <AgentPlanPanel :plan="plan" />
+      </div>
+      <AgentTimeline :events="runEvents" />
       <AgentStepList :steps="steps" :tool-calls="toolCalls" />
     </section>
   </div>
@@ -178,9 +211,13 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AgentArtifactPanel from '@/components/agent/AgentArtifactPanel.vue'
+import AgentPlanPanel from '@/components/agent/AgentPlanPanel.vue'
 import AgentStepList from '@/components/agent/AgentStepList.vue'
+import AgentTimeline from '@/components/agent/AgentTimeline.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
+import { getRunAnswerText } from '@/utils/agentArtifacts'
 import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
@@ -194,6 +231,7 @@ const submitLoading = ref(false)
 const detailsOpen = ref(false)
 const threadRef = ref(null)
 const textareaRef = ref(null)
+const draftSessionId = ref('')
 
 const starterPrompts = [
   '请介绍一下你能帮我做什么',
@@ -214,6 +252,8 @@ const currentRun = computed(() => {
 const runEvents = computed(() => agentsStore.runEvents)
 const steps = computed(() => agentsStore.steps)
 const toolCalls = computed(() => agentsStore.toolCalls)
+const plan = computed(() => agentsStore.plan)
+const artifacts = computed(() => agentsStore.artifacts)
 const errorMessage = computed(() => agentsStore.error || '')
 
 const statusMap = {
@@ -226,16 +266,46 @@ const statusMap = {
   cancelled: '已取消'
 }
 
-const settingsLink = computed(() => agent.value?.id ? `/agents/${agent.value.id}/settings` : '/agents')
+const basicSettingsLink = computed(() => agent.value?.id ? `/agents/${agent.value.id}/settings/basic` : '/agents')
+const extensionsLink = computed(() => agent.value?.id ? `/agents/${agent.value.id}/settings/extensions` : '/agents')
+const runsLink = computed(() => agent.value?.id ? `/agents/${agent.value.id}/runs` : '/agents')
 const effectiveStatus = computed(() => currentRun.value?.status || 'idle')
 const statusLabel = computed(() => statusMap[effectiveStatus.value] || effectiveStatus.value || '未知状态')
 const canCancel = computed(() => ['queued', 'running'].includes(currentRun.value?.status))
 const canResume = computed(() => ['waiting_user', 'failed', 'cancelled', 'completed'].includes(currentRun.value?.status))
 const showGlobalError = computed(() => Boolean(errorMessage.value) && currentRun.value?.status !== 'failed')
-const showDetailHint = computed(() => steps.value.length > 0 || toolCalls.value.length > 0 || runEvents.value.length > 0)
+const showDetailHint = computed(() => (
+  steps.value.length > 0 ||
+  toolCalls.value.length > 0 ||
+  runEvents.value.length > 0 ||
+  Boolean(plan.value) ||
+  artifacts.value.length > 0 ||
+  Boolean(currentRun.value?.finalOutputJson)
+))
 const composerDisabled = computed(() => ['queued', 'running'].includes(currentRun.value?.status))
+const surfaceArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType !== 'answer'))
+const surfaceOutputJson = computed(() => surfaceArtifacts.value.length > 0 ? null : currentRun.value?.finalOutputJson || null)
+const showStructuredSurface = computed(() => surfaceArtifacts.value.length > 0 || Boolean(surfaceOutputJson.value))
+const requestedSessionId = computed(() => {
+  const value = String(route.query.session || '').trim()
+  return value || ''
+})
+const currentSessionId = computed(() => {
+  const value = String(currentRun.value?.sessionId || requestedSessionId.value || draftSessionId.value || '').trim()
+  return value || ''
+})
+
+const createSessionId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `00000000-0000-4000-8000-${Date.now().toString(16).padStart(12, '0').slice(-12)}`
+}
 
 const topbarSummary = computed(() => {
+  if (!currentRun.value && requestedSessionId.value) {
+    return '当前是一个新的空白会话。发送第一条消息后，会从全新上下文开始执行。'
+  }
   if (!currentRun.value) {
     return '这是该智能体的聊天入口。发送第一条消息后，会进入持续上下文的多轮对话。'
   }
@@ -269,8 +339,9 @@ const streamingDescription = computed(() => {
 })
 
 const assistantContent = computed(() => {
-  if (currentRun.value?.finalOutput) {
-    return currentRun.value.finalOutput
+  const answer = getRunAnswerText(currentRun.value || {})
+  if (answer) {
+    return answer
   }
   if (currentRun.value?.status === 'failed') {
     return currentRun.value.errorMessage || '运行失败，请补充输入后重试。'
@@ -308,6 +379,9 @@ const assistantToneClass = computed(() => {
 })
 
 const composerTitle = computed(() => {
+  if (!currentRun.value && requestedSessionId.value) {
+    return '开始新会话'
+  }
   if (!currentRun.value) {
     return '开始对话'
   }
@@ -327,6 +401,9 @@ const composerTitle = computed(() => {
 })
 
 const composerDescription = computed(() => {
+  if (!currentRun.value && requestedSessionId.value) {
+    return '这会创建一个新的独立会话，不会继续上一轮 run。'
+  }
   if (!currentRun.value) {
     return '输入第一条消息后，这个智能体会进入持续上下文的会话。'
   }
@@ -346,6 +423,9 @@ const composerDescription = computed(() => {
 })
 
 const composerPlaceholder = computed(() => {
+  if (!currentRun.value && requestedSessionId.value) {
+    return '输入新会话的第一条消息...'
+  }
   if (!currentRun.value) {
     return '输入消息...'
   }
@@ -459,8 +539,8 @@ const buildThreadMessages = () => {
       role: 'assistant',
       title: assistantTitle.value,
       content: liveAssistantMessage,
-      renderMarkdown: Boolean(currentRun.value?.finalOutput),
-      html: currentRun.value?.finalOutput ? renderMarkdown(liveAssistantMessage) : '',
+      renderMarkdown: Boolean(currentRun.value?.finalOutputText || currentRun.value?.finalOutput),
+      html: (currentRun.value?.finalOutputText || currentRun.value?.finalOutput) ? renderMarkdown(liveAssistantMessage) : '',
       toneClass: assistantToneClass.value,
       timestamp: currentRun.value?.updatedAt || null,
       streaming: false
@@ -503,10 +583,22 @@ const loadConversation = async () => {
     agentsStore.fetchRuns()
   ])
 
-  const latestRun = agentsStore.sortedRuns.find((run) => run.agentDefinitionId === agentId)
+  const latestRun = agentsStore.sortedRuns.find((run) => {
+    if (run.agentDefinitionId !== agentId) {
+      return false
+    }
+    if (requestedSessionId.value) {
+      return run.sessionId === requestedSessionId.value
+    }
+    return true
+  })
   if (latestRun?.id) {
+    draftSessionId.value = latestRun.sessionId || requestedSessionId.value || ''
     await agentsStore.openRun(latestRun.id, { stream: true })
+    return
   }
+
+  draftSessionId.value = requestedSessionId.value || createSessionId()
 }
 
 const scrollThreadToBottom = async () => {
@@ -540,6 +632,61 @@ const refreshConversation = async () => {
   }
 }
 
+const startNewConversation = async () => {
+  if (!agent.value?.id || composerDisabled.value) {
+    return
+  }
+
+  const nextSessionId = createSessionId()
+  draftSessionId.value = nextSessionId
+  composerMessage.value = ''
+  detailsOpen.value = false
+  agentsStore.stopRunStream()
+  agentsStore.resetRunState()
+  agentsStore.error = null
+
+  try {
+    await router.replace({
+      path: route.path,
+      query: {
+        ...route.query,
+        session: nextSessionId
+      }
+    })
+    await autoResize()
+    await scrollThreadToBottom()
+    toastStore.showToast({ type: 'success', message: '已切换到新会话' })
+  } catch (error) {
+    console.error('Failed to start a new conversation:', error)
+    toastStore.showToast({ type: 'error', message: '切换新会话失败' })
+  }
+}
+
+const clearContext = async () => {
+  if (!agent.value?.id || !currentSessionId.value) {
+    return
+  }
+
+  const confirmed = window.confirm('确认清理当前会话的上下文吗？这会删除当前智能体在该会话下的运行记录和关联对话。')
+  if (!confirmed) {
+    return
+  }
+
+  try {
+    agentsStore.stopRunStream()
+    await agentsStore.clearAgentContext(agent.value.id, currentSessionId.value)
+    composerMessage.value = ''
+    detailsOpen.value = false
+    await loadConversation()
+    toastStore.showToast({ type: 'success', message: '上下文已清理' })
+    await autoResize()
+    await scrollThreadToBottom()
+  } catch (error) {
+    console.error('Failed to clear agent context:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '清理上下文失败' })
+  }
+}
+
 const submitMessage = async () => {
   const message = composerMessage.value.trim()
   if (!agent.value?.id || !message) {
@@ -556,14 +703,16 @@ const submitMessage = async () => {
       await agentsStore.resumeRun(currentRun.value.id, { message })
       toastStore.showToast({ type: 'success', message: '已继续执行' })
     } else {
+      const nextSessionId = requestedSessionId.value || draftSessionId.value || createSessionId()
       const createdRun = await agentsStore.createRun(agent.value.id, {
         input: {
           message
         },
-        session_id: '',
+        session_id: nextSessionId,
         metadata: {},
         auto_start: true
       })
+      draftSessionId.value = nextSessionId
       await agentsStore.openRun(createdRun.id, { stream: true })
       toastStore.showToast({ type: 'success', message: '已开始运行' })
     }
@@ -599,7 +748,7 @@ const openRunDetail = () => {
   router.push(`/agents/runs/${currentRun.value.id}`)
 }
 
-watch(() => route.params.id, async () => {
+watch(() => [route.params.id, route.query.session], async () => {
   try {
     await loadConversation()
     await scrollThreadToBottom()
@@ -1104,6 +1253,11 @@ const formatTime = (value) => {
   box-shadow: none;
 }
 
+.result-surface {
+  display: grid;
+  gap: 16px;
+}
+
 .send-icon {
   display: inline-flex;
   align-items: center;
@@ -1131,6 +1285,13 @@ const formatTime = (value) => {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
   gap: 16px;
   margin-bottom: 16px;
 }
@@ -1237,6 +1398,10 @@ const formatTime = (value) => {
   .chat-topbar,
   .details-panel-head {
     flex-direction: column;
+  }
+
+  .details-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .topbar-side,

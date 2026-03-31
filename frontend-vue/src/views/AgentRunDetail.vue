@@ -87,6 +87,13 @@
             <span>{{ steps.length }} 步 · {{ toolCalls.length }} 次工具 · {{ runEvents.length }} 个事件</span>
           </button>
         </div>
+
+        <div v-if="showStructuredSurface" class="result-surface">
+          <AgentArtifactPanel
+            :artifacts="surfaceArtifacts"
+            :final-output-json="surfaceOutputJson"
+          />
+        </div>
       </div>
 
       <footer class="composer-shell">
@@ -144,6 +151,14 @@
         <button type="button" class="details-close" @click="detailsOpen = false">收起</button>
       </div>
 
+      <div class="details-grid">
+        <AgentArtifactPanel
+          :artifacts="artifacts"
+          :final-output-json="run?.finalOutputJson"
+        />
+        <AgentPlanPanel :plan="plan" />
+      </div>
+      <AgentTimeline :events="runEvents" />
       <AgentStepList :steps="steps" :tool-calls="toolCalls" />
     </section>
   </div>
@@ -152,9 +167,13 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AgentArtifactPanel from '@/components/agent/AgentArtifactPanel.vue'
+import AgentPlanPanel from '@/components/agent/AgentPlanPanel.vue'
 import AgentStepList from '@/components/agent/AgentStepList.vue'
+import AgentTimeline from '@/components/agent/AgentTimeline.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
+import { getRunAnswerText } from '@/utils/agentArtifacts'
 import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
@@ -172,6 +191,8 @@ const agent = computed(() => agentsStore.currentAgent)
 const runEvents = computed(() => agentsStore.runEvents)
 const steps = computed(() => agentsStore.steps)
 const toolCalls = computed(() => agentsStore.toolCalls)
+const plan = computed(() => agentsStore.plan)
+const artifacts = computed(() => agentsStore.artifacts)
 const errorMessage = computed(() => agentsStore.error || '')
 
 const statusMap = {
@@ -190,7 +211,17 @@ const statusLabel = computed(() => statusMap[run.value?.status] || run.value?.st
 const canCancel = computed(() => ['queued', 'running'].includes(run.value?.status))
 const canResume = computed(() => ['waiting_user', 'failed', 'cancelled'].includes(run.value?.status))
 const showGlobalError = computed(() => Boolean(errorMessage.value) && run.value?.status !== 'failed')
-const showDetailHint = computed(() => steps.value.length > 0 || toolCalls.value.length > 0 || runEvents.value.length > 0)
+const showDetailHint = computed(() => (
+  steps.value.length > 0 ||
+  toolCalls.value.length > 0 ||
+  runEvents.value.length > 0 ||
+  Boolean(plan.value) ||
+  artifacts.value.length > 0 ||
+  Boolean(run.value?.finalOutputJson)
+))
+const surfaceArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType !== 'answer'))
+const surfaceOutputJson = computed(() => surfaceArtifacts.value.length > 0 ? null : run.value?.finalOutputJson || null)
+const showStructuredSurface = computed(() => surfaceArtifacts.value.length > 0 || Boolean(surfaceOutputJson.value))
 
 const topbarSummary = computed(() => {
   if (run.value?.status === 'waiting_user') {
@@ -238,8 +269,9 @@ const streamingDescription = computed(() => {
 })
 
 const assistantContent = computed(() => {
-  if (run.value?.finalOutput) {
-    return run.value.finalOutput
+  const answer = getRunAnswerText(run.value || {})
+  if (answer) {
+    return answer
   }
   if (run.value?.status === 'failed') {
     return run.value?.errorMessage || '运行失败，请补充输入后重试。'
@@ -250,7 +282,7 @@ const assistantContent = computed(() => {
   return ''
 })
 
-const assistantUsesMarkdown = computed(() => Boolean(run.value?.finalOutput))
+const assistantUsesMarkdown = computed(() => Boolean(run.value?.finalOutputText || run.value?.finalOutput))
 const assistantHtml = computed(() => renderMarkdown(assistantContent.value || ''))
 const showStreamingBubble = computed(() => ['queued', 'running'].includes(run.value?.status) && !assistantContent.value)
 const hasAssistantBubble = computed(() => showStreamingBubble.value || Boolean(assistantContent.value))
@@ -405,7 +437,7 @@ watch(() => route.params.run_id, async () => {
 })
 
 watch(
-  () => [runEvents.value.length, run.value?.status, run.value?.finalOutput, run.value?.updatedAt],
+  () => [runEvents.value.length, run.value?.status, run.value?.finalOutput, run.value?.finalOutputText, run.value?.updatedAt],
   () => {
     scrollThreadToBottom()
   }
@@ -768,6 +800,11 @@ const formatTime = (value) => {
   overflow-wrap: anywhere;
 }
 
+.result-surface {
+  display: grid;
+  gap: 16px;
+}
+
 .composer-shell {
   border-top: 1px solid rgba(15, 23, 42, 0.08);
   padding: 18px 20px 20px;
@@ -848,6 +885,13 @@ const formatTime = (value) => {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
   gap: 16px;
   margin-bottom: 16px;
 }
@@ -945,6 +989,10 @@ const formatTime = (value) => {
   .chat-topbar,
   .details-panel-head {
     flex-direction: column;
+  }
+
+  .details-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .topbar-side,

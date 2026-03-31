@@ -1,9 +1,9 @@
 import api from './axios'
+import { buildApiUrl } from './base'
 
 const buildStreamUrl = (runId, afterSequence = 0) => {
-  const base = import.meta.env.VITE_API_BASE_URL || ''
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
-  const url = new URL(`/api/v1/agents/runs/${runId}/events`, base ? new URL(base, origin).toString() : origin)
+  const url = new URL(buildApiUrl(`/api/v1/agents/runs/${runId}/events`), origin)
   url.searchParams.set('stream', 'true')
   url.searchParams.set('after_sequence', String(afterSequence))
   return url.toString()
@@ -82,6 +82,10 @@ export const agentsAPI = {
 
   archiveAgent(agentId) {
     return api.delete(`/api/v1/agents/${agentId}`)
+  },
+
+  clearAgentContext(agentId, payload) {
+    return api.post(`/api/v1/agents/${agentId}/clear-context`, payload)
   },
 
   createRun(agentId, payload) {
