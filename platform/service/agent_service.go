@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ai-platform/platform/api/grpc"
 	"github.com/ai-platform/platform/database"
@@ -16,7 +17,16 @@ import (
 var ErrAgentUnauthorized = errors.New("unauthorized")
 var ErrNotImplemented = errors.New("not implemented")
 
-const maskedSecretValue = "********"
+const (
+	maskedSecretValue      = "********"
+	fallbackFixedSkillSlug = "implementation-planner"
+	mcpCatalogStaleAfter   = 24 * time.Hour
+)
+
+var systemSkillSlugs = []string{
+	"implementation-planner",
+	"engineering",
+}
 
 type AgentDefinitionUpsertRequest struct {
 	Name         string          `json:"name"`
@@ -50,11 +60,16 @@ type UpdateAgentKnowledgeBasesRequest struct {
 	KnowledgeBaseIDs []string `json:"knowledge_base_ids"`
 }
 
+type ClearAgentContextRequest struct {
+	SessionID string `json:"session_id"`
+}
+
 type AgentToolSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
 	Kind        string          `json:"kind"`
+	Metadata    json.RawMessage `json:"metadata"`
 }
 
 type MCPServerUpsertRequest struct {
@@ -68,27 +83,86 @@ type MCPServerUpsertRequest struct {
 	Metadata  json.RawMessage `json:"metadata"`
 }
 
+type MCPServerTestResponse struct {
+	Result       map[string]any            `json:"result"`
+	Server       *database.MCPServer       `json:"server,omitempty"`
+	Connection   *database.MCPConnection   `json:"connection,omitempty"`
+	Catalog      *database.MCPCatalog      `json:"catalog,omitempty"`
+	Availability *database.MCPAvailability `json:"availability,omitempty"`
+}
+
+type MCPServerRefreshResponse struct {
+	Tools        []*database.MCPServerTool `json:"tools"`
+	Total        int                       `json:"total"`
+	Server       *database.MCPServer       `json:"server,omitempty"`
+	Connection   *database.MCPConnection   `json:"connection,omitempty"`
+	Catalog      *database.MCPCatalog      `json:"catalog,omitempty"`
+	Availability *database.MCPAvailability `json:"availability,omitempty"`
+}
+
 type AgentService struct {
-	aiClient   *grpc.AIClient
-	agentStore *database.AgentStore
-	skillStore *database.SkillStore
-	mcpStore   *database.MCPStore
-	skillsRoot string
+	aiClient           *grpc.AIClient
+	agentStore         *database.AgentStore
+	sessionStore       *database.SessionStore
+	skillStore         *database.SkillStore
+	mcpStore           *database.MCPStore
+	skillsRoot         string
+	systemSkillsSynced bool
 }
 
 func NewAgentService(
 	aiClient *grpc.AIClient,
 	agentStore *database.AgentStore,
+	sessionStore *database.SessionStore,
 	skillStore *database.SkillStore,
 	mcpStore *database.MCPStore,
 ) *AgentService {
 	return &AgentService{
-		aiClient:   aiClient,
-		agentStore: agentStore,
-		skillStore: skillStore,
-		mcpStore:   mcpStore,
-		skillsRoot: filepath.Join("/mnt/ai-platform", "ai_runtime", "skills"),
+		aiClient:     aiClient,
+		agentStore:   agentStore,
+		sessionStore: sessionStore,
+		skillStore:   skillStore,
+		mcpStore:     mcpStore,
+		skillsRoot:   resolveSkillsRoot(),
 	}
+}
+
+func resolveSkillsRoot() string {
+	candidates := make([]string, 0, 5)
+
+	if configured := strings.TrimSpace(os.Getenv("AI_RUNTIME_SKILLS_DIR")); configured != "" {
+		candidates = append(candidates, configured)
+	}
+
+	if workdir, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(workdir, "ai_runtime", "skills"))
+	}
+
+	if executable, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(executable)
+		candidates = append(candidates,
+			filepath.Join(execDir, "ai_runtime", "skills"),
+			filepath.Join(execDir, "skills"),
+		)
+	}
+
+	fallback := filepath.Join("/mnt/ai-platform", "ai_runtime", "skills")
+	candidates = append(candidates, fallback)
+
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		info, err := os.Stat(candidate)
+		if err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return fallback
 }
 
 func (s *AgentService) CreateAgentDefinition(tenantID, userID string, req *AgentDefinitionUpsertRequest) (*database.AgentDefinition, error) {
@@ -156,8 +230,56 @@ func (s *AgentService) ArchiveAgentDefinition(tenantID, userID, agentID string) 
 	return s.agentStore.ArchiveAgentDefinition(agentID, tenantID, userID)
 }
 
+func (s *AgentService) DeleteAgentDefinition(ctx context.Context, tenantID, userID, agentID string) error {
+	if _, err := s.agentStore.GetAgentDefinition(agentID, tenantID); err != nil {
+		return err
+	}
+
+	runRefs, err := s.agentStore.ListAgentRunReferencesByDefinition(agentID, tenantID)
+	if err != nil {
+		return err
+	}
+	if err := s.cancelActiveRuns(ctx, tenantID, runRefs); err != nil {
+		return err
+	}
+	return s.agentStore.HardDeleteAgentDefinition(agentID, tenantID)
+}
+
+func (s *AgentService) ClearAgentContext(ctx context.Context, tenantID, userID, agentID string, req *ClearAgentContextRequest) error {
+	if _, err := s.agentStore.GetAgentDefinition(agentID, tenantID); err != nil {
+		return err
+	}
+
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		return errors.New("session_id is required")
+	}
+	if s.sessionStore != nil {
+		session, err := s.sessionStore.GetSession(sessionID)
+		if err != nil && !isSessionNotFound(err) {
+			return err
+		}
+		if err == nil && (session.UserID != userID || session.TenantID != tenantID) {
+			return ErrUnauthorized
+		}
+	}
+
+	runRefs, err := s.agentStore.ListAgentRunReferencesByDefinitionAndSession(agentID, tenantID, sessionID)
+	if err != nil {
+		return err
+	}
+	if err := s.cancelActiveRuns(ctx, tenantID, runRefs); err != nil {
+		return err
+	}
+	return s.agentStore.ClearAgentSessionContext(agentID, tenantID, sessionID)
+}
+
 func (s *AgentService) CreateRun(ctx context.Context, tenantID, userID, agentID string, req *CreateAgentRunRequest) (*database.AgentRun, error) {
 	if _, err := s.agentStore.GetAgentDefinition(agentID, tenantID); err != nil {
+		return nil, err
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if err := s.ensureRunSession(tenantID, userID, sessionID); err != nil {
 		return nil, err
 	}
 	autoStart := true
@@ -169,7 +291,7 @@ func (s *AgentService) CreateRun(ctx context.Context, tenantID, userID, agentID 
 		AgentDefinitionID: agentID,
 		TenantID:          tenantID,
 		UserID:            userID,
-		SessionID:         req.SessionID,
+		SessionID:         sessionID,
 		Input:             req.Input,
 		Metadata:          req.Metadata,
 		AutoStart:         autoStart,
@@ -178,6 +300,30 @@ func (s *AgentService) CreateRun(ctx context.Context, tenantID, userID, agentID 
 		return nil, err
 	}
 	return run, nil
+}
+
+func (s *AgentService) ensureRunSession(tenantID, userID, sessionID string) error {
+	if s.sessionStore == nil || sessionID == "" {
+		return nil
+	}
+
+	session, err := s.sessionStore.GetSession(sessionID)
+	if err == nil {
+		if session.UserID != userID || session.TenantID != tenantID {
+			return ErrUnauthorized
+		}
+		return nil
+	}
+	if !isSessionNotFound(err) {
+		return err
+	}
+
+	return s.sessionStore.CreateSession(&database.Session{
+		ID:       sessionID,
+		UserID:   userID,
+		TenantID: tenantID,
+		Title:    "Agent 对话",
+	})
 }
 
 func (s *AgentService) ListRuns(tenantID, userID string, limit, offset int) ([]*database.AgentRun, error) {
@@ -218,16 +364,23 @@ func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDe
 			Description: spec.Description,
 			InputSchema: spec.InputSchema,
 			Kind:        spec.Kind,
+			Metadata:    spec.Metadata,
 		})
 	}
 	return result, nil
 }
 
 func (s *AgentService) ListSkills(tenantID string) ([]*database.Skill, error) {
+	if err := s.ensureSystemSkillsSynced(); err != nil {
+		return nil, err
+	}
 	return s.skillStore.ListSkills(tenantID)
 }
 
 func (s *AgentService) GetSkill(tenantID, skillID string) (*database.Skill, error) {
+	if err := s.ensureSystemSkillsSynced(); err != nil {
+		return nil, err
+	}
 	return s.skillStore.GetSkill(skillID, tenantID)
 }
 
@@ -251,6 +404,7 @@ func (s *AgentService) SyncSkills() ([]*database.Skill, error) {
 		}
 		synced = append(synced, upserted)
 	}
+	s.systemSkillsSynced = true
 	return synced, nil
 }
 
@@ -258,18 +412,32 @@ func (s *AgentService) UpdateAgentSkills(tenantID, agentID string, req *UpdateAg
 	if _, err := s.agentStore.GetAgentDefinition(agentID, tenantID); err != nil {
 		return err
 	}
-	return s.skillStore.ReplaceAgentSkillBindings(agentID, req.SkillIDs)
+	if err := s.ensureSystemSkillsSynced(); err != nil {
+		return err
+	}
+	fixedSkillIDs, err := s.fixedSkillIDs(tenantID)
+	if err != nil {
+		return err
+	}
+	return s.skillStore.ReplaceAgentSkillBindings(agentID, mergeFixedSkillIDs(req.SkillIDs, fixedSkillIDs))
 }
 
 func (s *AgentService) hydrateAgentBindings(definition *database.AgentDefinition) (*database.AgentDefinition, error) {
 	if definition == nil {
 		return nil, nil
 	}
+	if err := s.ensureSystemSkillsSynced(); err != nil {
+		return nil, err
+	}
 	skillIDs, err := s.skillStore.ListAgentSkillBindings(definition.ID)
 	if err != nil {
 		return nil, err
 	}
-	definition.SkillIDs = skillIDs
+	fixedSkillIDs, err := s.fixedSkillIDs(definition.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	definition.SkillIDs = mergeFixedSkillIDs(skillIDs, fixedSkillIDs)
 	mcpServerIDs, err := s.mcpStore.ListAgentMCPBindings(definition.ID)
 	if err != nil {
 		return nil, err
@@ -362,11 +530,28 @@ func (s *AgentService) DeleteMCPServer(tenantID, serverID string) error {
 	return s.mcpStore.DeleteServer(serverID, tenantID)
 }
 
-func (s *AgentService) TestMCPServer(ctx context.Context, tenantID, serverID string) (map[string]any, error) {
-	return s.aiClient.TestMCPServer(ctx, tenantID, serverID)
+func (s *AgentService) TestMCPServer(ctx context.Context, tenantID, serverID string) (*MCPServerTestResponse, error) {
+	if _, err := s.mcpStore.GetServer(serverID, tenantID); err != nil {
+		return nil, err
+	}
+	result, err := s.aiClient.TestMCPServer(ctx, tenantID, serverID)
+	if err != nil {
+		return nil, err
+	}
+	server, err := s.GetMCPServer(tenantID, serverID)
+	if err != nil {
+		return nil, err
+	}
+	return &MCPServerTestResponse{
+		Result:       maskSensitiveObject(result, false),
+		Server:       server,
+		Connection:   server.Connection,
+		Catalog:      server.Catalog,
+		Availability: server.Availability,
+	}, nil
 }
 
-func (s *AgentService) RefreshMCPServerTools(tenantID, serverID string) ([]*database.MCPServerTool, error) {
+func (s *AgentService) RefreshMCPServerTools(tenantID, serverID string) (*MCPServerRefreshResponse, error) {
 	if _, err := s.mcpStore.GetServer(serverID, tenantID); err != nil {
 		return nil, err
 	}
@@ -378,7 +563,18 @@ func (s *AgentService) RefreshMCPServerTools(tenantID, serverID string) ([]*data
 		item.InputSchema = maskSensitiveJSONRaw(item.InputSchema, false)
 		item.Metadata = maskSensitiveJSONRaw(item.Metadata, false)
 	}
-	return items, nil
+	server, err := s.GetMCPServer(tenantID, serverID)
+	if err != nil {
+		return nil, err
+	}
+	return &MCPServerRefreshResponse{
+		Tools:        items,
+		Total:        len(items),
+		Server:       server,
+		Connection:   server.Connection,
+		Catalog:      server.Catalog,
+		Availability: server.Availability,
+	}, nil
 }
 
 func (s *AgentService) UpdateAgentMCPServers(tenantID, agentID string, req *UpdateAgentMCPServersRequest) error {
@@ -393,6 +589,13 @@ func (s *AgentService) UpdateAgentMCPServers(tenantID, agentID string, req *Upda
 		}
 		if server.Status != "active" {
 			return fmt.Errorf("mcp server %s is disabled", serverID)
+		}
+		tools, err := s.mcpStore.ListServerTools(serverID)
+		if err != nil {
+			return err
+		}
+		if len(tools) == 0 {
+			return fmt.Errorf("mcp server %s has no cached tools; run refresh tools before binding it to an agent", serverID)
 		}
 	}
 	return s.mcpStore.ReplaceAgentMCPBindings(agentID, serverIDs)
@@ -447,6 +650,10 @@ func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, err
 	if err != nil {
 		toolAllowlist = []byte(`[]`)
 	}
+	metadata, err := os.ReadFile(filepath.Join(path, "metadata.json"))
+	if err != nil {
+		metadata = []byte(`{}`)
+	}
 
 	return &database.Skill{
 		Name:          name,
@@ -457,8 +664,51 @@ func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, err
 		SystemPrompt:  string(systemPrompt),
 		OutputSchema:  outputSchema,
 		ToolAllowlist: toolAllowlist,
-		Metadata:      json.RawMessage(`{}`),
+		Metadata:      metadata,
 	}, nil
+}
+
+func (s *AgentService) ensureSystemSkillsSynced() error {
+	if s.systemSkillsSynced {
+		return nil
+	}
+	for _, slug := range systemSkillSlugs {
+		path := filepath.Join(s.skillsRoot, slug)
+		info, err := os.Stat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("failed to inspect system skill %s: %w", slug, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		skill, err := s.loadSkillFromDirectory(path)
+		if err != nil {
+			return err
+		}
+		if _, err := s.skillStore.UpsertSkill(skill); err != nil {
+			return err
+		}
+	}
+	s.systemSkillsSynced = true
+	return nil
+}
+
+func (s *AgentService) fixedSkillIDs(tenantID string) ([]string, error) {
+	items, err := s.skillStore.ListSkills(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == nil || item.ID == "" || !isFixedSkill(item) {
+			continue
+		}
+		ids = append(ids, item.ID)
+	}
+	return ids, nil
 }
 
 func stringPtr(value string) *string {
@@ -473,6 +723,30 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func (s *AgentService) cancelActiveRuns(ctx context.Context, tenantID string, runRefs []*database.AgentRunReference) error {
+	for _, runRef := range runRefs {
+		if !runStatusNeedsCancellation(runRef) {
+			continue
+		}
+		if _, err := s.aiClient.CancelAgentRun(ctx, runRef.ID, tenantID); err != nil {
+			return fmt.Errorf("failed to cancel run %s before cleanup: %w", runRef.ID, err)
+		}
+	}
+	return nil
+}
+
+func runStatusNeedsCancellation(runRef *database.AgentRunReference) bool {
+	if runRef == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(runRef.Status)) {
+	case "queued", "running":
+		return true
+	default:
+		return false
+	}
 }
 
 func firstNonEmpty(value, fallback string) string {
@@ -500,6 +774,58 @@ func normalizeServerIDs(ids []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
+}
+
+func mergeFixedSkillIDs(skillIDs, fixedSkillIDs []string) []string {
+	if len(skillIDs) == 0 && len(fixedSkillIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(skillIDs)+len(fixedSkillIDs))
+	result := make([]string, 0, len(skillIDs)+len(fixedSkillIDs))
+	for _, skillID := range skillIDs {
+		trimmed := strings.TrimSpace(skillID)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	for _, skillID := range fixedSkillIDs {
+		trimmed := strings.TrimSpace(skillID)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func isFixedSkill(skill *database.Skill) bool {
+	if skill == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(skill.Slug), fallbackFixedSkillSlug) {
+		return true
+	}
+	metadata, ok := parseJSONRaw(skill.Metadata, `{}`).(map[string]any)
+	if !ok {
+		return false
+	}
+	switch value := metadata["fixed_binding"].(type) {
+	case bool:
+		return value
+	case string:
+		return strings.EqualFold(strings.TrimSpace(value), "true")
+	default:
+		return false
+	}
 }
 
 func validateMCPServer(server *database.MCPServer) error {
@@ -537,7 +863,156 @@ func (s *AgentService) hydrateMCPServer(server *database.MCPServer) (*database.M
 	server.Args = maskSensitiveJSONRaw(server.Args, false)
 	server.Env = maskSensitiveJSONRaw(server.Env, true)
 	server.Metadata = maskSensitiveJSONRaw(server.Metadata, false)
+	server.Connection = buildMCPConnectionSummary(server)
+	server.Catalog = buildMCPCatalogSummary(server, tools, time.Now().UTC())
+	server.Availability = buildMCPAvailabilitySummary(server, server.Connection, server.Catalog)
 	return server, nil
+}
+
+func buildMCPConnectionSummary(server *database.MCPServer) *database.MCPConnection {
+	if server == nil {
+		return nil
+	}
+
+	summary := &database.MCPConnection{
+		Status:   "untested",
+		Summary:  "尚未执行连接测试。",
+		TestedAt: server.LastTestedAt,
+	}
+	if server.LastError != nil && strings.TrimSpace(*server.LastError) != "" {
+		summary.Error = strings.TrimSpace(*server.LastError)
+	}
+
+	switch {
+	case server.Status != "active":
+		summary.Status = "disabled"
+		summary.Summary = "Server 已禁用，不会参与运行时调用。"
+	case server.LastTestedAt == nil:
+		summary.Status = "untested"
+		summary.Summary = "尚未执行连接测试，当前健康状态未知。"
+	case summary.Error != "":
+		summary.Status = "degraded"
+		summary.Summary = "最近一次连接测试失败，请先修复连接问题。"
+	default:
+		summary.Status = "healthy"
+		summary.Summary = "最近一次连接测试通过。"
+	}
+
+	return summary
+}
+
+func buildMCPCatalogSummary(server *database.MCPServer, tools []*database.MCPServerTool, now time.Time) *database.MCPCatalog {
+	if server == nil {
+		return nil
+	}
+
+	summary := &database.MCPCatalog{
+		Status:            "missing",
+		Summary:           "尚未建立工具 catalog。",
+		ToolCount:         len(tools),
+		StaleAfterSeconds: int64(mcpCatalogStaleAfter.Seconds()),
+		SampleTools:       make([]string, 0, minInt(len(tools), 5)),
+	}
+
+	var refreshedAt *time.Time
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		if len(summary.SampleTools) < 5 && strings.TrimSpace(tool.ToolName) != "" {
+			summary.SampleTools = append(summary.SampleTools, strings.TrimSpace(tool.ToolName))
+		}
+		if refreshedAt == nil || tool.DiscoveredAt.After(*refreshedAt) {
+			refreshed := tool.DiscoveredAt.UTC()
+			refreshedAt = &refreshed
+		}
+	}
+
+	summary.RefreshedAt = refreshedAt
+
+	if refreshedAt != nil {
+		age := int64(now.UTC().Sub(*refreshedAt).Seconds())
+		if age < 0 {
+			age = 0
+		}
+		summary.AgeSeconds = &age
+		summary.IsStale = now.UTC().Sub(*refreshedAt) > mcpCatalogStaleAfter
+	}
+
+	switch {
+	case server.Status != "active":
+		summary.Status = "disabled"
+		summary.Summary = "Server 已禁用，catalog 不会参与 agent 工具发现。"
+	case len(tools) == 0 && refreshedAt == nil && server.LastTestedAt == nil:
+		summary.Status = "missing"
+		summary.Summary = "还没有缓存工具，请先执行 Refresh Tools。"
+	case len(tools) == 0:
+		summary.Status = "empty"
+		summary.Summary = "最近一次 catalog 刷新后没有发现可用工具。"
+	case summary.IsStale:
+		summary.Status = "stale"
+		summary.Summary = "已存在缓存工具，但 catalog 已过期，建议重新刷新。"
+	default:
+		summary.Status = "ready"
+		summary.Summary = fmt.Sprintf("当前已缓存 %d 个工具，可供 agent 直接发现。", len(tools))
+	}
+
+	return summary
+}
+
+func buildMCPAvailabilitySummary(
+	server *database.MCPServer,
+	connection *database.MCPConnection,
+	catalog *database.MCPCatalog,
+) *database.MCPAvailability {
+	if server == nil {
+		return nil
+	}
+
+	summary := &database.MCPAvailability{
+		Status:   "unavailable",
+		Summary:  "Server 当前还不能稳定提供给 agent 使用。",
+		Bindable: false,
+	}
+
+	switch {
+	case server.Status != "active":
+		summary.Status = "disabled"
+		summary.Summary = "Server 已禁用，不能绑定到 agent。"
+		summary.Reason = "disabled"
+	case catalog == nil || catalog.ToolCount == 0:
+		summary.Status = "unavailable"
+		summary.Summary = "还没有可供 agent 使用的缓存工具，请先刷新 catalog。"
+		summary.Reason = "catalog_empty"
+	case connection != nil && connection.Status == "degraded":
+		summary.Status = "degraded"
+		summary.Summary = "最近一次连接测试失败，建议修复后再交给 agent 使用。"
+		summary.Reason = "connection_failed"
+	case catalog != nil && catalog.IsStale:
+		summary.Status = "warning"
+		summary.Summary = "Server 可绑定，但 catalog 已过期，建议刷新后再投入生产。"
+		summary.Bindable = true
+		summary.Reason = "catalog_stale"
+	case connection != nil && connection.Status == "untested":
+		summary.Status = "warning"
+		summary.Summary = "Server 已有缓存工具，但还未完成连接验证。"
+		summary.Bindable = true
+		summary.Reason = "connection_untested"
+	default:
+		summary.Status = "available"
+		summary.Summary = "Server 已通过基础校验，可供 agent 使用。"
+		summary.Bindable = true
+		summary.Reason = "ready"
+	}
+
+	return summary
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func mergeJSONRaw(current, incoming json.RawMessage, fallback string) json.RawMessage {
@@ -613,6 +1088,14 @@ func maskSensitiveJSONRaw(raw json.RawMessage, forceMaskStrings bool) json.RawMe
 		defaultJSON = `[]`
 	}
 	return marshalJSONRaw(maskSensitiveValue(parsed, nil, forceMaskStrings), defaultJSON)
+}
+
+func maskSensitiveObject(value any, forceMaskStrings bool) map[string]any {
+	masked, ok := maskSensitiveValue(value, nil, forceMaskStrings).(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return masked
 }
 
 func maskSensitiveValue(value any, path []string, forceMaskStrings bool) any {

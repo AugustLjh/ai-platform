@@ -2,7 +2,9 @@ package http
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/ai-platform/platform/auth"
 	"github.com/ai-platform/platform/middleware"
@@ -148,13 +150,24 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// In a JWT system, logout is typically handled client-side by deleting the token
-	// For more sophisticated systems, you might want to:
-	// 1. Maintain a token blacklist
-	// 2. Store active sessions in Redis
-	// 3. Implement token revocation
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			respondError(w, "请求数据格式错误", http.StatusBadRequest)
+			return
+		}
+	}
+
+	accessToken := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if err := h.authService.Logout(accessToken, req.RefreshToken); err != nil {
+		respondError(w, "退出登录失败", http.StatusInternalServerError)
+		return
+	}
 
 	respondJSON(w, map[string]string{
-		"message": "退出登录成功，请删除本地令牌",
+		"message": "退出登录成功",
 	}, http.StatusOK)
 }

@@ -160,6 +160,16 @@ func (s *PostgresUserStore) Update(user *auth.User) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if user.TenantID != "" {
+		tenantName := fmt.Sprintf("Tenant %s", user.TenantID)
+		if user.Email != "" {
+			tenantName = user.Email
+		}
+		if err := s.ensureTenant(ctx, user.TenantID, tenantName); err != nil {
+			return err
+		}
+	}
+
 	query := `
 		UPDATE users
 		SET email = $2, password_hash = $3, tenant_id = $4, role = $5, active = $6, updated_at = $7

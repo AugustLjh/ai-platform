@@ -36,23 +36,48 @@ type AgentDefinition struct {
 }
 
 type AgentRun struct {
-	ID                string          `json:"id"`
-	AgentDefinitionID string          `json:"agent_definition_id"`
-	TenantID          string          `json:"tenant_id"`
-	UserID            *string         `json:"user_id,omitempty"`
-	SessionID         *string         `json:"session_id,omitempty"`
-	Status            string          `json:"status"`
-	Input             json.RawMessage `json:"input"`
-	Plan              json.RawMessage `json:"plan"`
-	Context           json.RawMessage `json:"context"`
-	FinalOutput       *string         `json:"final_output,omitempty"`
-	ErrorMessage      *string         `json:"error_message,omitempty"`
-	StartedAt         *time.Time      `json:"started_at,omitempty"`
-	FinishedAt        *time.Time      `json:"finished_at,omitempty"`
-	CancelledAt       *time.Time      `json:"cancelled_at,omitempty"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
-	Metadata          json.RawMessage `json:"metadata"`
+	ID                string           `json:"id"`
+	AgentDefinitionID string           `json:"agent_definition_id"`
+	TenantID          string           `json:"tenant_id"`
+	UserID            *string          `json:"user_id,omitempty"`
+	SessionID         *string          `json:"session_id,omitempty"`
+	Status            string           `json:"status"`
+	Input             json.RawMessage  `json:"input"`
+	Plan              json.RawMessage  `json:"plan"`
+	Context           json.RawMessage  `json:"context"`
+	FinalOutput       *string          `json:"final_output,omitempty"`
+	FinalOutputText   *string          `json:"final_output_text,omitempty"`
+	FinalOutputJSON   json.RawMessage  `json:"final_output_json,omitempty"`
+	ErrorMessage      *string          `json:"error_message,omitempty"`
+	StartedAt         *time.Time       `json:"started_at,omitempty"`
+	FinishedAt        *time.Time       `json:"finished_at,omitempty"`
+	CancelledAt       *time.Time       `json:"cancelled_at,omitempty"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
+	Metadata          json.RawMessage  `json:"metadata"`
+	Artifacts         []*AgentArtifact `json:"artifacts,omitempty"`
+	Steps             []*AgentRunStep  `json:"steps,omitempty"`
+	ToolCalls         []*AgentToolCall `json:"tool_calls,omitempty"`
+}
+
+type AgentArtifact struct {
+	ID           string          `json:"id"`
+	RunID        string          `json:"run_id"`
+	StepID       *string         `json:"step_id,omitempty"`
+	ArtifactType string          `json:"artifact_type"`
+	Name         string          `json:"name"`
+	MimeType     *string         `json:"mime_type,omitempty"`
+	URI          *string         `json:"uri,omitempty"`
+	Payload      json.RawMessage `json:"payload"`
+	Metadata     json.RawMessage `json:"metadata"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+type AgentRunReference struct {
+	ID        string  `json:"id"`
+	SessionID *string `json:"session_id,omitempty"`
+	Status    string  `json:"status"`
 }
 
 type AgentRunEvent struct {
@@ -62,6 +87,39 @@ type AgentRunEvent struct {
 	EventType string          `json:"event_type"`
 	Payload   json.RawMessage `json:"payload"`
 	CreatedAt time.Time       `json:"created_at"`
+}
+
+type AgentRunStep struct {
+	ID           string          `json:"id"`
+	RunID        string          `json:"run_id"`
+	StepIndex    int             `json:"step_index"`
+	Title        *string         `json:"title,omitempty"`
+	Kind         string          `json:"kind"`
+	Status       string          `json:"status"`
+	Input        json.RawMessage `json:"input"`
+	Output       json.RawMessage `json:"output"`
+	ErrorMessage *string         `json:"error_message,omitempty"`
+	Metadata     json.RawMessage `json:"metadata"`
+	StartedAt    *time.Time      `json:"started_at,omitempty"`
+	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+type AgentToolCall struct {
+	ID           string          `json:"id"`
+	RunID        string          `json:"run_id"`
+	StepID       *string         `json:"step_id,omitempty"`
+	ToolName     string          `json:"tool_name"`
+	ToolKind     string          `json:"tool_kind"`
+	Status       string          `json:"status"`
+	Arguments    json.RawMessage `json:"arguments"`
+	Result       json.RawMessage `json:"result"`
+	ErrorMessage *string         `json:"error_message,omitempty"`
+	StartedAt    *time.Time      `json:"started_at,omitempty"`
+	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 type AgentStore struct {
@@ -277,6 +335,153 @@ func (s *AgentStore) ArchiveAgentDefinition(id, tenantID, updatedBy string) erro
 	return nil
 }
 
+func (s *AgentStore) ListAgentRunReferencesByDefinition(agentDefinitionID, tenantID string) ([]*AgentRunReference, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, session_id, status
+		FROM agent_runs
+		WHERE agent_definition_id = $1 AND tenant_id = $2
+		ORDER BY created_at DESC
+	`, agentDefinitionID, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent run references: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*AgentRunReference
+	for rows.Next() {
+		item := &AgentRunReference{}
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan agent run reference: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *AgentStore) ListAgentRunReferencesByDefinitionAndSession(agentDefinitionID, tenantID, sessionID string) ([]*AgentRunReference, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, session_id, status
+		FROM agent_runs
+		WHERE agent_definition_id = $1 AND tenant_id = $2 AND session_id = $3
+		ORDER BY created_at DESC
+	`, agentDefinitionID, tenantID, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list session run references: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*AgentRunReference
+	for rows.Next() {
+		item := &AgentRunReference{}
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan session run reference: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *AgentStore) HardDeleteAgentDefinition(id, tenantID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT session_id
+		FROM agent_runs
+		WHERE agent_definition_id = $1
+		  AND tenant_id = $2
+		  AND session_id IS NOT NULL
+	`, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to collect agent sessions: %w", err)
+	}
+	var sessionIDs []string
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to scan agent session id: %w", err)
+		}
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("failed to iterate agent sessions: %w", err)
+	}
+	rows.Close()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_runs WHERE agent_definition_id = $1 AND tenant_id = $2`, id, tenantID); err != nil {
+		return fmt.Errorf("failed to delete agent runs: %w", err)
+	}
+
+	result, err := tx.Exec(ctx, `DELETE FROM agent_definitions WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to delete agent definition: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrAgentDefinitionNotFound
+	}
+
+	for _, sessionID := range normalizeStringIDs(sessionIDs) {
+		var remainingRuns int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM agent_runs WHERE session_id = $1`, sessionID).Scan(&remainingRuns); err != nil {
+			return fmt.Errorf("failed to count remaining agent runs for session %s: %w", sessionID, err)
+		}
+		if remainingRuns > 0 {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE id = $1 AND title = 'Agent 对话'`, sessionID); err != nil {
+			return fmt.Errorf("failed to delete orphaned agent session %s: %w", sessionID, err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *AgentStore) ClearAgentSessionContext(agentDefinitionID, tenantID, sessionID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM agent_runs
+		WHERE agent_definition_id = $1
+		  AND tenant_id = $2
+		  AND session_id = $3
+	`, agentDefinitionID, tenantID, sessionID); err != nil {
+		return fmt.Errorf("failed to delete agent session runs: %w", err)
+	}
+
+	var remainingRuns int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM agent_runs WHERE session_id = $1`, sessionID).Scan(&remainingRuns); err != nil {
+		return fmt.Errorf("failed to count remaining session runs: %w", err)
+	}
+	if remainingRuns == 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE id = $1 AND title = 'Agent 对话'`, sessionID); err != nil {
+			return fmt.Errorf("failed to delete cleared agent session: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 func normalizeStringIDs(ids []string) []string {
 	if len(ids) == 0 {
 		return nil
@@ -396,7 +601,7 @@ func (s *AgentStore) CreateAgentRun(run *AgentRun) (*AgentRun, error) {
 		)
 		VALUES ($1, $2, $3, $4, COALESCE($5, 'queued'), $6, $7, $8, $9)
 		RETURNING id, agent_definition_id, tenant_id, user_id, session_id, status,
-		          input, plan, context, final_output, error_message, started_at,
+		          input, plan, context, final_output, final_output_text, final_output_json, error_message, started_at,
 		          finished_at, cancelled_at, created_at, updated_at, metadata
 	`,
 		run.AgentDefinitionID,
@@ -419,6 +624,8 @@ func (s *AgentStore) CreateAgentRun(run *AgentRun) (*AgentRun, error) {
 		&row.Plan,
 		&row.Context,
 		&row.FinalOutput,
+		&row.FinalOutputText,
+		&row.FinalOutputJSON,
 		&row.ErrorMessage,
 		&row.StartedAt,
 		&row.FinishedAt,
@@ -440,7 +647,7 @@ func (s *AgentStore) GetAgentRun(id, tenantID string) (*AgentRun, error) {
 	row := &AgentRun{}
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, agent_definition_id, tenant_id, user_id, session_id, status,
-		       input, plan, context, final_output, error_message, started_at,
+		       input, plan, context, final_output, final_output_text, final_output_json, error_message, started_at,
 		       finished_at, cancelled_at, created_at, updated_at, metadata
 		FROM agent_runs
 		WHERE id = $1 AND tenant_id = $2
@@ -455,6 +662,8 @@ func (s *AgentStore) GetAgentRun(id, tenantID string) (*AgentRun, error) {
 		&row.Plan,
 		&row.Context,
 		&row.FinalOutput,
+		&row.FinalOutputText,
+		&row.FinalOutputJSON,
 		&row.ErrorMessage,
 		&row.StartedAt,
 		&row.FinishedAt,
@@ -469,6 +678,13 @@ func (s *AgentStore) GetAgentRun(id, tenantID string) (*AgentRun, error) {
 		}
 		return nil, fmt.Errorf("failed to get agent run: %w", err)
 	}
+	if err := s.hydrateAgentRunArtifacts(row, tenantID); err != nil {
+		return nil, err
+	}
+	if err := s.hydrateAgentRunExecution(row, tenantID); err != nil {
+		return nil, err
+	}
+	s.applyLegacyRunCompatibility(row)
 	return row, nil
 }
 
@@ -478,7 +694,7 @@ func (s *AgentStore) ListAgentRuns(tenantID, userID string, limit, offset int) (
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, agent_definition_id, tenant_id, user_id, session_id, status,
-		       input, plan, context, final_output, error_message, started_at,
+		       input, plan, context, final_output, final_output_text, final_output_json, error_message, started_at,
 		       finished_at, cancelled_at, created_at, updated_at, metadata
 		FROM agent_runs
 		WHERE tenant_id = $1
@@ -505,6 +721,8 @@ func (s *AgentStore) ListAgentRuns(tenantID, userID string, limit, offset int) (
 			&item.Plan,
 			&item.Context,
 			&item.FinalOutput,
+			&item.FinalOutputText,
+			&item.FinalOutputJSON,
 			&item.ErrorMessage,
 			&item.StartedAt,
 			&item.FinishedAt,
@@ -517,7 +735,16 @@ func (s *AgentStore) ListAgentRuns(tenantID, userID string, limit, offset int) (
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.hydrateAgentRunsArtifacts(items, tenantID); err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		s.applyLegacyRunCompatibility(item)
+	}
+	return items, nil
 }
 
 func (s *AgentStore) UpdateAgentRunStatus(runID, status string, plan json.RawMessage, finalOutput, errorMessage *string) (*AgentRun, error) {
@@ -546,7 +773,7 @@ func (s *AgentStore) UpdateAgentRunStatus(runID, status string, plan json.RawMes
 			END
 		WHERE id = $1
 		RETURNING id, agent_definition_id, tenant_id, user_id, session_id, status,
-		          input, plan, context, final_output, error_message, started_at,
+		          input, plan, context, final_output, final_output_text, final_output_json, error_message, started_at,
 		          finished_at, cancelled_at, created_at, updated_at, metadata
 	`, runID, status, nilIfEmptyJSON(plan), finalOutput, errorMessage).Scan(
 		&row.ID,
@@ -559,6 +786,8 @@ func (s *AgentStore) UpdateAgentRunStatus(runID, status string, plan json.RawMes
 		&row.Plan,
 		&row.Context,
 		&row.FinalOutput,
+		&row.FinalOutputText,
+		&row.FinalOutputJSON,
 		&row.ErrorMessage,
 		&row.StartedAt,
 		&row.FinishedAt,
@@ -573,7 +802,212 @@ func (s *AgentStore) UpdateAgentRunStatus(runID, status string, plan json.RawMes
 		}
 		return nil, fmt.Errorf("failed to update agent run status: %w", err)
 	}
+	s.applyLegacyRunCompatibility(row)
 	return row, nil
+}
+
+func (s *AgentStore) listAgentArtifactsByRunIDs(runIDs []string, tenantID string) (map[string][]*AgentArtifact, error) {
+	if len(runIDs) == 0 {
+		return map[string][]*AgentArtifact{}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT a.id, a.run_id, a.step_id, a.artifact_type, a.name, a.mime_type, a.uri,
+		       a.payload, a.metadata, a.created_at, a.updated_at
+		FROM agent_artifacts a
+		INNER JOIN agent_runs r ON r.id = a.run_id
+		WHERE a.run_id = ANY($1::uuid[]) AND r.tenant_id = $2
+		ORDER BY a.run_id ASC, a.created_at ASC, a.updated_at ASC
+	`, runIDs, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agent artifacts: %w", err)
+	}
+	defer rows.Close()
+
+	grouped := make(map[string][]*AgentArtifact)
+	for rows.Next() {
+		item := &AgentArtifact{}
+		if err := rows.Scan(
+			&item.ID,
+			&item.RunID,
+			&item.StepID,
+			&item.ArtifactType,
+			&item.Name,
+			&item.MimeType,
+			&item.URI,
+			&item.Payload,
+			&item.Metadata,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan agent artifact: %w", err)
+		}
+		item.Payload = normalizeJSONRaw(item.Payload, `{}`)
+		item.Metadata = normalizeJSONRaw(item.Metadata, `{}`)
+		grouped[item.RunID] = append(grouped[item.RunID], item)
+	}
+	return grouped, rows.Err()
+}
+
+func (s *AgentStore) hydrateAgentRunArtifacts(run *AgentRun, tenantID string) error {
+	if run == nil {
+		return nil
+	}
+	grouped, err := s.listAgentArtifactsByRunIDs([]string{run.ID}, tenantID)
+	if err != nil {
+		return err
+	}
+	run.Artifacts = grouped[run.ID]
+	if run.Artifacts == nil {
+		run.Artifacts = []*AgentArtifact{}
+	}
+	return nil
+}
+
+func (s *AgentStore) hydrateAgentRunExecution(run *AgentRun, tenantID string) error {
+	if run == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stepRows, err := s.pool.Query(ctx, `
+		SELECT st.id, st.run_id, st.step_index, st.title, st.kind, st.status, st.input, st.output,
+		       st.error_message, st.metadata, st.started_at, st.completed_at, st.created_at, st.updated_at
+		FROM agent_run_steps st
+		INNER JOIN agent_runs r ON r.id = st.run_id
+		WHERE st.run_id = $1 AND r.tenant_id = $2
+		ORDER BY st.step_index ASC, st.created_at ASC
+	`, run.ID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to list agent run steps: %w", err)
+	}
+	defer stepRows.Close()
+
+	var steps []*AgentRunStep
+	for stepRows.Next() {
+		item := &AgentRunStep{}
+		if err := stepRows.Scan(
+			&item.ID,
+			&item.RunID,
+			&item.StepIndex,
+			&item.Title,
+			&item.Kind,
+			&item.Status,
+			&item.Input,
+			&item.Output,
+			&item.ErrorMessage,
+			&item.Metadata,
+			&item.StartedAt,
+			&item.CompletedAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return fmt.Errorf("failed to scan agent run step: %w", err)
+		}
+		item.Input = normalizeJSONRaw(item.Input, `{}`)
+		item.Output = normalizeJSONRaw(item.Output, `{}`)
+		item.Metadata = normalizeJSONRaw(item.Metadata, `{}`)
+		steps = append(steps, item)
+	}
+	if err := stepRows.Err(); err != nil {
+		return err
+	}
+
+	toolRows, err := s.pool.Query(ctx, `
+		SELECT tc.id, tc.run_id, tc.step_id, tc.tool_name, tc.tool_kind, tc.status, tc.arguments, tc.result,
+		       tc.error_message, tc.started_at, tc.completed_at, tc.created_at, tc.updated_at
+		FROM agent_tool_calls tc
+		INNER JOIN agent_runs r ON r.id = tc.run_id
+		WHERE tc.run_id = $1 AND r.tenant_id = $2
+		ORDER BY tc.created_at ASC, tc.updated_at ASC
+	`, run.ID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to list agent tool calls: %w", err)
+	}
+	defer toolRows.Close()
+
+	var toolCalls []*AgentToolCall
+	for toolRows.Next() {
+		item := &AgentToolCall{}
+		if err := toolRows.Scan(
+			&item.ID,
+			&item.RunID,
+			&item.StepID,
+			&item.ToolName,
+			&item.ToolKind,
+			&item.Status,
+			&item.Arguments,
+			&item.Result,
+			&item.ErrorMessage,
+			&item.StartedAt,
+			&item.CompletedAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return fmt.Errorf("failed to scan agent tool call: %w", err)
+		}
+		item.Arguments = normalizeJSONRaw(item.Arguments, `{}`)
+		item.Result = normalizeJSONRaw(item.Result, `{}`)
+		toolCalls = append(toolCalls, item)
+	}
+	if err := toolRows.Err(); err != nil {
+		return err
+	}
+
+	run.Steps = steps
+	if run.Steps == nil {
+		run.Steps = []*AgentRunStep{}
+	}
+	run.ToolCalls = toolCalls
+	if run.ToolCalls == nil {
+		run.ToolCalls = []*AgentToolCall{}
+	}
+	return nil
+}
+
+func (s *AgentStore) hydrateAgentRunsArtifacts(runs []*AgentRun, tenantID string) error {
+	runIDs := make([]string, 0, len(runs))
+	for _, run := range runs {
+		if run == nil || run.ID == "" {
+			continue
+		}
+		runIDs = append(runIDs, run.ID)
+	}
+	grouped, err := s.listAgentArtifactsByRunIDs(runIDs, tenantID)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		run.Artifacts = grouped[run.ID]
+		if run.Artifacts == nil {
+			run.Artifacts = []*AgentArtifact{}
+		}
+	}
+	return nil
+}
+
+func (s *AgentStore) applyLegacyRunCompatibility(run *AgentRun) {
+	if run == nil {
+		return
+	}
+	run.Input = normalizeJSONRaw(run.Input, `{}`)
+	run.Plan = normalizeJSONRaw(run.Plan, `{}`)
+	run.Context = normalizeJSONRaw(run.Context, `{}`)
+	run.Metadata = normalizeJSONRaw(run.Metadata, `{}`)
+	if len(run.FinalOutputJSON) == 0 {
+		run.FinalOutputJSON = nil
+	}
+	if (run.FinalOutputText == nil || *run.FinalOutputText == "") && run.FinalOutput != nil && *run.FinalOutput != "" {
+		run.FinalOutputText = run.FinalOutput
+	}
 }
 
 func (s *AgentStore) AppendAgentRunEvent(runID, eventType string, payload json.RawMessage) (*AgentRunEvent, error) {

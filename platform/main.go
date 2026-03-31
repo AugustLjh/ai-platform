@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -31,6 +32,8 @@ func main() {
 		chatTransport = "grpc"
 	}
 	jwtSecret := getEnv("JWT_SECRET", "2f7a48d9e6b3c1a5f8e2b9c4d6a7f3e5b8d2e1c6a9f3d5b7e2c4a6f8d9e3b5c1")
+	accessTokenTTL := 24 * time.Hour
+	refreshTokenTTL := 24 * time.Hour * 7
 
 	// Initialize PostgreSQL
 	pgConfig := &database.PostgresConfig{
@@ -56,29 +59,63 @@ func main() {
 	}
 	defer aiClient.Close()
 
+	var tokenBlacklist *database.TokenBlacklist
+	var sessionCache *database.SessionCache
+	var rateLimitCache *database.RateLimitCache
+
+	if getEnvBool("REDIS_ENABLED", true) {
+		redisConfig := &database.RedisConfig{
+			Host:     getEnv("REDIS_HOST", "localhost"),
+			Port:     getEnvInt("REDIS_PORT", 6379),
+			Password: getEnv("REDIS_PASSWORD", ""),
+			DB:       getEnvInt("REDIS_DB", 0),
+		}
+		redisClient, err := database.NewRedisClient(redisConfig)
+		if err != nil {
+			if getEnvBool("REDIS_REQUIRED", false) {
+				log.Fatalf("Failed to connect to Redis: %v", err)
+			}
+			log.Printf("Redis unavailable, falling back to in-memory auth/rate limiting: %v", err)
+		} else {
+			defer func() {
+				if closeErr := redisClient.Close(); closeErr != nil {
+					log.Printf("Failed to close Redis client: %v", closeErr)
+				}
+			}()
+			tokenBlacklist = database.NewTokenBlacklist(redisClient)
+			sessionCache = database.NewSessionCache(redisClient, refreshTokenTTL)
+			rateLimitCache = database.NewRateLimitCache(redisClient)
+			log.Printf("Redis connected at %s:%d; distributed auth and rate limiting enabled", redisConfig.Host, redisConfig.Port)
+		}
+	} else {
+		log.Println("Redis integration disabled; using in-memory auth and rate limiting")
+	}
+
 	// Initialize auth components
 	tokenManager := auth.NewTokenManager(
 		jwtSecret,
-		24*time.Hour,   // Access token TTL: 24 hours
-		24*time.Hour*7, // Refresh token TTL: 7 days
+		accessTokenTTL,
+		refreshTokenTTL,
 	)
 	userStore := database.NewPostgresUserStore(pgPool)
-	authService := auth.NewAuthService(userStore, tokenManager)
+	authService := auth.NewAuthService(
+		userStore,
+		tokenManager,
+		auth.WithTokenBlacklist(tokenBlacklist),
+		auth.WithSessionCache(sessionCache),
+	)
 
-	// Create a demo user for testing
-	demoPassword, _ := auth.HashPassword("demo123456")
 	demoUser := &auth.User{
-		ID:           "b1eebc99-9c0b-4ef8-bb6d-6bb9bd380a12",
-		Email:        "demo@example.com",
-		PasswordHash: demoPassword,
-		TenantID:     "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
-		Role:         "user",
-		Active:       true,
+		ID:       "b1eebc99-9c0b-4ef8-bb6d-6bb9bd380a12",
+		Email:    "demo@example.com",
+		TenantID: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+		Role:     "user",
+		Active:   true,
 	}
-	if err := userStore.Create(demoUser); err != nil && !errors.Is(err, auth.ErrUserAlreadyExists) {
-		log.Printf("Failed to create demo user: %v", err)
+	if err := ensureDemoUser(userStore, demoUser, "demo123456"); err != nil {
+		log.Printf("Failed to sync demo user: %v", err)
 	}
-	log.Printf("Created demo user: %s / demo123456", demoUser.Email)
+	log.Printf("Demo user ready: %s", demoUser.Email)
 
 	// Initialize services
 	sessionStore := database.NewSessionStore(pgPool)
@@ -86,11 +123,11 @@ func main() {
 	agentStore := database.NewAgentStore(pgPool)
 	skillStore := database.NewSkillStore(pgPool)
 	mcpStore := database.NewMCPStore(pgPool)
-	agentService := service.NewAgentService(aiClient, agentStore, skillStore, mcpStore)
+	agentService := service.NewAgentService(aiClient, agentStore, sessionStore, skillStore, mcpStore)
 
 	// Initialize middleware (with real JWT auth)
 	authMiddleware := middleware.NewAuthMiddleware(authService)
-	rateLimiter := middleware.NewRateLimiter(100, time.Minute) // 100 requests per minute
+	rateLimiter := middleware.NewRateLimiter(100, time.Minute, rateLimitCache) // 100 requests per minute
 	guardMiddleware := middleware.NewGuardMiddleware()
 	costTracker := middleware.NewCostTracker()
 	corsMiddleware := middleware.NewCORSMiddleware() // 添加这行
@@ -249,6 +286,8 @@ func main() {
 					skillHandler.HandleUpdateAgentSkills(w, r)
 				case strings.HasSuffix(r.URL.Path, "/knowledge-bases"):
 					agentHandler.HandleUpdateAgentKnowledgeBases(w, r)
+				case strings.HasSuffix(r.URL.Path, "/clear-context"):
+					agentHandler.HandleClearAgentContext(w, r)
 				case strings.HasSuffix(r.URL.Path, "/mcp-servers"):
 					mcpHandler.HandleUpdateAgentMCPServers(w, r)
 				default:
@@ -439,7 +478,7 @@ func main() {
 	log.Println("")
 	log.Println("Demo User:")
 	log.Printf("  Email: %s", demoUser.Email)
-	log.Println("  Password: demo123456")
+	log.Println("  Credentials are managed server-side and no longer shown on the login page.")
 	log.Println("============================================================")
 	log.Printf("Server listening on %s", platformPort)
 
@@ -455,6 +494,53 @@ func chain(handler http.Handler, middlewares ...func(http.Handler) http.Handler)
 		handler = middlewares[i](handler)
 	}
 	return handler
+}
+
+func ensureDemoUser(userStore auth.UserStore, demoUser *auth.User, rawPassword string) error {
+	passwordHash, err := auth.HashPassword(rawPassword)
+	if err != nil {
+		return fmt.Errorf("failed to hash demo user password: %w", err)
+	}
+	demoUser.PasswordHash = passwordHash
+
+	existing, err := userStore.GetByEmail(demoUser.Email)
+	switch {
+	case errors.Is(err, auth.ErrUserNotFound):
+		if err := userStore.Create(demoUser); err != nil {
+			return fmt.Errorf("failed to create demo user: %w", err)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("failed to load demo user: %w", err)
+	}
+
+	updated := *existing
+	changed := false
+
+	if !auth.VerifyPassword(rawPassword, updated.PasswordHash) {
+		updated.PasswordHash = passwordHash
+		changed = true
+	}
+	if updated.TenantID == "" {
+		updated.TenantID = demoUser.TenantID
+		changed = true
+	}
+	if updated.Role == "" {
+		updated.Role = demoUser.Role
+		changed = true
+	}
+	if !updated.Active {
+		updated.Active = true
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+	if err := userStore.Update(&updated); err != nil {
+		return fmt.Errorf("failed to update demo user: %w", err)
+	}
+	return nil
 }
 
 // getEnv gets environment variable with default value
@@ -476,4 +562,19 @@ func getEnvInt(key string, defaultValue int) int {
 		return defaultValue
 	}
 	return parsed
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
 }

@@ -32,6 +32,9 @@ type MCPServer struct {
 	CreatedAt    time.Time        `json:"created_at"`
 	UpdatedAt    time.Time        `json:"updated_at"`
 	Tools        []*MCPServerTool `json:"tools,omitempty"`
+	Connection   *MCPConnection   `json:"connection,omitempty"`
+	Catalog      *MCPCatalog      `json:"catalog,omitempty"`
+	Availability *MCPAvailability `json:"availability,omitempty"`
 }
 
 type MCPServerTool struct {
@@ -47,6 +50,31 @@ type MCPServerTool struct {
 	DiscoveredAt time.Time       `json:"discovered_at"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+type MCPConnection struct {
+	Status   string     `json:"status"`
+	Summary  string     `json:"summary"`
+	TestedAt *time.Time `json:"tested_at,omitempty"`
+	Error    string     `json:"error,omitempty"`
+}
+
+type MCPCatalog struct {
+	Status            string     `json:"status"`
+	Summary           string     `json:"summary"`
+	ToolCount         int        `json:"tool_count"`
+	RefreshedAt       *time.Time `json:"refreshed_at,omitempty"`
+	AgeSeconds        *int64     `json:"age_seconds,omitempty"`
+	StaleAfterSeconds int64      `json:"stale_after_seconds"`
+	IsStale           bool       `json:"is_stale"`
+	SampleTools       []string   `json:"sample_tools,omitempty"`
+}
+
+type MCPAvailability struct {
+	Status   string `json:"status"`
+	Summary  string `json:"summary"`
+	Bindable bool   `json:"bindable"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 type MCPStore struct {

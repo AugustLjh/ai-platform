@@ -70,8 +70,10 @@ USER appuser
 WORKDIR /home/appuser
 
 COPY --from=builder --chown=appuser:appuser /out/platform ./platform
+COPY --chown=appuser:appuser ai_runtime/skills ./ai_runtime/skills
 
 EXPOSE 8080
 ENV TZ=Asia/Shanghai
+ENV AI_RUNTIME_SKILLS_DIR=/home/appuser/ai_runtime/skills
 
 CMD ["./platform"]

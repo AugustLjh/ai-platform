@@ -1,3 +1,6 @@
+//go:build legacy_knowledge
+// +build legacy_knowledge
+
 package http
 
 import (

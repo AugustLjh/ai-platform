@@ -32,11 +32,13 @@ services:
       - POSTGRES_DB=ai_platform
       - POSTGRES_USER=ai_platform
       - POSTGRES_PASSWORD=19980912
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_GRPC_PORT=6334
+      - AGENT_TOOL_PROVIDERS=${AGENT_TOOL_PROVIDERS:-builtin,knowledge,mcp,engineering}
+      - AGENT_ENGINEERING_ENABLED=${AGENT_ENGINEERING_ENABLED:-true}
+      - AGENT_ENGINEERING_WORKSPACE_ROOTS=${AGENT_ENGINEERING_WORKSPACE_ROOTS:-/app}
+      - AGENT_ENGINEERING_TOOLS=${AGENT_ENGINEERING_TOOLS:-workspace_list_files,workspace_read_file,workspace_search_text,git_status,git_diff}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     healthcheck:
@@ -78,7 +80,9 @@ services:
       - POSTGRES_PASSWORD=19980912
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_REQUIRED=true
       - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
+      - AI_RUNTIME_SKILLS_DIR=/home/appuser/ai_runtime/skills
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
       interval: 30s

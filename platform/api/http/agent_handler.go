@@ -92,11 +92,11 @@ func (h *AgentHandler) HandleAgentByID(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, item, http.StatusOK)
 	case http.MethodDelete:
-		if err := h.agentService.ArchiveAgentDefinition(user.TenantID, user.ID, agentID); err != nil {
+		if err := h.agentService.DeleteAgentDefinition(r.Context(), user.TenantID, user.ID, agentID); err != nil {
 			respondError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		respondJSON(w, map[string]string{"message": "archived"}, http.StatusOK)
+		respondJSON(w, map[string]string{"message": "deleted"}, http.StatusOK)
 	default:
 		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -156,6 +156,37 @@ func (h *AgentHandler) HandleUpdateAgentKnowledgeBases(w http.ResponseWriter, r 
 		return
 	}
 	respondJSON(w, map[string]string{"message": "updated"}, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleClearAgentContext(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	agentID := extractSuffixID(r.URL.Path, "/api/v1/agents/", "/clear-context")
+	if agentID == "" {
+		respondError(w, "Invalid agent id", http.StatusBadRequest)
+		return
+	}
+	var req service.ClearAgentContextRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	if err := h.agentService.ClearAgentContext(r.Context(), user.TenantID, user.ID, agentID, &req); err != nil {
+		status := http.StatusBadRequest
+		if err == service.ErrUnauthorized || err == service.ErrAgentUnauthorized {
+			status = http.StatusForbidden
+		}
+		respondError(w, err.Error(), status)
+		return
+	}
+	respondJSON(w, map[string]string{"message": "cleared"}, http.StatusOK)
 }
 
 func (h *AgentHandler) HandleTools(w http.ResponseWriter, r *http.Request) {

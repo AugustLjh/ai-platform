@@ -1,3 +1,6 @@
+//go:build legacy_knowledge
+// +build legacy_knowledge
+
 package service
 
 import (
@@ -16,16 +19,16 @@ var (
 
 // KnowledgeService handles knowledge base operations
 type KnowledgeService struct {
-	mu            sync.RWMutex
+	mu             sync.RWMutex
 	knowledgeBases map[string]*models.KnowledgeBase
-	documents     map[string][]*models.Document // key: knowledge_base_id
+	documents      map[string][]*models.Document // key: knowledge_base_id
 }
 
 // NewKnowledgeService creates a new knowledge service
 func NewKnowledgeService() *KnowledgeService {
 	return &KnowledgeService{
 		knowledgeBases: make(map[string]*models.KnowledgeBase),
-		documents:     make(map[string][]*models.Document),
+		documents:      make(map[string][]*models.Document),
 	}
 }
 

@@ -130,7 +130,7 @@ func (h *MCPHandler) HandleRefreshServerTools(w http.ResponseWriter, r *http.Req
 		respondError(w, "Invalid server id", http.StatusBadRequest)
 		return
 	}
-	items, err := h.agentService.RefreshMCPServerTools(user.TenantID, serverID)
+	result, err := h.agentService.RefreshMCPServerTools(user.TenantID, serverID)
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrNotImplemented) {
@@ -139,7 +139,7 @@ func (h *MCPHandler) HandleRefreshServerTools(w http.ResponseWriter, r *http.Req
 		respondError(w, err.Error(), status)
 		return
 	}
-	respondJSON(w, map[string]any{"tools": items, "total": len(items)}, http.StatusOK)
+	respondJSON(w, result, http.StatusOK)
 }
 
 func (h *MCPHandler) HandleUpdateAgentMCPServers(w http.ResponseWriter, r *http.Request) {

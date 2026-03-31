@@ -233,6 +233,7 @@ type AgentToolSpec struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
 	Kind        string          `json:"kind"`
+	Metadata    json.RawMessage `json:"metadata"`
 }
 
 type runtimeAgentToolListResponse struct {
