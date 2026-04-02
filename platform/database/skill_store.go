@@ -25,6 +25,7 @@ type Skill struct {
 	OutputSchema  json.RawMessage `json:"output_schema"`
 	ToolAllowlist json.RawMessage `json:"tool_allowlist"`
 	Metadata      json.RawMessage `json:"metadata"`
+	Contract      json.RawMessage `json:"contract,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
 }

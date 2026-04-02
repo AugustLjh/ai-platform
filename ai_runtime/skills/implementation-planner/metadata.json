@@ -1,6 +1,8 @@
 {
+  "contract_kind": "capability_pack",
   "system_skill": true,
   "fixed_binding": true,
+  "capability_type": "planning",
   "activation_intents": [
     "plan"
   ],

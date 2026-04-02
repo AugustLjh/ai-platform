@@ -225,3 +225,60 @@ def test_resolve_for_agent_does_not_hardcode_implementation_planner():
     )
 
     assert "lower(s.slug) = 'implementation-planner'" not in captured["query"]
+
+
+def test_resolve_for_allowlist_keeps_fixed_bindings_and_selected_skills():
+    class FakePool:
+        async def fetch(self, query, *args):
+            return [
+                {
+                    "id": "00000000-0000-0000-0000-000000000010",
+                    "tenant_id": None,
+                    "name": "Implementation Planner",
+                    "slug": "implementation-planner",
+                    "version": "1",
+                    "description": "",
+                    "root_path": "",
+                    "system_prompt": "planner prompt",
+                    "output_schema": {},
+                    "tool_allowlist": [],
+                    "metadata": {"fixed_binding": True},
+                },
+                {
+                    "id": "00000000-0000-0000-0000-000000000011",
+                    "tenant_id": None,
+                    "name": "Code Review",
+                    "slug": "code-review",
+                    "version": "1",
+                    "description": "",
+                    "root_path": "",
+                    "system_prompt": "review prompt",
+                    "output_schema": {},
+                    "tool_allowlist": [],
+                    "metadata": {},
+                },
+                {
+                    "id": "00000000-0000-0000-0000-000000000012",
+                    "tenant_id": None,
+                    "name": "KB Research",
+                    "slug": "kb-research",
+                    "version": "1",
+                    "description": "",
+                    "root_path": "",
+                    "system_prompt": "research prompt",
+                    "output_schema": {},
+                    "tool_allowlist": [],
+                    "metadata": {},
+                },
+            ]
+
+    registry = SkillRegistry(db_pool=FakePool())
+    context = asyncio.run(
+        registry.resolve_for_allowlist(
+            tenant_id="00000000-0000-0000-0000-000000000002",
+            allowlist=["code-review"],
+            include_fixed_bindings=True,
+        )
+    )
+
+    assert [skill.slug for skill in context.skills] == ["implementation-planner", "code-review"]

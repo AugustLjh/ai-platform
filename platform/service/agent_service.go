@@ -374,14 +374,29 @@ func (s *AgentService) ListSkills(tenantID string) ([]*database.Skill, error) {
 	if err := s.ensureSystemSkillsSynced(); err != nil {
 		return nil, err
 	}
-	return s.skillStore.ListSkills(tenantID)
+	items, err := s.skillStore.ListSkills(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	for index, item := range items {
+		hydrated, err := hydrateSkillContract(item)
+		if err != nil {
+			return nil, err
+		}
+		items[index] = hydrated
+	}
+	return items, nil
 }
 
 func (s *AgentService) GetSkill(tenantID, skillID string) (*database.Skill, error) {
 	if err := s.ensureSystemSkillsSynced(); err != nil {
 		return nil, err
 	}
-	return s.skillStore.GetSkill(skillID, tenantID)
+	item, err := s.skillStore.GetSkill(skillID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return hydrateSkillContract(item)
 }
 
 func (s *AgentService) SyncSkills() ([]*database.Skill, error) {
@@ -399,6 +414,10 @@ func (s *AgentService) SyncSkills() ([]*database.Skill, error) {
 			return nil, err
 		}
 		upserted, err := s.skillStore.UpsertSkill(skill)
+		if err != nil {
+			return nil, err
+		}
+		upserted, err = hydrateSkillContract(upserted)
 		if err != nil {
 			return nil, err
 		}
@@ -655,7 +674,7 @@ func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, err
 		metadata = []byte(`{}`)
 	}
 
-	return &database.Skill{
+	skill := &database.Skill{
 		Name:          name,
 		Slug:          slug,
 		Version:       version,
@@ -665,7 +684,8 @@ func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, err
 		OutputSchema:  outputSchema,
 		ToolAllowlist: toolAllowlist,
 		Metadata:      metadata,
-	}, nil
+	}
+	return hydrateSkillContract(skill)
 }
 
 func (s *AgentService) ensureSystemSkillsSynced() error {

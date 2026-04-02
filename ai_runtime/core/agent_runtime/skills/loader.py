@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+from core.agent_runtime.skills.contract import apply_skill_contract
 from core.agent_runtime.skills.models import SkillDefinition
 
 
@@ -47,7 +48,7 @@ def load_skill_directory(path: str | Path) -> SkillDefinition:
     metadata = _parse_json((root / "metadata.json").read_text(encoding="utf-8"), {}) if (root / "metadata.json").exists() else {}
 
     slug = manifest.get("slug") or root.name
-    return SkillDefinition(
+    skill = SkillDefinition(
         slug=slug,
         name=manifest.get("name") or slug,
         version=manifest.get("version") or "1",
@@ -58,6 +59,7 @@ def load_skill_directory(path: str | Path) -> SkillDefinition:
         tool_allowlist=[str(item) for item in tool_allowlist] if isinstance(tool_allowlist, list) else [],
         metadata=metadata if isinstance(metadata, dict) else {},
     )
+    return apply_skill_contract(skill)
 
 
 def load_skill_row(row: Any) -> SkillDefinition:
@@ -73,6 +75,7 @@ def load_skill_row(row: Any) -> SkillDefinition:
         output_schema=_parse_json(data.get("output_schema"), {}),
         tool_allowlist=[str(item) for item in _parse_json(data.get("tool_allowlist"), []) if str(item).strip()],
         metadata=_parse_json(data.get("metadata"), {}),
+        contract=_parse_json(data.get("contract"), {}),
     )
 
     root_path = Path(skill.root_path) if skill.root_path else None
@@ -83,4 +86,4 @@ def load_skill_row(row: Any) -> SkillDefinition:
                 "id": skill.id,
             }
         )
-    return skill
+    return apply_skill_contract(skill)

@@ -18,6 +18,7 @@ class SkillDefinition(BaseModel):
     output_schema: Dict[str, Any] = Field(default_factory=dict)
     tool_allowlist: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    contract: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SkillRuntimeContext(BaseModel):

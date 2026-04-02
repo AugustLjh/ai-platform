@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import List
 from uuid import UUID
 
 from core.agent_runtime.schema_utils import merge_output_schema
+from core.agent_runtime.skills.contract import derive_skill_contract
 from core.agent_runtime.skills.loader import load_skill_row
 from core.agent_runtime.skills.models import SkillDefinition, SkillRuntimeContext
 
@@ -16,8 +18,40 @@ class SkillRegistry:
     def __init__(self, db_pool) -> None:
         self.db_pool = db_pool
 
+    def _contract(self, skill: SkillDefinition) -> dict:
+        if isinstance(skill.contract, dict) and skill.contract:
+            return skill.contract
+        return derive_skill_contract(
+            slug=skill.slug,
+            name=skill.name,
+            system_prompt=skill.system_prompt,
+            output_schema=skill.output_schema,
+            tool_allowlist=skill.tool_allowlist,
+            metadata=skill.metadata,
+        ).model_dump(mode="json")
+
+    def _is_fixed_binding(self, skill: SkillDefinition) -> bool:
+        return self._contract(skill).get("binding_mode") == "fixed"
+
+    def _normalize_allowlist(self, allowlist: Iterable[str] | None) -> tuple[set[str], set[str]]:
+        ids: set[str] = set()
+        slugs: set[str] = set()
+        for item in allowlist or []:
+            value = str(item or "").strip()
+            if not value:
+                continue
+            slugs.add(value.lower())
+            try:
+                ids.add(str(_serialize_uuid(value)))
+            except (TypeError, ValueError):
+                continue
+        return ids, slugs
+
     def _skill_matches_intent(self, skill: SkillDefinition, inferred_intent: str | None) -> bool:
-        activation_intents = skill.metadata.get("activation_intents")
+        contract = self._contract(skill)
+        if contract.get("intent_policy") != "explicit":
+            return True
+        activation_intents = contract.get("activation_intents")
         if not isinstance(activation_intents, list) or not activation_intents:
             return True
 
@@ -29,7 +63,10 @@ class SkillRegistry:
         return normalized_intent in allowed_intents
 
     def _skill_matches_phase(self, skill: SkillDefinition, phase: str | None) -> bool:
-        activation_phases = skill.metadata.get("activation_phases")
+        contract = self._contract(skill)
+        if contract.get("phase_policy") != "explicit":
+            return True
+        activation_phases = contract.get("activation_phases")
         if not isinstance(activation_phases, list) or not activation_phases:
             return True
 
@@ -65,12 +102,20 @@ class SkillRegistry:
         for schema in schemas:
             output_schema = merge_output_schema(output_schema, schema)
 
+        capability_skill_slugs = [skill.slug for skill in skills if self._contract(skill).get("kind") == "capability_pack"]
+        role_prompt_skill_slugs = [skill.slug for skill in skills if self._contract(skill).get("kind") == "role_prompt"]
+
         return SkillRuntimeContext(
             skills=skills,
             system_prompt="\n\n".join(prompts),
             tool_allowlist=tool_allowlist,
             output_schema=output_schema,
-            metadata=metadata or {},
+            metadata={
+                **(metadata or {}),
+                "capability_skill_slugs": capability_skill_slugs,
+                "role_prompt_skill_slugs": role_prompt_skill_slugs,
+                "skill_contracts": [self._contract(skill) for skill in skills],
+            },
         )
 
     def compose(self, skills: List[SkillDefinition]) -> SkillRuntimeContext:
@@ -147,5 +192,47 @@ class SkillRegistry:
             metadata={
                 "skill_ids": [skill.id for skill in skills if skill.id],
                 "skill_slugs": [skill.slug for skill in skills],
+            },
+        )
+
+    async def resolve_for_allowlist(
+        self,
+        *,
+        tenant_id: str,
+        allowlist: Iterable[str] | None,
+        include_fixed_bindings: bool = True,
+    ) -> SkillRuntimeContext:
+        allowlist_ids, allowlist_slugs = self._normalize_allowlist(allowlist)
+        rows = await self.db_pool.fetch(
+            """
+            SELECT s.*
+            FROM skills s
+            WHERE s.tenant_id IS NULL OR s.tenant_id = $1
+            ORDER BY lower(s.slug) ASC
+            """,
+            _serialize_uuid(tenant_id),
+        )
+        skills: list[SkillDefinition] = []
+        for row in rows:
+            skill = load_skill_row(row)
+            slug = str(skill.slug or "").strip().lower()
+            included = False
+            if skill.id and skill.id in allowlist_ids:
+                included = True
+            elif slug and slug in allowlist_slugs:
+                included = True
+            elif include_fixed_bindings and self._is_fixed_binding(skill):
+                included = True
+
+            if included:
+                skills.append(skill)
+
+        return SkillRuntimeContext(
+            skills=skills,
+            metadata={
+                "skill_ids": [skill.id for skill in skills if skill.id],
+                "skill_slugs": [skill.slug for skill in skills],
+                "allowlist": list(allowlist or []),
+                "include_fixed_bindings": include_fixed_bindings,
             },
         )

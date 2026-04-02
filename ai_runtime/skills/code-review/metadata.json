@@ -1,4 +1,6 @@
 {
+  "contract_kind": "capability_pack",
+  "capability_type": "review",
   "activation_intents": [
     "review"
   ],

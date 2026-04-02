@@ -1,4 +1,6 @@
 {
+  "contract_kind": "capability_pack",
+  "capability_type": "knowledge_research",
   "activation_intents": [
     "research",
     "compare",
