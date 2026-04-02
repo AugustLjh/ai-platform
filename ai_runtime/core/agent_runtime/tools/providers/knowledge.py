@@ -22,16 +22,21 @@ async def _resolve_accessible_knowledge_base_ids(
     tenant_id: str,
     user_id: str | None,
     agent_definition_id: str | None,
+    allowed_knowledge_base_ids: tuple[str, ...] | list[str] | None = None,
 ) -> list[str]:
     agent_definition_id = str(agent_definition_id or "").strip()
     if not agent_definition_id:
         return []
     repository = AgentRepository(get_db_manager().pool)
-    return await repository.list_accessible_knowledge_bindings(
+    mounted_ids = await repository.list_accessible_knowledge_bindings(
         definition_id=agent_definition_id,
         tenant_id=tenant_id,
         user_id=user_id,
     )
+    allowed = {str(item).strip() for item in (allowed_knowledge_base_ids or []) if str(item).strip()}
+    if not allowed:
+        return mounted_ids
+    return [knowledge_base_id for knowledge_base_id in mounted_ids if knowledge_base_id in allowed]
 
 
 class KnowledgeSearchTool(BaseTool):
@@ -63,6 +68,7 @@ class KnowledgeSearchTool(BaseTool):
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             agent_definition_id=context.agent_definition_id,
+            allowed_knowledge_base_ids=context.allowed_knowledge_base_ids,
         )
         if not mounted_knowledge_base_ids:
             raise PermissionError("agent has no mounted knowledge bases available to the current user")
@@ -153,6 +159,7 @@ class KnowledgeFetchDocumentTool(BaseTool):
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             agent_definition_id=context.agent_definition_id,
+            allowed_knowledge_base_ids=context.allowed_knowledge_base_ids,
         )
         if not mounted_knowledge_base_ids:
             raise PermissionError("agent has no mounted knowledge bases available to the current user")
@@ -214,6 +221,7 @@ class KnowledgeFetchSegmentsTool(BaseTool):
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             agent_definition_id=context.agent_definition_id,
+            allowed_knowledge_base_ids=context.allowed_knowledge_base_ids,
         )
         if not mounted_knowledge_base_ids:
             raise PermissionError("agent has no mounted knowledge bases available to the current user")
@@ -250,6 +258,7 @@ class KnowledgeToolProvider:
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             agent_definition_id=context.agent_definition_id,
+            allowed_knowledge_base_ids=context.allowed_knowledge_base_ids,
         )
         return len(mounted_knowledge_base_ids) > 0
 

@@ -1,9 +1,15 @@
 import { defineStore } from 'pinia'
-import { agentsAPI, skillsAPI, mcpAPI } from '@/api'
-import { buildArtifactsFromStructuredResult, normalizeArtifact, normalizeRunResult, parseJSON } from '@/utils/agentArtifacts'
+import { agentsAPI, skillsAPI, mcpAPI, subagentsAPI } from '@/api'
+import {
+  buildRunArtifactsFromToolCalls,
+  normalizeRunResult,
+  parseJSON
+} from '@/utils/agentArtifacts'
+import { buildRunEventPatch, deriveRunState } from '@/utils/agentRunState'
+import { collectRunEventPages } from '@/utils/runEventHydration'
+import { normalizeMCPBindingUsage } from '@/utils/mcpServers'
 
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
-const executionBoundaryEventTypes = new Set(['run.resumed'])
 
 const normalizeAgent = (raw = {}) => ({
   id: raw.id,
@@ -24,6 +30,44 @@ const normalizeAgent = (raw = {}) => ({
   knowledgeBaseIds: Array.isArray(raw.knowledge_base_ids || raw.knowledgeBaseIds)
     ? [...(raw.knowledge_base_ids || raw.knowledgeBaseIds)]
     : [],
+  subagentIds: Array.isArray(raw.subagent_ids || raw.subagentIds)
+    ? [...(raw.subagent_ids || raw.subagentIds)]
+    : [],
+  createdAt: raw.created_at || raw.createdAt || null,
+  updatedAt: raw.updated_at || raw.updatedAt || null,
+  archivedAt: raw.archived_at || raw.archivedAt || null
+})
+
+const normalizeSubagent = (raw = {}) => ({
+  id: raw.publication_id || raw.publicationId || raw.id,
+  definitionId: raw.id || raw.definition_id || raw.definitionId || '',
+  publicationId: raw.publication_id || raw.publicationId || '',
+  versionId: raw.version_id || raw.versionId || '',
+  versionNumber: Number(raw.version_number || raw.versionNumber || 0),
+  tenantId: raw.tenant_id || raw.tenantId || '',
+  name: raw.name || '未命名专家能力',
+  slug: raw.slug || '',
+  description: raw.description || '',
+  systemPrompt: raw.system_prompt || raw.systemPrompt || '',
+  model: raw.model || '',
+  status: raw.status || 'active',
+  definitionStatus: raw.definition_status || raw.definitionStatus || 'active',
+  lifecycleStatus: raw.lifecycle_status || raw.lifecycleStatus || 'active',
+  publicationScope: raw.publication_scope || raw.publicationScope || 'tenant',
+  publicationTenantId: raw.publication_tenant_id || raw.publicationTenantId || '',
+  config: parseJSON(raw.config, {}),
+  metadata: parseJSON(raw.metadata, {}),
+  outputSchema: parseJSON(raw.output_schema || raw.outputSchema, {}),
+  handoffInputSchema: parseJSON(raw.handoff_input_schema || raw.handoffInputSchema, {}),
+  toolAllowlist: parseJSON(raw.tool_allowlist || raw.toolAllowlist, []),
+  skillAllowlist: parseJSON(raw.skill_allowlist || raw.skillAllowlist, []),
+  mcpAllowlist: parseJSON(raw.mcp_allowlist || raw.mcpAllowlist, []),
+  knowledgePolicy: parseJSON(raw.knowledge_policy || raw.knowledgePolicy, {}),
+  reviewPolicy: parseJSON(raw.review_policy || raw.reviewPolicy, {}),
+  runtimePolicy: parseJSON(raw.runtime_policy || raw.runtimePolicy, {}),
+  publicationMetadata: parseJSON(raw.publication_metadata || raw.publicationMetadata, {}),
+  targetAgentDefinitionId: raw.target_agent_definition_id || raw.targetAgentDefinitionId || '',
+  handoffPrompt: raw.handoff_prompt || raw.handoffPrompt || '',
   createdAt: raw.created_at || raw.createdAt || null,
   updatedAt: raw.updated_at || raw.updatedAt || null,
   archivedAt: raw.archived_at || raw.archivedAt || null
@@ -31,6 +75,19 @@ const normalizeAgent = (raw = {}) => ({
 
 const normalizeRun = (raw = {}) => {
   const result = normalizeRunResult(raw)
+  const toolCalls = Array.isArray(raw.tool_calls || raw.toolCalls) ? (raw.tool_calls || raw.toolCalls).map((toolCall) => ({
+    id: toolCall.id,
+    stepId: toolCall.step_id || toolCall.stepId || '',
+    toolName: toolCall.tool_name || toolCall.toolName || '',
+    toolKind: toolCall.tool_kind || toolCall.toolKind || 'builtin',
+    status: toolCall.status || 'pending',
+    arguments: parseJSON(toolCall.arguments, {}),
+    result: parseJSON(toolCall.result, {}),
+    error: toolCall.error_message || toolCall.errorMessage || '',
+    createdAt: toolCall.created_at || toolCall.createdAt || null,
+    updatedAt: toolCall.updated_at || toolCall.updatedAt || null
+  })) : []
+  const artifacts = buildRunArtifactsFromToolCalls(toolCalls, result.artifacts)
   return {
     id: raw.id,
     agentDefinitionId: raw.agent_definition_id || raw.agentDefinitionId || '',
@@ -51,7 +108,7 @@ const normalizeRun = (raw = {}) => {
     createdAt: raw.created_at || raw.createdAt || null,
     updatedAt: raw.updated_at || raw.updatedAt || null,
     metadata: parseJSON(raw.metadata, {}),
-    artifacts: result.artifacts,
+    artifacts,
     steps: Array.isArray(raw.steps) ? raw.steps.map((step) => ({
       id: step.id,
       stepIndex: Number(step.step_index || step.stepIndex || 0),
@@ -64,18 +121,7 @@ const normalizeRun = (raw = {}) => {
       createdAt: step.created_at || step.createdAt || null,
       updatedAt: step.updated_at || step.updatedAt || null
     })) : [],
-    toolCalls: Array.isArray(raw.tool_calls || raw.toolCalls) ? (raw.tool_calls || raw.toolCalls).map((toolCall) => ({
-      id: toolCall.id,
-      stepId: toolCall.step_id || toolCall.stepId || '',
-      toolName: toolCall.tool_name || toolCall.toolName || '',
-      toolKind: toolCall.tool_kind || toolCall.toolKind || 'builtin',
-      status: toolCall.status || 'pending',
-      arguments: parseJSON(toolCall.arguments, {}),
-      result: parseJSON(toolCall.result, {}),
-      error: toolCall.error_message || toolCall.errorMessage || '',
-      createdAt: toolCall.created_at || toolCall.createdAt || null,
-      updatedAt: toolCall.updated_at || toolCall.updatedAt || null
-    })) : []
+    toolCalls
   }
 }
 
@@ -88,6 +134,71 @@ const normalizeEvent = (raw = {}) => ({
   createdAt: raw.created_at || raw.createdAt || null
 })
 
+const normalizeStringList = (value, allowedSet = null) => {
+  if (!Array.isArray(value)) return []
+  const result = []
+  const seen = new Set()
+  value.forEach((item) => {
+    const normalized = String(item || '').trim().toLowerCase()
+    if (!normalized) return
+    if (allowedSet && !allowedSet.has(normalized)) return
+    if (seen.has(normalized)) return
+    seen.add(normalized)
+    result.push(normalized)
+  })
+  return result
+}
+
+const normalizeSkillContract = (raw = {}) => {
+  const metadata = parseJSON(raw.metadata, {})
+  const outputSchema = parseJSON(raw.output_schema || raw.outputSchema, {})
+  const toolAllowlist = parseJSON(raw.tool_allowlist || raw.toolAllowlist, [])
+  const fallbackOutputFields = Object.keys(outputSchema?.properties || {}).filter(Boolean).sort()
+  const contract = parseJSON(raw.contract, {})
+
+  const managedToolKinds = normalizeStringList(contract.managed_tool_kinds || metadata.managed_tool_kinds)
+  const activationIntents = normalizeStringList(contract.activation_intents || metadata.activation_intents)
+  const activationPhases = normalizeStringList(
+    contract.activation_phases || metadata.activation_phases,
+    new Set(['planning', 'execution', 'synthesis', 'output'])
+  )
+  const hasSystemPrompt = Boolean((raw.system_prompt || raw.systemPrompt || '').trim())
+  const hasOutputSchema = contract.has_output_schema ?? Boolean(outputSchema && Object.keys(outputSchema).length > 0)
+  const toolPolicyMode = contract.tool_policy_mode ||
+    (managedToolKinds.length > 0 ? 'provider_managed' : (Array.isArray(toolAllowlist) && toolAllowlist.length > 0 ? 'allowlist' : 'inherit'))
+  const kind = ['capability_pack', 'role_prompt'].includes(contract.kind)
+    ? contract.kind
+    : 'capability_pack'
+  const surfaces = Array.isArray(contract.surfaces) && contract.surfaces.length > 0
+    ? [...contract.surfaces]
+    : [
+        ...(hasSystemPrompt ? ['prompt'] : []),
+        ...(toolPolicyMode !== 'inherit' ? ['tools'] : []),
+        ...(hasOutputSchema ? ['output'] : [])
+      ]
+
+  return {
+    kind,
+    capabilityType: contract.capability_type || metadata.capability_type || '',
+    displayName: contract.display_name || metadata.display_name || raw.name || raw.slug || '',
+    bindingMode: contract.binding_mode || ((metadata.fixed_binding || raw.slug === 'implementation-planner') ? 'fixed' : 'optional'),
+    systemSkill: Boolean(contract.system_skill ?? metadata.system_skill),
+    activationIntents,
+    activationPhases,
+    intentPolicy: contract.intent_policy || (activationIntents.length > 0 ? 'explicit' : 'all'),
+    phasePolicy: contract.phase_policy || (activationPhases.length > 0 ? 'explicit' : 'all'),
+    hasSystemPrompt,
+    toolPolicyMode,
+    managedToolKinds,
+    hasOutputSchema,
+    outputFieldNames: Array.isArray(contract.output_field_names) && contract.output_field_names.length > 0
+      ? [...contract.output_field_names]
+      : fallbackOutputFields,
+    surfaces,
+    governanceWarnings: Array.isArray(contract.governance_warnings) ? [...contract.governance_warnings] : []
+  }
+}
+
 const normalizeSkill = (raw = {}) => ({
   id: raw.id,
   name: raw.name || '',
@@ -98,6 +209,7 @@ const normalizeSkill = (raw = {}) => ({
   outputSchema: parseJSON(raw.output_schema || raw.outputSchema, {}),
   toolAllowlist: parseJSON(raw.tool_allowlist || raw.toolAllowlist, []),
   metadata: parseJSON(raw.metadata, {}),
+  contract: normalizeSkillContract(raw),
   createdAt: raw.created_at || null,
   updatedAt: raw.updated_at || null
 })
@@ -144,6 +256,7 @@ const normalizeMCPServer = (raw = {}) => ({
         reason: raw.availability.reason || ''
       }
     : null,
+  bindingUsage: normalizeMCPBindingUsage(raw.binding_usage || raw.bindingUsage),
   metadata: parseJSON(raw.metadata, {}),
   tools: Array.isArray(raw.tools) ? raw.tools.map((tool) => ({
     id: tool.id,
@@ -173,202 +286,6 @@ const sortByUpdatedDesc = (items) => [...items].sort((a, b) => {
   return bTime - aTime
 })
 
-const getActiveExecutionEvents = (events = []) => {
-  let boundaryIndex = -1
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    if (executionBoundaryEventTypes.has(events[index]?.eventType)) {
-      boundaryIndex = index
-      break
-    }
-  }
-  return boundaryIndex >= 0 ? events.slice(boundaryIndex) : events
-}
-
-const deriveRunState = (run, events) => {
-  const stepsMap = new Map((Array.isArray(run?.steps) ? run.steps : []).map((step) => [step.id, { ...step }]))
-  const toolCallMap = new Map((Array.isArray(run?.toolCalls) ? run.toolCalls : []).map((toolCall) => [toolCall.id, { ...toolCall }]))
-  let plan = run?.plan && Object.keys(run.plan).length > 0 ? run.plan : null
-  let finalOutput = run?.finalOutput || ''
-  let finalOutputText = run?.finalOutputText || ''
-  let finalOutputJson = run?.finalOutputJson || null
-  let artifacts = Array.isArray(run?.artifacts) ? [...run.artifacts] : []
-  const activeEvents = getActiveExecutionEvents(events)
-
-  const captureResultPayload = (payload = {}) => {
-    const output = payload.output && typeof payload.output === 'object' ? payload.output : null
-
-    if (payload.final_output !== undefined) {
-      finalOutput = payload.final_output || ''
-    } else if (output?.final_output !== undefined) {
-      finalOutput = output.final_output || ''
-    }
-
-    if (payload.final_output_text !== undefined) {
-      finalOutputText = payload.final_output_text || ''
-    } else if (output?.final_output_text !== undefined) {
-      finalOutputText = output.final_output_text || ''
-    }
-
-    if (payload.final_output_json !== undefined) {
-      finalOutputJson = payload.final_output_json
-    } else if (output?.final_output_json !== undefined) {
-      finalOutputJson = output.final_output_json
-    }
-
-    if (Array.isArray(payload.artifacts)) {
-      artifacts = payload.artifacts.map(normalizeArtifact)
-    } else if (Array.isArray(output?.artifacts)) {
-      artifacts = output.artifacts.map(normalizeArtifact)
-    }
-
-    if (payload.question && !finalOutputText) {
-      finalOutputText = payload.question
-    }
-  }
-
-  for (const event of activeEvents) {
-    const payload = event.payload || {}
-
-    if (event.eventType === 'run.resumed') {
-      plan = null
-      finalOutput = ''
-      finalOutputText = ''
-      finalOutputJson = null
-      artifacts = []
-      stepsMap.clear()
-      toolCallMap.clear()
-    }
-
-    captureResultPayload(payload)
-
-    if (event.eventType === 'plan.created' && payload.plan) {
-      plan = payload.plan
-    }
-
-    if (event.eventType.startsWith('step.')) {
-      const stepId = payload.step_id
-      if (!stepId) {
-        continue
-      }
-
-      const existing = stepsMap.get(stepId) || {
-        id: stepId,
-        stepIndex: payload.step_index || 0,
-        kind: payload.kind || '',
-        title: payload.title || '',
-        status: 'pending',
-        question: '',
-        output: null,
-        error: '',
-        createdAt: event.createdAt,
-        updatedAt: event.createdAt
-      }
-
-      existing.stepIndex = payload.step_index || existing.stepIndex
-      existing.kind = payload.kind || existing.kind
-      existing.title = payload.title || existing.title
-      existing.updatedAt = event.createdAt
-
-      if (event.eventType === 'step.started') {
-        existing.status = 'running'
-      }
-
-      if (event.eventType === 'step.completed') {
-        existing.status = 'completed'
-        existing.output = payload.output || existing.output
-        existing.question = payload.question || payload.output?.question || existing.question
-      }
-
-      if (event.eventType === 'step.failed') {
-        existing.status = 'failed'
-        existing.error = payload.error || existing.error
-      }
-
-      if (event.eventType === 'step.cancelled') {
-        existing.status = 'cancelled'
-        existing.error = payload.error || existing.error
-      }
-
-      stepsMap.set(stepId, existing)
-    }
-
-    if (event.eventType.startsWith('tool.')) {
-      const toolCallId = payload.tool_call_id
-      if (!toolCallId) {
-        continue
-      }
-
-      const existing = toolCallMap.get(toolCallId) || {
-        id: toolCallId,
-        stepId: payload.step_id || '',
-        toolName: payload.tool_name || '',
-        toolKind: payload.tool_kind || 'builtin',
-        status: 'pending',
-        arguments: payload.arguments || {},
-        result: null,
-        error: '',
-        createdAt: event.createdAt,
-        updatedAt: event.createdAt
-      }
-
-      existing.stepId = payload.step_id || existing.stepId
-      existing.toolName = payload.tool_name || existing.toolName
-      existing.toolKind = payload.tool_kind || existing.toolKind || 'builtin'
-      existing.updatedAt = event.createdAt
-
-      if (event.eventType === 'tool.started') {
-        existing.status = 'running'
-        existing.arguments = payload.arguments || existing.arguments
-      }
-
-      if (event.eventType === 'tool.completed') {
-        existing.status = 'completed'
-        existing.result = payload.result || existing.result
-      }
-
-      if (event.eventType === 'tool.failed') {
-        existing.status = 'failed'
-        existing.error = payload.error || existing.error
-      }
-
-      if (event.eventType === 'tool.cancelled') {
-        existing.status = 'cancelled'
-        existing.error = payload.error || existing.error
-      }
-
-      toolCallMap.set(toolCallId, existing)
-    }
-  }
-
-  if ((!artifacts || artifacts.length === 0) && finalOutputJson) {
-    artifacts = buildArtifactsFromStructuredResult(finalOutputJson, finalOutputText || finalOutput)
-  }
-
-  return {
-    plan,
-    steps: [...stepsMap.values()].sort((a, b) => {
-      if (a.stepIndex === b.stepIndex) {
-        return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
-      }
-      return a.stepIndex - b.stepIndex
-    }),
-    toolCalls: [...toolCallMap.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
-    artifacts,
-    runPatch: {
-      finalOutput: finalOutputText || finalOutput,
-      finalOutputText: finalOutputText || finalOutput,
-      finalOutputJson,
-      steps: [...stepsMap.values()].sort((a, b) => {
-        if (a.stepIndex === b.stepIndex) {
-          return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
-        }
-        return a.stepIndex - b.stepIndex
-      }),
-      toolCalls: [...toolCallMap.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-    }
-  }
-}
-
 export const useAgentsStore = defineStore('agents', {
   state: () => ({
     agentDefinitions: [],
@@ -380,9 +297,11 @@ export const useAgentsStore = defineStore('agents', {
     toolCalls: [],
     plan: null,
     artifacts: [],
+    executionSurface: null,
     availableTools: [],
     skills: [],
     mcpServers: [],
+    subagents: [],
     loading: false,
     error: null,
     streamController: null,
@@ -423,6 +342,23 @@ export const useAgentsStore = defineStore('agents', {
       this.toolCalls = []
       this.plan = null
       this.artifacts = []
+      this.executionSurface = null
+    },
+
+    hydrateRunSurface(run = this.currentRun, events = this.runEvents) {
+      const derived = deriveRunState(run, events)
+      this.executionSurface = derived.surfaceMeta
+      this.plan = derived.plan
+      this.steps = derived.steps
+      this.toolCalls = derived.toolCalls
+      this.artifacts = derived.artifacts
+      if (run?.id) {
+        this.applyRunPatch(run.id, {
+          ...derived.runPatch,
+          artifacts: derived.artifacts
+        })
+      }
+      return derived
     },
 
     applyEvents(events = []) {
@@ -439,18 +375,7 @@ export const useAgentsStore = defineStore('agents', {
 
       merged.sort((a, b) => a.sequence - b.sequence)
       this.runEvents = merged
-
-      const derived = deriveRunState(this.currentRun, merged)
-      this.plan = derived.plan
-      this.steps = derived.steps
-      this.toolCalls = derived.toolCalls
-      this.artifacts = derived.artifacts
-      if (this.currentRun?.id) {
-        this.applyRunPatch(this.currentRun.id, {
-          ...derived.runPatch,
-          artifacts: derived.artifacts
-        })
-      }
+      this.hydrateRunSurface(this.currentRun, merged)
     },
 
     upsertRun(run) {
@@ -484,84 +409,10 @@ export const useAgentsStore = defineStore('agents', {
     },
 
     applyRunEvent(event) {
-      const payload = event.payload || {}
-      const patch = {}
-
-      if (payload.status) {
-        patch.status = payload.status
-      }
-
-      if (event.createdAt) {
-        patch.updatedAt = event.createdAt
-      }
-
-      if (event.eventType === 'run.resumed' || event.eventType === 'run.started') {
-        patch.finalOutput = ''
-        patch.finalOutputText = ''
-        patch.finalOutputJson = null
-        patch.artifacts = []
-        patch.errorMessage = ''
-        patch.finishedAt = null
-        patch.cancelledAt = null
-        patch.plan = {}
-      }
-
-      if (event.eventType === 'run.resumed') {
-        patch.startedAt = null
-      }
-
-      if (event.eventType === 'run.started') {
-        patch.startedAt = event.createdAt || this.currentRun?.startedAt || null
-      }
-
-      if (payload.plan) {
-        patch.plan = payload.plan
-      }
-
-      if (event.eventType === 'run.waiting_user' && payload.question) {
-        patch.finalOutput = payload.question
-        patch.finalOutputText = payload.question
-      } else if (payload.final_output !== undefined) {
-        patch.finalOutput = payload.final_output
-      }
-
-      if (payload.final_output_text !== undefined) {
-        patch.finalOutputText = payload.final_output_text
-      }
-
-      if (payload.final_output_json !== undefined) {
-        patch.finalOutputJson = payload.final_output_json
-      }
-
-      if (Array.isArray(payload.artifacts)) {
-        patch.artifacts = payload.artifacts.map(normalizeArtifact)
+      const patch = buildRunEventPatch(this.currentRun, event)
+      if (Array.isArray(patch.artifacts)) {
         this.artifacts = patch.artifacts
       }
-
-      if (payload.error) {
-        patch.errorMessage = payload.error
-      }
-
-      if (event.eventType === 'run.completed') {
-        patch.finishedAt = event.createdAt || this.currentRun?.finishedAt || null
-        patch.cancelledAt = null
-      }
-
-      if (event.eventType === 'run.failed') {
-        patch.finishedAt = event.createdAt || this.currentRun?.finishedAt || null
-      }
-
-      if (event.eventType === 'run.cancelled') {
-        patch.cancelledAt = event.createdAt || this.currentRun?.cancelledAt || null
-      }
-
-      if (payload.input_patch && this.currentRun?.id === event.runId) {
-        patch.input = {
-          ...(this.currentRun.input || {}),
-          ...payload.input_patch
-        }
-      }
-
       this.applyRunPatch(event.runId, patch)
     },
 
@@ -705,6 +556,7 @@ export const useAgentsStore = defineStore('agents', {
         this.toolCalls = Array.isArray(run.toolCalls) ? run.toolCalls : []
         this.plan = run.plan && Object.keys(run.plan).length > 0 ? run.plan : null
         this.artifacts = Array.isArray(run.artifacts) ? run.artifacts : []
+        this.executionSurface = deriveRunState(run, []).surfaceMeta
         return run
       } catch (error) {
         this.setError(error, 'Failed to create run')
@@ -726,6 +578,7 @@ export const useAgentsStore = defineStore('agents', {
         this.steps = Array.isArray(run.steps) ? run.steps : []
         this.toolCalls = Array.isArray(run.toolCalls) ? run.toolCalls : []
         this.artifacts = Array.isArray(run.artifacts) ? run.artifacts : []
+        this.executionSurface = deriveRunState(run, []).surfaceMeta
         return run
       } catch (error) {
         this.setError(error, 'Failed to fetch run')
@@ -735,12 +588,18 @@ export const useAgentsStore = defineStore('agents', {
       }
     },
 
-    async fetchRunEvents(runId, afterSequence = 0, limit = 500) {
+    async fetchRunEvents(runId, afterSequence = 0, limit = 500, { exhaustive = afterSequence <= 0 } = {}) {
       this.loading = true
       this.error = null
       try {
-        const { data } = await agentsAPI.getRunEvents(runId, afterSequence, limit)
-        const events = (data.events || []).map(normalizeEvent)
+        const events = await collectRunEventPages(
+          async (cursor, pageLimit) => {
+            const { data } = await agentsAPI.getRunEvents(runId, cursor, pageLimit)
+            return (data.events || []).map(normalizeEvent)
+          },
+          { afterSequence, limit, exhaustive }
+        )
+
         if (afterSequence > 0) {
           this.applyEvents(events)
         } else {
@@ -854,6 +713,7 @@ export const useAgentsStore = defineStore('agents', {
         this.toolCalls = []
         this.plan = null
         this.artifacts = []
+        this.executionSurface = deriveRunState(run, []).surfaceMeta
         this.subscribeToRun(run.id)
         return run
       } catch (error) {
@@ -986,6 +846,44 @@ export const useAgentsStore = defineStore('agents', {
       } catch (error) {
         this.setError(error, 'Failed to fetch agent tools')
         throw error
+      }
+    },
+
+    async fetchSubagents(includeArchived = false) {
+      try {
+        const { data } = await subagentsAPI.listSubagents(includeArchived)
+        this.subagents = (data.subagents || []).map(normalizeSubagent)
+        return this.subagents
+      } catch (error) {
+        this.setError(error, 'Failed to fetch subagents')
+        throw error
+      }
+    },
+
+    async updateAgentSubagents(agentId, subagentIds = []) {
+      this.loading = true
+      this.error = null
+      try {
+        await subagentsAPI.updateAgentSubagents(agentId, subagentIds)
+        const nextSubagentIds = Array.isArray(subagentIds) ? [...subagentIds] : []
+        const applyPatch = (agent) => {
+          if (!agent || agent.id !== agentId) return agent
+          return {
+            ...agent,
+            subagentIds: nextSubagentIds
+          }
+        }
+
+        if (this.currentAgent?.id === agentId) {
+          this.currentAgent = applyPatch(this.currentAgent)
+        }
+        this.agentDefinitions = this.agentDefinitions.map(applyPatch)
+        return nextSubagentIds
+      } catch (error) {
+        this.setError(error, 'Failed to update agent subagents')
+        throw error
+      } finally {
+        this.loading = false
       }
     }
   }

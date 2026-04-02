@@ -3,6 +3,7 @@ import asyncio
 
 from core.agent_runtime.models import AgentDefinition
 from core.agent_runtime.planner import AgentPlanner
+from core.agent_runtime.subagents.models import SubagentTarget
 
 
 def test_planner_parses_fenced_json_response():
@@ -194,3 +195,43 @@ def test_planner_retries_once_when_initial_json_is_invalid():
     assert result.action.type == "final_answer"
     assert result.metadata["repair_attempted"] is True
     assert "initial_raw_response" in result.metadata
+
+
+def test_planner_parses_delegate_action_against_available_subagents():
+    planner = AgentPlanner()
+    result = planner._parse_planner_response(
+        """
+        {
+          "reasoning": "The review specialist can inspect this faster.",
+          "steps": [
+            {"title": "Delegate targeted review", "kind": "analysis", "status": "in_progress"}
+          ],
+          "action": {
+            "type": "delegate",
+            "title": "Ask review specialist",
+            "delegate_target": "review-specialist",
+            "delegate_task": "Review the patch for migration risks",
+            "delegate_input": {
+              "focus_paths": ["db/alembic/versions/example.py"]
+            },
+            "content": "Use the specialized reviewer for a bounded code review pass."
+          }
+        }
+        """,
+        available_tools=[],
+        available_subagents=[
+            SubagentTarget(
+                slug="review-specialist",
+                name="Review Specialist",
+                agent_definition_id="agent-reviewer",
+                description="Focused code review agent",
+            )
+        ],
+        iteration=3,
+        model_info={"resolved_model_name": "Planner Model"},
+    )
+
+    assert result.action.type == "delegate"
+    assert result.action.delegate_target == "review-specialist"
+    assert result.action.delegate_task == "Review the patch for migration risks"
+    assert result.action.delegate_input["focus_paths"] == ["db/alembic/versions/example.py"]

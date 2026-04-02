@@ -26,6 +26,14 @@ class MCPTool(BaseTool):
         )
 
     async def execute(self, context: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        server_id = str(self.spec.metadata.get("server_id") or "").strip()
+        source_tool_name = str(self.spec.metadata.get("source_tool_name") or "").strip()
+        allowed_server_ids = {str(item).strip() for item in context.allowed_mcp_server_ids if str(item).strip()}
+        allowed_tool_names = {str(item).strip() for item in context.allowed_mcp_tool_names if str(item).strip()}
+        if allowed_server_ids and server_id and server_id not in allowed_server_ids:
+            raise PermissionError(f"MCP server {server_id} is not allowed for this managed capability")
+        if allowed_tool_names and self.spec.name not in allowed_tool_names and source_tool_name not in allowed_tool_names:
+            raise PermissionError(f"MCP tool {self.spec.name} is not allowed for this managed capability")
         response = await self.registry.call_tool(
             tenant_id=context.tenant_id,
             agent_definition_id=context.agent_definition_id,
@@ -39,6 +47,17 @@ class MCPToolProvider:
     def __init__(self, registry: MCPRegistry) -> None:
         self.registry = registry
 
+    def _is_allowed(self, entry, context: ToolLookupContext | None) -> bool:
+        if context is None:
+            return True
+        allowed_server_ids = {str(item).strip() for item in context.allowed_mcp_server_ids if str(item).strip()}
+        if allowed_server_ids and entry.server_id not in allowed_server_ids:
+            return False
+        allowed_tool_names = {str(item).strip() for item in context.allowed_mcp_tool_names if str(item).strip()}
+        if allowed_tool_names and entry.runtime_name not in allowed_tool_names and entry.tool_name not in allowed_tool_names:
+            return False
+        return True
+
     async def get(self, name: str, context: ToolLookupContext | None = None) -> BaseTool | None:
         if context is None:
             return None
@@ -47,7 +66,7 @@ class MCPToolProvider:
             runtime_name=name,
             agent_definition_id=context.agent_definition_id,
         )
-        if entry is None:
+        if entry is None or not self._is_allowed(entry, context):
             return None
         return self._build_tool(entry)
 
@@ -85,6 +104,7 @@ class MCPToolProvider:
                 },
             }
             for entry in entries
+            if self._is_allowed(entry, context)
         ]
 
     def _build_tool(self, entry) -> MCPTool:

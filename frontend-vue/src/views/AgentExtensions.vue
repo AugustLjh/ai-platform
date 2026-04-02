@@ -4,7 +4,7 @@
       :agent-id="agent?.id || ''"
       kicker="Agent Extensions"
       :title="agent?.name || '扩展绑定'"
-      :description="agent?.description || '为当前智能体选择 skill、知识库和 MCP 来源，工具列表只保留为生效结果。'"
+      :description="agent?.description || '为当前智能体选择 skill、知识库、专家能力和 MCP 来源，工具列表只保留为生效结果。'"
     >
       <template #actions>
         <button type="button" class="btn btn-secondary" @click="reloadPage">刷新</button>
@@ -35,6 +35,11 @@
         <strong>{{ selectedMCPServerIds.length }}</strong>
         <p>只统计显式绑定的 server</p>
       </article>
+      <article class="summary-card">
+        <span class="summary-label">已授权专家能力</span>
+        <strong>{{ selectedSubagentIds.length }}</strong>
+        <p>主 agent 可在运行时隐式选择的受治理 capability publication</p>
+      </article>
       <article class="summary-card accent">
         <span class="summary-label">生效工具</span>
         <strong>{{ availableTools.length }}</strong>
@@ -44,6 +49,24 @@
 
     <div v-if="isDirty" class="info-banner">
       当前选择还没有保存，生效能力预览仍然基于最近一次已保存配置。
+    </div>
+
+    <div v-if="selectedMCPWarnings.length > 0" class="warning-banner">
+      <strong>当前选中的 MCP 绑定需要关注：</strong>
+      <ul class="tips-list compact warning-action-list">
+        <li v-for="warning in selectedMCPWarnings" :key="warning.id" class="warning-action-item">
+          <span>{{ warning.message }}</span>
+          <button
+            v-if="warning.action"
+            type="button"
+            class="btn btn-secondary btn-inline"
+            :disabled="warningActionBusyKey === warning.id"
+            @click="handleMCPWarningAction(warning)"
+          >
+            {{ warningActionBusyKey === warning.id ? '处理中...' : warning.action.label }}
+          </button>
+        </li>
+      </ul>
     </div>
 
     <section class="extensions-grid">
@@ -64,10 +87,19 @@
                 <span>{{ skill.slug }} · v{{ skill.version }}</span>
                 <small v-if="skill.description">{{ skill.description }}</small>
                 <div class="skill-meta">
+                  <span class="meta-tag">{{ skillContractLabel(skill) }}</span>
+                  <span v-if="skillBindingSummary(skill)" class="meta-tag">{{ skillBindingSummary(skill) }}</span>
+                  <span v-if="skillCapabilitySummary(skill)" class="meta-tag">{{ skillCapabilitySummary(skill) }}</span>
                   <span v-if="skillIntentSummary(skill)" class="meta-tag">{{ skillIntentSummary(skill) }}</span>
                   <span v-if="skillPhaseSummary(skill)" class="meta-tag">{{ skillPhaseSummary(skill) }}</span>
+                  <span v-if="skillSurfaceSummary(skill)" class="meta-tag">{{ skillSurfaceSummary(skill) }}</span>
                   <span v-if="skillToolPolicySummary(skill)" class="meta-tag">{{ skillToolPolicySummary(skill) }}</span>
                   <span v-if="skillOutputSummary(skill)" class="meta-tag">{{ skillOutputSummary(skill) }}</span>
+                </div>
+                <div v-if="skillGovernanceWarnings(skill).length > 0" class="skill-warning-list">
+                  <p v-for="warning in skillGovernanceWarnings(skill)" :key="`${skill.id}-${warning}`">
+                    {{ warning }}
+                  </p>
                 </div>
               </span>
               <span v-if="isFixedSkill(skill)" class="fixed-pill">系统固定</span>
@@ -111,25 +143,102 @@
         <div class="card">
           <div class="section-head">
             <div>
+              <h2>专家能力</h2>
+              <p>这里授权的是已发布 capability publication，而不是把另一个用户 agent 直接绑成子代理。</p>
+            </div>
+          </div>
+
+          <div v-if="subagents.length === 0" class="panel-empty">当前没有可授权的专家能力。</div>
+          <div v-else class="catalog-list">
+            <label v-for="subagent in subagents" :key="subagent.id" class="catalog-item">
+              <span class="catalog-main">
+                <strong>{{ subagent.name }}</strong>
+                <span>{{ subagentStatusLabel(subagent) }} · {{ subagentScopeLabel(subagent) }} · {{ subagentVersionLabel(subagent) }}</span>
+                <small v-if="subagent.description">{{ subagent.description }}</small>
+                <div class="skill-meta">
+                  <span v-if="subagent.slug" class="meta-tag">{{ subagent.slug }}</span>
+                  <span v-if="subagent.handoffPrompt" class="meta-tag">含 handoff contract</span>
+                  <span v-if="subagent.model" class="meta-tag">模型: {{ subagent.model }}</span>
+                  <span v-if="subagentRiskSummary(subagent)" class="meta-tag">{{ subagentRiskSummary(subagent) }}</span>
+                  <span v-if="subagentReviewSummary(subagent)" class="meta-tag">{{ subagentReviewSummary(subagent) }}</span>
+                </div>
+              </span>
+              <input
+                v-model="selectedSubagentIds"
+                type="checkbox"
+                class="selector"
+                :value="subagent.publicationId || subagent.id"
+                :disabled="subagent.status !== 'active'"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-head">
+            <div>
               <h2>MCP Servers</h2>
               <p>MCP 是外部执行能力来源，只有绑定后其工具才会进入当前 agent 的 runtime。</p>
             </div>
-            <router-link to="/mcp" class="inline-action">管理 MCP</router-link>
+            <router-link :to="manageMCPRoute" class="inline-action">管理 MCP</router-link>
+          </div>
+
+          <div v-if="focusedMCPServerName" class="info-banner section-banner">
+            当前正在检查 MCP server：<strong>{{ focusedMCPServerName }}</strong>
           </div>
 
           <div v-if="mcpServers.length === 0" class="panel-empty">当前没有配置 MCP server。</div>
           <div v-else class="catalog-list">
-            <label v-for="server in mcpServers" :key="server.id" class="catalog-item">
+            <label
+              v-for="server in mcpServers"
+              :key="server.id"
+              :class="[
+                'catalog-item',
+                'mcp-server-item',
+                serverCardTone(server),
+                {
+                  selected: isServerSelected(server.id),
+                  focused: focusedMCPServerId === server.id
+                }
+              ]"
+            >
               <span class="catalog-main">
                 <strong>{{ server.name }}</strong>
-                <span>{{ server.transport }} · {{ server.status }}</span>
-                <small>{{ server.tools?.length || 0 }} 个 catalog tools</small>
+                <span>{{ server.transport }} · {{ serverStatusLabel(server) }}</span>
+                <small>{{ serverCatalogSummary(server) }}</small>
+                <div class="skill-meta">
+                  <span
+                    v-if="server.connection?.status"
+                    :class="['meta-tag', 'status-tag', statusTone('connection', server.connection.status)]"
+                  >
+                    {{ statusLabel('connection', server.connection.status) }}
+                  </span>
+                  <span
+                    v-if="server.catalog?.status"
+                    :class="['meta-tag', 'status-tag', statusTone('catalog', server.catalog.status)]"
+                  >
+                    {{ statusLabel('catalog', server.catalog.status) }}
+                  </span>
+                  <span
+                    v-if="server.availability?.status"
+                    :class="['meta-tag', 'status-tag', statusTone('availability', server.availability.status)]"
+                  >
+                    {{ statusLabel('availability', server.availability.status) }}
+                  </span>
+                </div>
+                <div class="mcp-server-details">
+                  <p v-if="server.connection?.summary">{{ server.connection.summary }}</p>
+                  <p v-if="server.catalog?.summary">{{ server.catalog.summary }}</p>
+                  <p v-if="server.availability?.summary">{{ server.availability.summary }}</p>
+                  <p v-if="server.bindingUsage?.summary">{{ server.bindingUsage.summary }}</p>
+                </div>
               </span>
               <input
                 v-model="selectedMCPServerIds"
                 type="checkbox"
                 class="selector"
                 :value="server.id"
+                :disabled="isServerSelectionLocked(server)"
               />
             </label>
           </div>
@@ -192,6 +301,8 @@
 
           <ul class="tips-list">
             <li>Skill 决定行为策略和工作流，不直接等于工具。</li>
+            <li>专家能力绑定的是 publication 授权，不是把另一个普通 agent 直接暴露给当前 agent。</li>
+            <li>当前 runtime 仍保留一层 compatibility bridge，但控制面已经按 capability publication 授权和回显。</li>
             <li>MCP 提供外部执行能力，绑定后才可能进入运行时工具列表。</li>
             <li>工具列表保留为只读结果视图，用于理解和排查当前 agent 的实际能力边界。</li>
           </ul>
@@ -203,32 +314,56 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AgentPageHeader from '@/components/agent/AgentPageHeader.vue'
+import { mcpAPI } from '@/api'
 import { useAgentsStore } from '@/store/agents'
 import { useKnowledgeStore } from '@/store/knowledge'
 import { useToastStore } from '@/store/toast'
+import {
+  buildMCPBindingWarnings,
+  buildMCPManageRoute,
+  serverCardTone,
+  serverCatalogSummary,
+  serverStatusLabel,
+  statusLabel,
+  statusTone
+} from '@/utils/mcpServers'
 
 const route = useRoute()
+const router = useRouter()
 const agentsStore = useAgentsStore()
 const knowledgeStore = useKnowledgeStore()
 const toastStore = useToastStore()
 
 const saving = ref(false)
+const warningActionBusyKey = ref('')
 const selectedSkillIds = ref([])
 const selectedMCPServerIds = ref([])
 const selectedKnowledgeBaseIds = ref([])
+const selectedSubagentIds = ref([])
 
 const agent = computed(() => agentsStore.currentAgent)
 const skills = computed(() => agentsStore.skills)
 const availableTools = computed(() => agentsStore.availableTools)
 const mcpServers = computed(() => agentsStore.mcpServers)
+const subagents = computed(() => agentsStore.subagents)
 const knowledgeBases = computed(() => knowledgeStore.knowledgeBases)
 const errorMessage = computed(() => agentsStore.error || knowledgeStore.error || '')
 const fixedSkillIds = computed(() => skills.value
   .filter((skill) => isFixedSkill(skill))
   .map((skill) => skill.id)
   .filter(Boolean))
+const selectedMCPWarnings = computed(() => buildMCPBindingWarnings(mcpServers.value, selectedMCPServerIds.value))
+const focusedMCPServerId = computed(() => String(route.query.server || '').trim())
+const focusedMCPServerName = computed(() => {
+  if (!focusedMCPServerId.value) return ''
+  return mcpServers.value.find((server) => server.id === focusedMCPServerId.value)?.name || focusedMCPServerId.value
+})
+const manageMCPRoute = computed(() => buildMCPManageRoute(focusedMCPServerId.value, {
+  agentId: agent.value?.id || '',
+  agentName: agent.value?.name || ''
+}))
 
 const normalizeIds = (value = []) => [...new Set((Array.isArray(value) ? value : []).filter(Boolean))].sort()
 
@@ -239,13 +374,16 @@ const isDirty = computed(() => {
   const agentKnowledgeIds = normalizeIds(agent.value?.knowledgeBaseIds)
   const serverIds = normalizeIds(selectedMCPServerIds.value)
   const agentServerIds = normalizeIds(agent.value?.mcpServerIds)
+  const subagentIds = normalizeIds(selectedSubagentIds.value)
+  const agentSubagentIds = normalizeIds(agent.value?.subagentIds)
 
   return JSON.stringify(skillIds) !== JSON.stringify(agentSkillIds) ||
     JSON.stringify(knowledgeIds) !== JSON.stringify(agentKnowledgeIds) ||
-    JSON.stringify(serverIds) !== JSON.stringify(agentServerIds)
+    JSON.stringify(serverIds) !== JSON.stringify(agentServerIds) ||
+    JSON.stringify(subagentIds) !== JSON.stringify(agentSubagentIds)
 })
 
-const isFixedSkill = (skill) => Boolean(skill?.metadata?.fixed_binding) || skill?.slug === 'implementation-planner'
+const isFixedSkill = (skill) => skill?.contract?.bindingMode === 'fixed' || Boolean(skill?.metadata?.fixed_binding) || skill?.slug === 'implementation-planner'
 
 const mergeFixedSkillIds = (skillIds = []) => {
   const merged = new Set(Array.isArray(skillIds) ? skillIds.filter(Boolean) : [])
@@ -257,6 +395,7 @@ const syncSelections = () => {
   selectedSkillIds.value = mergeFixedSkillIds(agent.value?.skillIds)
   selectedMCPServerIds.value = Array.isArray(agent.value?.mcpServerIds) ? [...agent.value.mcpServerIds] : []
   selectedKnowledgeBaseIds.value = Array.isArray(agent.value?.knowledgeBaseIds) ? [...agent.value.knowledgeBaseIds] : []
+  selectedSubagentIds.value = Array.isArray(agent.value?.subagentIds) ? [...agent.value.subagentIds] : []
 }
 
 const loadPage = async () => {
@@ -267,6 +406,7 @@ const loadPage = async () => {
     agentsStore.fetchAgent(agentId),
     agentsStore.fetchSkills().catch(() => []),
     agentsStore.fetchMCPServers().catch(() => []),
+    agentsStore.fetchSubagents().catch(() => []),
     knowledgeStore.fetchKnowledgeBases(1, 100).catch(() => []),
     agentsStore.fetchTools(agentId).catch(() => [])
   ])
@@ -301,6 +441,7 @@ const saveBindings = async () => {
     await agentsStore.updateAgentSkills(agent.value.id, mergeFixedSkillIds(selectedSkillIds.value))
     await agentsStore.updateAgentMCPServers(agent.value.id, selectedMCPServerIds.value)
     await agentsStore.updateAgentKnowledgeBases(agent.value.id, selectedKnowledgeBaseIds.value)
+    await agentsStore.updateAgentSubagents(agent.value.id, selectedSubagentIds.value)
     await agentsStore.fetchTools(agent.value.id)
     toastStore.showToast({ type: 'success', message: '扩展绑定已保存' })
   } catch (error) {
@@ -309,6 +450,57 @@ const saveBindings = async () => {
   } finally {
     saving.value = false
   }
+}
+
+const handleMCPWarningAction = async (warning) => {
+  if (!warning?.action || !warning?.serverId) return
+  warningActionBusyKey.value = warning.id
+  try {
+    if (warning.action.type === 'manage') {
+      await router.push(buildMCPManageRoute(warning.serverId, {
+        agentId: agent.value?.id || '',
+        agentName: agent.value?.name || ''
+      }))
+      return
+    }
+
+    if (warning.action.type === 'test') {
+      await mcpAPI.testServer(warning.serverId)
+      toastStore.showToast({ type: 'success', message: 'MCP 连接测试已完成' })
+    } else if (warning.action.type === 'refresh') {
+      const { data } = await mcpAPI.refreshTools(warning.serverId)
+      toastStore.showToast({ type: 'success', message: `已刷新 ${data?.total || 0} 个 MCP 工具` })
+    }
+
+    await agentsStore.fetchMCPServers()
+    if (agent.value?.id) {
+      await agentsStore.fetchTools(agent.value.id).catch(() => [])
+    }
+  } catch (error) {
+    console.error('Failed to handle MCP warning action:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || error?.response?.data?.error || 'MCP 操作失败' })
+  } finally {
+    warningActionBusyKey.value = ''
+  }
+}
+
+const skillContractLabel = (skill) => skill?.contract?.kind === 'role_prompt' ? '角色提示' : '能力包'
+
+const skillBindingSummary = (skill) => {
+  if (skill?.contract?.bindingMode === 'fixed') return '绑定: 固定'
+  return skill?.contract?.systemSkill ? '绑定: 系统可选' : ''
+}
+
+const skillCapabilitySummary = (skill) => {
+  const capabilityType = String(skill?.contract?.capabilityType || '').trim()
+  const labelMap = {
+    planning: '规划',
+    review: '评审',
+    knowledge_research: '知识研究',
+    project_context: '项目上下文'
+  }
+  if (capabilityType) return `类型: ${labelMap[capabilityType] || capabilityType}`
+  return ''
 }
 
 const toolKindLabel = (kind) => {
@@ -322,26 +514,49 @@ const toolKindLabel = (kind) => {
 }
 
 const skillIntentSummary = (skill) => {
-  const intents = Array.isArray(skill?.metadata?.activation_intents) ? skill.metadata.activation_intents.filter(Boolean) : []
-  return intents.length > 0 ? `意图: ${intents.join(' / ')}` : ''
+  const intents = Array.isArray(skill?.contract?.activationIntents) ? skill.contract.activationIntents.filter(Boolean) : []
+  return intents.length > 0 ? `意图: ${intents.join(' / ')}` : '意图: 全部'
 }
 
 const skillPhaseSummary = (skill) => {
-  const phases = Array.isArray(skill?.metadata?.activation_phases) ? skill.metadata.activation_phases.filter(Boolean) : []
-  return phases.length > 0 ? `阶段: ${phases.join(' / ')}` : ''
+  const phases = Array.isArray(skill?.contract?.activationPhases) ? skill.contract.activationPhases.filter(Boolean) : []
+  return phases.length > 0 ? `阶段: ${phases.join(' / ')}` : '阶段: 全部'
+}
+
+const skillSurfaceSummary = (skill) => {
+  const surfaces = Array.isArray(skill?.contract?.surfaces) ? skill.contract.surfaces.filter(Boolean) : []
+  const labelMap = {
+    prompt: '提示词',
+    tools: '工具',
+    output: '输出'
+  }
+  return surfaces.length > 0 ? `能力面: ${surfaces.map((surface) => labelMap[surface] || surface).join(' / ')}` : ''
 }
 
 const skillToolPolicySummary = (skill) => {
-  if (!Array.isArray(skill?.toolAllowlist) || skill.toolAllowlist.length === 0) {
-    return '工具策略: 不限'
+  if (skill?.contract?.toolPolicyMode === 'provider_managed') {
+    const managedKinds = Array.isArray(skill?.contract?.managedToolKinds) ? skill.contract.managedToolKinds : []
+    const labelMap = {
+      engineering: '项目上下文'
+    }
+    return managedKinds.length > 0
+      ? `工具策略: provider-managed (${managedKinds.map((kind) => labelMap[kind] || kind).join(' / ')})`
+      : '工具策略: provider-managed'
   }
-  return `工具策略: ${skill.toolAllowlist.length} 项`
+  if (skill?.contract?.toolPolicyMode === 'allowlist') {
+    return `工具策略: 白名单 ${Array.isArray(skill?.toolAllowlist) ? skill.toolAllowlist.length : 0} 项`
+  }
+  return '工具策略: 继承运行时'
 }
 
 const skillOutputSummary = (skill) => {
-  const keys = Object.keys(skill?.outputSchema?.properties || {})
+  const keys = Array.isArray(skill?.contract?.outputFieldNames) ? skill.contract.outputFieldNames : []
   return keys.length > 0 ? `输出字段: ${keys.join(', ')}` : ''
 }
+
+const skillGovernanceWarnings = (skill) => Array.isArray(skill?.contract?.governanceWarnings)
+  ? skill.contract.governanceWarnings.filter(Boolean)
+  : []
 
 const knowledgeAccessLabel = (accessLevel) => {
   if (accessLevel === 'user') {
@@ -351,8 +566,45 @@ const knowledgeAccessLabel = (accessLevel) => {
 }
 
 const toolSchemaKeys = (tool) => Object.keys(tool?.inputSchema?.properties || {})
+const subagentStatusLabel = (subagent) => {
+  if (subagent?.status === 'active') return '已发布'
+  if (subagent?.status === 'deprecated') return '已弃用'
+  if (subagent?.status === 'archived') return '已归档'
+  return subagent?.status || '状态未知'
+}
+
+const subagentScopeLabel = (subagent) => subagent?.publicationScope === 'system_global' ? '系统发布' : '租户发布'
+
+const subagentVersionLabel = (subagent) => {
+  if (subagent?.versionNumber) {
+    return `版本 v${subagent.versionNumber}`
+  }
+  return subagent?.versionId ? '已版本化' : '未标注版本'
+}
+
+const subagentRiskSummary = (subagent) => {
+  const risk = subagent?.metadata?.risk_level || subagent?.publicationMetadata?.risk_level
+  const cost = subagent?.metadata?.cost_tier || subagent?.publicationMetadata?.cost_tier
+  if (risk && cost) return `风险 ${risk} · 成本 ${cost}`
+  if (risk) return `风险 ${risk}`
+  if (cost) return `成本 ${cost}`
+  return ''
+}
+
+const subagentReviewSummary = (subagent) => {
+  const requiresReview = Boolean(
+    subagent?.metadata?.requires_reviewer ||
+    subagent?.reviewPolicy?.requires_reviewer ||
+    subagent?.reviewPolicy?.required
+  )
+  return requiresReview ? '要求 reviewer/judge' : ''
+}
 
 const countToolsByKind = (kind) => availableTools.value.filter((tool) => tool.kind === kind).length
+
+const isServerSelected = (serverId) => selectedMCPServerIds.value.includes(serverId)
+
+const isServerSelectionLocked = (server) => Boolean(server?.availability) && !isServerSelected(server?.id) && !server.availability.bindable
 
 watch(() => route.params.id, async () => {
   try {
@@ -380,7 +632,7 @@ onMounted(async () => {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 16px;
 }
 
@@ -458,7 +710,8 @@ onMounted(async () => {
 }
 
 .error-banner,
-.info-banner {
+.info-banner,
+.warning-banner {
   padding: 14px 16px;
   border-radius: var(--radius-lg);
 }
@@ -473,6 +726,16 @@ onMounted(async () => {
   background: rgba(13, 148, 136, 0.08);
   border: 1px solid rgba(13, 148, 136, 0.16);
   color: #115e59;
+}
+
+.warning-banner {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  color: #92400e;
+}
+
+.section-banner {
+  margin-top: 12px;
 }
 
 .panel-empty {
@@ -501,6 +764,35 @@ onMounted(async () => {
 .catalog-item.fixed {
   background: rgba(15, 118, 110, 0.08);
   border-color: rgba(13, 148, 136, 0.22);
+}
+
+.mcp-server-item {
+  align-items: flex-start;
+}
+
+.mcp-server-item.selected {
+  border-color: rgba(13, 148, 136, 0.32);
+}
+
+.mcp-server-item.focused {
+  border-color: rgba(245, 158, 11, 0.38);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.12);
+}
+
+.mcp-server-item.tone-ready {
+  background: rgba(16, 185, 129, 0.06);
+}
+
+.mcp-server-item.tone-warning {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.mcp-server-item.tone-danger {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.mcp-server-item.tone-disabled {
+  background: rgba(148, 163, 184, 0.14);
 }
 
 .catalog-main {
@@ -533,6 +825,58 @@ onMounted(async () => {
   color: var(--gray-700);
   font-size: 12px;
   font-weight: 600;
+}
+
+.status-tag.connection-healthy,
+.status-tag.catalog-ready,
+.status-tag.availability-available {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+}
+
+.status-tag.connection-degraded,
+.status-tag.availability-degraded,
+.status-tag.availability-unavailable {
+  background: rgba(239, 68, 68, 0.14);
+  color: #b91c1c;
+}
+
+.status-tag.connection-untested,
+.status-tag.catalog-stale,
+.status-tag.catalog-empty,
+.status-tag.catalog-missing,
+.status-tag.availability-warning {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.status-tag.connection-disabled,
+.status-tag.catalog-disabled,
+.status-tag.availability-disabled {
+  background: rgba(148, 163, 184, 0.2);
+  color: #475569;
+}
+
+.mcp-server-details {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.skill-warning-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.skill-warning-list p {
+  color: #92400e;
+  font-size: 12px;
+}
+
+.mcp-server-details p {
+  color: var(--gray-600);
+  font-size: 13px;
 }
 
 .selector {
@@ -655,6 +999,27 @@ onMounted(async () => {
   gap: 12px;
 }
 
+.tips-list.compact {
+  margin-top: 10px;
+  gap: 8px;
+}
+
+.warning-action-list {
+  display: grid;
+  gap: 10px;
+}
+
+.warning-action-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.btn-inline {
+  flex-shrink: 0;
+}
+
 @media (max-width: 1100px) {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -668,6 +1033,10 @@ onMounted(async () => {
 @media (max-width: 720px) {
   .summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .warning-action-item {
+    flex-direction: column;
   }
 }
 </style>

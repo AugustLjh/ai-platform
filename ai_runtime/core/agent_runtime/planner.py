@@ -10,6 +10,7 @@ from core.agent_runtime.models import (
     PlannerResult,
     PlannerStep,
 )
+from core.agent_runtime.subagents.models import SubagentTarget
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
@@ -95,8 +96,24 @@ class AgentPlanner:
         *,
         definition: AgentDefinition,
         available_tools: List[Dict[str, Any]],
+        available_subagents: List[SubagentTarget] | None = None,
     ) -> str:
         tools_json = json.dumps(available_tools, ensure_ascii=False, indent=2)
+        subagents_json = json.dumps(
+            [
+                {
+                    "slug": target.slug,
+                    "name": target.name,
+                    "publication_id": target.publication_id,
+                    "version_id": target.version_id,
+                    "description": target.description,
+                    "review_policy": target.review_policy,
+                }
+                for target in (available_subagents or [])
+            ],
+            ensure_ascii=False,
+            indent=2,
+        )
         instructions = [
             "You are Codex-style planning brain for an autonomous engineering agent.",
             "Decide the single best next action for the current iteration.",
@@ -113,6 +130,7 @@ class AgentPlanner:
             "If the task can proceed under reasonable assumptions, prefer tool_call or final_answer and carry the assumptions forward.",
             "Prefer narrow, evidence-gathering tool calls over broad speculative ones.",
             "Prefer making progress with the existing tools before asking the user.",
+            "Use delegate only when a configured specialist capability is clearly the best bounded next action and the handoff can be described concretely.",
             "If a tool failed or returned insufficient results, attempt exactly one self-recovery iteration before ask_user.",
             "A self-recovery iteration means choosing one more tool_call that adjusts the query, arguments, or tool choice using the latest step history.",
             "Choose ask_user only when the missing information is still required after available tools have been tried and one self-recovery attempt has been used, or when the user must make a decision that tools cannot infer safely.",
@@ -139,12 +157,15 @@ class AgentPlanner:
                         }
                     ],
                     "action": {
-                        "type": "tool_call|ask_user|final_answer",
+                        "type": "tool_call|ask_user|final_answer|delegate",
                         "title": "human readable title",
                         "tool_name": "required for tool_call",
                         "tool_arguments": {},
                         "question": "required for ask_user",
-                        "content": "optional note for final_answer",
+                        "delegate_target": "required for delegate",
+                        "delegate_task": "required for delegate",
+                        "delegate_input": {},
+                        "content": "optional note for final_answer or delegate rationale",
                     },
                 },
                 ensure_ascii=False,
@@ -155,6 +176,14 @@ class AgentPlanner:
             "Available tools:",
             tools_json,
         ]
+        if available_subagents:
+            instructions.extend(
+                [
+                    "Available subagents:",
+                    subagents_json,
+                    "Delegate only to one of the configured capability targets above. Choose the target by slug or exact name.",
+                ]
+            )
         if definition.system_prompt.strip():
             instructions.extend(["Agent instructions:", definition.system_prompt.strip()])
         return "\n\n".join(instructions)
@@ -165,6 +194,7 @@ class AgentPlanner:
         run_input: Dict[str, Any],
         runtime_context: Dict[str, Any],
         iteration: int,
+        available_subagents: List[SubagentTarget] | None = None,
     ) -> str:
         step_history = runtime_context.get("step_history", [])
         recent_observations = self._summarize_recent_steps(step_history)
@@ -188,6 +218,16 @@ class AgentPlanner:
             },
             "tool_failures": runtime_context.get("tool_failures", 0),
             "pending_question": runtime_context.get("pending_question"),
+            "available_subagents": [
+                {
+                    "slug": target.slug,
+                    "name": target.name,
+                    "description": target.description,
+                    "publication_id": target.publication_id,
+                    "version_id": target.version_id,
+                }
+                for target in (available_subagents or [])
+            ],
         }
         return (
             "Decide the single best next action from the execution state below.\n"
@@ -255,9 +295,10 @@ class AgentPlanner:
         self,
         raw_action: Dict[str, Any],
         available_tools: List[Dict[str, Any]],
+        available_subagents: List[SubagentTarget] | None = None,
     ) -> PlannerAction:
         action_type = str(raw_action.get("type") or "").strip().lower()
-        if action_type not in {"tool_call", "ask_user", "final_answer"}:
+        if action_type not in {"tool_call", "ask_user", "final_answer", "delegate"}:
             raise ValueError(f"planner returned unsupported action type: {action_type or 'empty'}")
 
         title = str(raw_action.get("title") or "").strip()
@@ -289,6 +330,43 @@ class AgentPlanner:
                 question=question,
             )
 
+        if action_type == "delegate":
+            delegate_target = str(raw_action.get("delegate_target") or "").strip()
+            delegate_task = str(raw_action.get("delegate_task") or "").strip()
+            delegate_input = raw_action.get("delegate_input")
+            if not isinstance(delegate_input, dict):
+                delegate_input = {}
+            if not available_subagents:
+                raise ValueError("planner selected delegate but no subagents are configured")
+            allowed_targets = {
+                item
+                for target in (available_subagents or [])
+                for item in {
+                    target.slug,
+                    target.name,
+                    target.agent_definition_id,
+                    target.subagent_definition_id,
+                    target.publication_id,
+                    target.version_id,
+                    target.authorization_id,
+                }
+                if item
+            }
+            if not delegate_target:
+                raise ValueError("planner selected delegate without delegate_target")
+            if allowed_targets and delegate_target not in allowed_targets:
+                raise ValueError(f"planner selected unavailable subagent target: {delegate_target}")
+            if not delegate_task and not delegate_input:
+                raise ValueError("planner selected delegate without delegate_task or delegate_input")
+            return PlannerAction(
+                type="delegate",
+                title=title or f"Delegate to {delegate_target}",
+                content=str(raw_action.get("content") or "").strip() or None,
+                delegate_target=delegate_target,
+                delegate_task=delegate_task or None,
+                delegate_input=delegate_input,
+            )
+
         return PlannerAction(
             type="final_answer",
             title=title or "Prepare final answer",
@@ -300,6 +378,7 @@ class AgentPlanner:
         raw_response: str,
         *,
         available_tools: List[Dict[str, Any]],
+        available_subagents: List[SubagentTarget] | None = None,
         iteration: int,
         model_info: Dict[str, Any],
     ) -> PlannerResult:
@@ -309,7 +388,7 @@ class AgentPlanner:
             raise ValueError("planner response is missing action")
 
         return PlannerResult(
-            action=self._normalize_action(raw_action, available_tools),
+            action=self._normalize_action(raw_action, available_tools, available_subagents),
             reasoning=str(payload.get("reasoning") or "").strip(),
             steps=self._normalize_steps(payload.get("steps")),
             iteration=iteration,
@@ -329,6 +408,7 @@ class AgentPlanner:
         iteration: int,
         llm_service,
         llm_resolution: Dict[str, Any],
+        available_subagents: List[SubagentTarget] | None = None,
     ) -> PlannerResult:
         messages = [
             {
@@ -336,6 +416,7 @@ class AgentPlanner:
                 "content": self._build_system_prompt(
                     definition=definition,
                     available_tools=available_tools,
+                    available_subagents=available_subagents,
                 ),
             },
             {
@@ -344,6 +425,7 @@ class AgentPlanner:
                     run_input=run_input,
                     runtime_context=runtime_context,
                     iteration=iteration,
+                    available_subagents=available_subagents,
                 ),
             },
         ]
@@ -357,6 +439,7 @@ class AgentPlanner:
             return self._parse_planner_response(
                 raw_response,
                 available_tools=available_tools,
+                available_subagents=available_subagents,
                 iteration=iteration,
                 model_info=model_info,
             )
@@ -385,6 +468,7 @@ class AgentPlanner:
                 return self._parse_planner_response(
                     repaired_response,
                     available_tools=available_tools,
+                    available_subagents=available_subagents,
                     iteration=iteration,
                     model_info={
                         **repaired_model_info,

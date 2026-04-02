@@ -28,6 +28,7 @@ type AgentDefinition struct {
 	SkillIDs         []string        `json:"skill_ids,omitempty"`
 	MCPServerIDs     []string        `json:"mcp_server_ids,omitempty"`
 	KnowledgeBaseIDs []string        `json:"knowledge_base_ids,omitempty"`
+	SubagentIDs      []string        `json:"subagent_ids,omitempty"`
 	CreatedBy        *string         `json:"created_by,omitempty"`
 	UpdatedBy        *string         `json:"updated_by,omitempty"`
 	ArchivedAt       *time.Time      `json:"archived_at,omitempty"`

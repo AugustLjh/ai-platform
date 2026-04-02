@@ -7,6 +7,9 @@
         <p>维护 tenant 级 MCP server，执行连接测试、工具发现和 catalog 缓存刷新。</p>
       </div>
       <div class="hero-actions">
+        <router-link v-if="returnToAgentRoute" :to="returnToAgentRoute" class="btn btn-secondary">
+          返回 Agent 绑定
+        </router-link>
         <button type="button" class="btn btn-secondary" @click="loadServers">刷新列表</button>
         <button type="button" class="btn btn-primary" @click="openCreate">新增 Server</button>
       </div>
@@ -48,6 +51,7 @@
             <div class="server-item-meta">
               <span>{{ server.transport }}</span>
               <span>{{ (server.catalog?.toolCount ?? server.tools?.length) || 0 }} tools</span>
+              <span>{{ bindingUsageLabel(server.bindingUsage) }}</span>
             </div>
             <div class="server-item-sub">
               {{ server.command || server.endpoint || '未配置连接地址' }}
@@ -159,8 +163,14 @@
         <div>
           <h2>{{ selectedServer.name }}</h2>
           <p>测试连接和刷新 catalog 都会落库，agent 侧工具列表基于这里的缓存结果。</p>
+          <p v-if="contextAgentName" class="context-copy">
+            当前从 agent <strong>{{ contextAgentName }}</strong> 的扩展页进入，可直接处理后返回。
+          </p>
         </div>
         <div class="detail-actions">
+          <router-link v-if="returnToAgentRoute" :to="returnToAgentRoute" class="btn btn-secondary">
+            返回 Agent 绑定
+          </router-link>
           <button type="button" class="btn btn-secondary" :disabled="busyAction === 'test'" @click="testServer">
             {{ busyAction === 'test' ? '测试中...' : '连接测试' }}
           </button>
@@ -168,10 +178,14 @@
             {{ busyAction === 'refresh' ? '刷新中...' : 'Refresh Tools' }}
           </button>
           <button type="button" class="btn btn-secondary" @click="loadServerDetail(selectedServer.id)">重新载入</button>
-          <button type="button" class="btn btn-danger" :disabled="busyAction === 'delete'" @click="deleteServer">
+          <button type="button" class="btn btn-danger" :disabled="busyAction === 'delete' || deleteBlocked" @click="deleteServer">
             删除
           </button>
         </div>
+      </div>
+
+      <div v-if="deleteBlockedReason" class="info-banner bound-banner">
+        {{ deleteBlockedReason }}
       </div>
 
       <div class="detail-grid">
@@ -217,6 +231,17 @@
               <strong>{{ selectedServer.availability?.summary || '尚未准备好。' }}</strong>
               <p>绑定到 agent：{{ selectedServer.availability?.bindable ? '允许' : '暂不建议' }}</p>
             </article>
+
+            <article class="summary-card">
+              <div class="summary-head">
+                <span class="summary-kicker">Bindings</span>
+                <span class="summary-badge binding-badge">
+                  {{ bindingUsageLabel(selectedServer.bindingUsage) }}
+                </span>
+              </div>
+              <strong>{{ selectedServer.bindingUsage?.summary || '当前还没有 agent 绑定这个 server。' }}</strong>
+              <p v-if="selectedServer.bindingUsage?.moreCount">另有 {{ selectedServer.bindingUsage.moreCount }} 个 agent 未展开。</p>
+            </article>
           </div>
           <div v-if="selectedServer.lastError" class="detail-error">
             {{ selectedServer.lastError }}
@@ -257,15 +282,47 @@
           </div>
         </div>
       </div>
+
+      <div class="detail-grid secondary-grid">
+        <div class="detail-panel">
+          <h3>受影响的 Agent</h3>
+          <div v-if="!selectedServer.bindingUsage?.agentCount" class="mini-empty">当前没有 agent 绑定这个 server。</div>
+          <div v-else class="binding-agent-list">
+            <router-link
+              v-for="bindingAgent in selectedServer.bindingUsage.agents"
+              :key="bindingAgent.agentId"
+              :to="buildAgentRoute(bindingAgent.agentId)"
+              class="binding-agent-card"
+            >
+              <strong>{{ bindingAgent.name || bindingAgent.agentId }}</strong>
+              <span>{{ bindingAgent.status || 'active' }}</span>
+            </router-link>
+            <div v-if="selectedServer.bindingUsage.moreCount" class="binding-agent-more">
+              另有 {{ selectedServer.bindingUsage.moreCount }} 个 agent 已绑定，请在 agent 列表或数据库治理面继续排查。
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { mcpAPI } from '@/api'
 import { useToastStore } from '@/store/toast'
+import {
+  bindingUsageLabel,
+  buildAgentExtensionsRoute,
+  normalizeMCPBindingUsage,
+  statusLabel,
+  statusTone,
+  summarizeCatalogAge
+} from '@/utils/mcpServers'
 
+const route = useRoute()
+const router = useRouter()
 const toastStore = useToastStore()
 
 const loading = ref(false)
@@ -276,6 +333,22 @@ const servers = ref([])
 const selectedServer = ref(null)
 const editingServerId = ref('')
 const lastTestResult = ref(null)
+const returnToAgentRoute = computed(() => {
+  const agentId = String(route.query.agent || '').trim()
+  if (!agentId) return null
+  return buildAgentExtensionsRoute(agentId, {
+    serverId: selectedServer.value?.id || String(route.query.server || '').trim(),
+    focus: 'mcp',
+    from: 'mcp'
+  })
+})
+const contextAgentName = computed(() => String(route.query.agent_name || '').trim())
+const deleteBlocked = computed(() => Number(selectedServer.value?.bindingUsage?.agentCount || 0) > 0)
+const deleteBlockedReason = computed(() => {
+  if (!deleteBlocked.value) return ''
+  const count = Number(selectedServer.value?.bindingUsage?.agentCount || 0)
+  return `该 server 仍被 ${count} 个 agent 绑定。请先进入对应 agent 的扩展页解除绑定，再执行删除。`
+})
 
 const form = reactive({
   name: '',
@@ -350,52 +423,9 @@ const normalizeServer = (server = {}) => ({
     bindable: Boolean(server.availability.bindable),
     reason: server.availability.reason || ''
   } : null,
+  bindingUsage: normalizeMCPBindingUsage(server.binding_usage || server.bindingUsage),
   tools: Array.isArray(server.tools) ? server.tools.map(normalizeTool) : []
 })
-
-const connectionStatusMap = {
-  healthy: '连接正常',
-  degraded: '连接异常',
-  untested: '未测试',
-  disabled: '已禁用'
-}
-
-const catalogStatusMap = {
-  ready: 'Catalog 就绪',
-  stale: 'Catalog 过期',
-  empty: 'Catalog 为空',
-  missing: '未刷新',
-  disabled: '已禁用'
-}
-
-const availabilityStatusMap = {
-  available: '可投入使用',
-  warning: '可用但需关注',
-  degraded: '不建议使用',
-  unavailable: '不可用',
-  disabled: '已禁用'
-}
-
-const summarizeCatalogAge = (catalog) => {
-  if (!catalog?.refreshedAt) return '尚未刷新'
-  if (catalog.ageSeconds === null || catalog.ageSeconds === undefined) return '刚刚刷新'
-  const seconds = Number(catalog.ageSeconds)
-  if (seconds < 60) return `${seconds} 秒前`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`
-  return `${Math.floor(seconds / 86400)} 天前`
-}
-
-const statusTone = (kind, status) => {
-  const normalized = String(status || '').trim() || 'default'
-  return `${kind}-${normalized}`
-}
-
-const statusLabel = (kind, status) => {
-  if (kind === 'connection') return connectionStatusMap[status] || status || '未知状态'
-  if (kind === 'catalog') return catalogStatusMap[status] || status || '未知状态'
-  return availabilityStatusMap[status] || status || '未知状态'
-}
 
 const applyServerSnapshot = (rawServer) => {
   if (!rawServer) return null
@@ -412,16 +442,48 @@ const applyServerSnapshot = (rawServer) => {
   return normalized
 }
 
+const buildAgentRoute = (agentId) => buildAgentExtensionsRoute(agentId, {
+  serverId: selectedServer.value?.id || String(route.query.server || '').trim(),
+  focus: 'mcp',
+  from: 'mcp'
+})
+
+const syncRouteServer = async (serverId = '') => {
+  const nextQuery = { ...route.query }
+  if (serverId) {
+    nextQuery.server = serverId
+  } else {
+    delete nextQuery.server
+  }
+  if (nextQuery.server === route.query.server) return
+  await router.replace({ name: 'MCPManage', query: nextQuery })
+}
+
 const loadServers = async () => {
   loading.value = true
   errorMessage.value = ''
   try {
     const { data } = await mcpAPI.listServers()
     servers.value = (data.servers || []).map(normalizeServer)
-    if (!selectedServer.value && servers.value.length > 0) {
-      selectedServer.value = servers.value[0]
-      fillForm(selectedServer.value)
-      editingServerId.value = selectedServer.value.id
+    if (servers.value.length === 0) {
+      selectedServer.value = null
+      editingServerId.value = ''
+      return
+    }
+    const routeServerId = String(route.query.server || '').trim()
+    const preferredServerId = routeServerId || selectedServer.value?.id || servers.value[0]?.id || ''
+
+    if (preferredServerId) {
+      const matched = servers.value.find((item) => item.id === preferredServerId)
+      if (matched) {
+        selectedServer.value = matched
+        fillForm(selectedServer.value)
+        editingServerId.value = selectedServer.value.id
+      } else if (servers.value.length > 0) {
+        selectedServer.value = servers.value[0]
+        fillForm(selectedServer.value)
+        editingServerId.value = selectedServer.value.id
+      }
     } else if (selectedServer.value?.id) {
       const next = servers.value.find((item) => item.id === selectedServer.value.id)
       if (next) {
@@ -445,6 +507,7 @@ const loadServerDetail = async (serverId) => {
     selectedServer.value = applyServerSnapshot(data)
     fillForm(selectedServer.value)
     editingServerId.value = serverId
+    await syncRouteServer(serverId)
   } catch (error) {
     console.error('Failed to load MCP server detail:', error)
     errorMessage.value = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '加载 MCP server 详情失败'
@@ -485,6 +548,7 @@ const resetForm = () => {
 const openCreate = () => {
   selectedServer.value = null
   resetForm()
+  void syncRouteServer('')
 }
 
 const buildPayload = () => ({
@@ -563,6 +627,10 @@ const refreshTools = async () => {
 
 const deleteServer = async () => {
   if (!selectedServer.value?.id) return
+  if (deleteBlocked.value) {
+    toastStore.showToast({ type: 'error', message: deleteBlockedReason.value })
+    return
+  }
   const confirmed = window.confirm(`确认删除 MCP server “${selectedServer.value.name}”吗？`)
   if (!confirmed) return
 
@@ -598,6 +666,16 @@ const formatTime = (value) => {
 
 onMounted(async () => {
   await loadServers()
+  if (selectedServer.value?.id) {
+    await loadServerDetail(selectedServer.value.id)
+  }
+})
+
+watch(() => route.query.server, async (serverId, previousServerId) => {
+  const nextServerId = String(serverId || '').trim()
+  const previous = String(previousServerId || '').trim()
+  if (!nextServerId || nextServerId === previous || nextServerId === selectedServer.value?.id) return
+  await loadServerDetail(nextServerId)
 })
 </script>
 
@@ -678,6 +756,14 @@ onMounted(async () => {
   color: var(--gray-600);
 }
 
+.context-copy {
+  margin-top: 10px;
+}
+
+.bound-banner {
+  margin-bottom: 16px;
+}
+
 .panel-empty,
 .mini-empty {
   padding: 24px;
@@ -685,6 +771,14 @@ onMounted(async () => {
   background: #f8fafc;
   color: var(--gray-500);
   text-align: center;
+}
+
+.info-banner {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(13, 148, 136, 0.08);
+  border: 1px solid rgba(13, 148, 136, 0.16);
+  color: #115e59;
 }
 
 .server-list {
@@ -912,6 +1006,50 @@ onMounted(async () => {
   border-radius: 16px;
   padding: 14px;
   background: #fffaf5;
+}
+
+.binding-badge {
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+}
+
+.secondary-grid {
+  margin-top: 16px;
+}
+
+.binding-agent-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.binding-agent-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  color: inherit;
+  text-decoration: none;
+}
+
+.binding-agent-card strong {
+  color: var(--gray-900);
+}
+
+.binding-agent-card span {
+  color: var(--gray-500);
+  font-size: 13px;
+}
+
+.binding-agent-more {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #f8fafc;
+  color: var(--gray-600);
+  font-size: 13px;
 }
 
 .catalog-tool-head span {

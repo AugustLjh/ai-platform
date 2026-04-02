@@ -12,6 +12,9 @@ class ToolContext:
     user_id: str | None = None
     agent_definition_id: str | None = None
     step_id: str | None = None
+    allowed_knowledge_base_ids: tuple[str, ...] = ()
+    allowed_mcp_server_ids: tuple[str, ...] = ()
+    allowed_mcp_tool_names: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -20,6 +23,9 @@ class ToolLookupContext:
     user_id: Optional[str] = None
     agent_definition_id: Optional[str] = None
     run_id: Optional[str] = None
+    allowed_knowledge_base_ids: tuple[str, ...] = ()
+    allowed_mcp_server_ids: tuple[str, ...] = ()
+    allowed_mcp_tool_names: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

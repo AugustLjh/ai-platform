@@ -19,10 +19,14 @@ from core.agent_runtime.models import (
 from core.agent_runtime.orchestrator import AgentOrchestrator
 from core.agent_runtime.skills.registry import SkillRegistry
 from core.agent_runtime.planner import AgentPlanner
-from core.agent_runtime.result_contract import hydrate_legacy_result
+from core.agent_runtime.result_contract import hydrate_legacy_result, merge_artifacts
 from core.agent_runtime.summarizer import AgentSummarizer
 from core.agent_runtime.repositories.agent_repository import AgentRepository
 from core.agent_runtime.repositories.run_repository import RunRepository
+from core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
+from core.agent_runtime.subagents.handoff import SubagentHandoff
+from core.agent_runtime.subagents.registry import SubagentRegistry
+from core.agent_runtime.subagents.router import SubagentRouter
 from core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
 from core.agent_runtime.tools.base import ToolLookupContext
 from core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
@@ -35,17 +39,26 @@ class AgentRuntime:
         self.agent_repository = AgentRepository(db_pool)
         self.run_repository = RunRepository(db_pool)
         self.tool_call_repository = ToolCallRepository(db_pool)
+        self.subagent_invocation_repository = SubagentInvocationRepository(db_pool)
         self.state_store = RuntimeStateStore()
         self.registry = ToolRegistry()
         self.mcp_registry = MCPRegistry(db_pool)
         configure_tool_registry(self.registry, mcp_registry=self.mcp_registry)
         self.skill_registry = SkillRegistry(db_pool)
+        self.subagent_registry = SubagentRegistry(db_pool, self.agent_repository)
         self.llm_service = AgentLLMService()
 
         self.tracer = AgentTracer(
             self.run_repository,
             self.tool_call_repository,
             self.state_store,
+        )
+        self.subagent_handoff = SubagentHandoff(
+            self.run_repository,
+            self.tracer,
+            self.state_store,
+            start_run=self.start_run,
+            invocation_repository=self.subagent_invocation_repository,
         )
         self.orchestrator = AgentOrchestrator(
             planner=AgentPlanner(),
@@ -58,6 +71,9 @@ class AgentRuntime:
             tool_call_repository=self.tool_call_repository,
             state_store=self.state_store,
             skill_registry=self.skill_registry,
+            subagent_registry=self.subagent_registry,
+            subagent_router=SubagentRouter(),
+            subagent_handoff=self.subagent_handoff,
         )
 
     def _build_resume_context(self, run_row: dict) -> dict:
@@ -77,6 +93,7 @@ class AgentRuntime:
             "synthesis_model",
             "normalized_task_input",
             "mounted_knowledge_base_ids",
+            "promoted_artifacts",
         ):
             context.pop(key, None)
 
@@ -112,6 +129,25 @@ class AgentRuntime:
                 **hydrated,
                 "artifacts": [AgentArtifact.model_validate(item) for item in hydrated["artifacts"]],
             }
+        )
+
+    async def _load_terminal_run_surface(self, run_row: dict | None) -> dict:
+        if not run_row:
+            return {
+                "final_output": None,
+                "final_output_text": None,
+                "final_output_json": None,
+                "artifacts": [],
+            }
+
+        context = run_row.get("context") if isinstance(run_row.get("context"), dict) else {}
+        promoted_artifacts = context.get("promoted_artifacts") if isinstance(context.get("promoted_artifacts"), list) else []
+        stored_artifacts = await self.run_repository.list_artifacts(run_row["id"])
+        return hydrate_legacy_result(
+            final_output=run_row.get("final_output"),
+            final_output_text=run_row.get("final_output_text"),
+            final_output_json=run_row.get("final_output_json"),
+            artifacts=merge_artifacts(stored_artifacts, promoted_artifacts),
         )
 
     async def list_tools(
@@ -234,12 +270,31 @@ class AgentRuntime:
         run = await self.run_repository.get_run(run_id, tenant_id)
         if run is None:
             raise ValueError("run not found")
+        terminal_surface = await self._load_terminal_run_surface(run)
         self.state_store.request_cancel(run_id)
         task = self.state_store.get_task(run_id)
         if task is not None and not task.done():
             task.cancel()
-        updated = await self.run_repository.update_run_status(run_id, "cancelled", error_message="Run cancelled")
-        await self.tracer.emit_event(run_id, "run.cancelled", status="cancelled")
+        updated = await self.run_repository.update_run_status(
+            run_id,
+            "cancelled",
+            plan=run.get("plan") if isinstance(run.get("plan"), dict) else None,
+            context=run.get("context") if isinstance(run.get("context"), dict) else None,
+            final_output=terminal_surface.get("final_output"),
+            final_output_text=terminal_surface.get("final_output_text"),
+            final_output_json=terminal_surface.get("final_output_json"),
+            error_message="Run cancelled",
+        )
+        await self.run_repository.replace_artifacts(run_id, terminal_surface.get("artifacts") or [])
+        await self.tracer.emit_event(
+            run_id,
+            "run.cancelled",
+            status="cancelled",
+            final_output=terminal_surface.get("final_output"),
+            final_output_text=terminal_surface.get("final_output_text"),
+            final_output_json=terminal_surface.get("final_output_json"),
+            artifacts=terminal_surface.get("artifacts") or [],
+        )
         artifacts = await self.run_repository.list_artifacts(run_id)
         return AgentRunSummaryResponse(run=self._hydrate_run_row(updated, artifacts=artifacts))
 

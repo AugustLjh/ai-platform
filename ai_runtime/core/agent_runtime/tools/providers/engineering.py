@@ -149,6 +149,7 @@ class ProjectContextTool(BaseTool):
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             agent_definition_id=context.agent_definition_id,
+            allowed_knowledge_base_ids=context.allowed_knowledge_base_ids,
         )
         if not mounted_knowledge_base_ids:
             return []
@@ -204,6 +205,7 @@ class ProjectContextTool(BaseTool):
             tenant_id=context.tenant_id,
             user_id=context.user_id,
             agent_definition_id=context.agent_definition_id,
+            allowed_knowledge_base_ids=context.allowed_knowledge_base_ids,
         )
         if not mounted_knowledge_base_ids:
             raise PermissionError("agent has no mounted knowledge bases available to the current user")

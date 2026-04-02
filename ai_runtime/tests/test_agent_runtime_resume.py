@@ -37,6 +37,9 @@ class FakeRunRepository:
         self.run_row = run_row
         self.patched_inputs: list[dict] = []
         self.reset_calls: list[dict] = []
+        self.status_updates: list[dict] = []
+        self.artifacts: list[dict] = []
+        self.replaced_artifacts: list[dict] = []
 
     async def get_run(self, run_id: str, tenant_id: str | None = None) -> dict | None:
         return self.run_row
@@ -69,6 +72,28 @@ class FakeRunRepository:
         }
         return self.run_row
 
+    async def update_run_status(self, run_id: str, status: str, **payload) -> dict:
+        self.status_updates.append({"run_id": run_id, "status": status, **payload})
+        self.run_row = {
+            **self.run_row,
+            "status": status,
+            "plan": payload.get("plan") if payload.get("plan") is not None else self.run_row.get("plan"),
+            "context": payload.get("context") if payload.get("context") is not None else self.run_row.get("context"),
+            "final_output": payload.get("final_output") if payload.get("final_output") is not None else self.run_row.get("final_output"),
+            "final_output_text": payload.get("final_output_text") if payload.get("final_output_text") is not None else self.run_row.get("final_output_text"),
+            "final_output_json": payload.get("final_output_json") if payload.get("final_output_json") is not None else self.run_row.get("final_output_json"),
+            "error_message": payload.get("error_message"),
+        }
+        return self.run_row
+
+    async def list_artifacts(self, run_id: str) -> list[dict]:
+        return list(self.artifacts)
+
+    async def replace_artifacts(self, run_id: str, artifacts: list[dict]) -> list[dict]:
+        self.replaced_artifacts = list(artifacts)
+        self.artifacts = list(artifacts)
+        return self.artifacts
+
 
 class FakeTracer:
     def __init__(self) -> None:
@@ -76,6 +101,17 @@ class FakeTracer:
 
     async def emit_event(self, run_id: str, event_type: str, **payload) -> None:
         self.events.append((run_id, event_type, payload))
+
+
+class FakeStateStore:
+    def __init__(self) -> None:
+        self.cancel_requests: list[str] = []
+
+    def request_cancel(self, run_id: str) -> None:
+        self.cancel_requests.append(run_id)
+
+    def get_task(self, run_id: str):
+        return None
 
 
 @pytest.mark.asyncio
@@ -98,6 +134,13 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
                 "synthesis_model": {"candidate_count": 2},
                 "normalized_task_input": {"message": "Need more context"},
                 "mounted_knowledge_base_ids": ["kb-1"],
+                "promoted_artifacts": [
+                    {
+                        "artifact_type": "document_excerpt",
+                        "name": "search_docs - Preview",
+                        "payload": {"items": [{"text": "stale preview"}]},
+                    }
+                ],
                 "tool_failures": 3,
                 "execution_count": 4,
                 "intent_state": {"inferred_intent": "research"},
@@ -143,6 +186,7 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
     assert "synthesis_model" not in reset_context
     assert "normalized_task_input" not in reset_context
     assert "mounted_knowledge_base_ids" not in reset_context
+    assert "promoted_artifacts" not in reset_context
 
     assert tracer.events == [
         (
@@ -172,3 +216,64 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
     assert run.artifacts == []
     assert run.steps == []
     assert run.tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_persists_partial_result_surface_and_emits_artifact_snapshot():
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    repository = FakeRunRepository(
+        _run_row(
+            status="running",
+            context={
+                "conversation": [{"role": "user", "content": "Need more context"}],
+                "step_history": [],
+                "promoted_artifacts": [
+                    {
+                        "artifact_type": "citations",
+                        "name": "search_docs - Citations",
+                        "payload": {
+                            "items": [
+                                {
+                                    "title": "Runtime Plan",
+                                    "url": "https://example.com/runtime-plan",
+                                    "snippet": "Use structured artifacts.",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            },
+        )
+    )
+    repository.run_row["final_output"] = None
+    repository.run_row["final_output_text"] = None
+    repository.run_row["final_output_json"] = {
+        "steps": [
+            {"title": "Audit compatibility drift", "status": "in_progress"},
+            {"title": "Backfill replay coverage", "status": "pending"},
+        ]
+    }
+
+    tracer = FakeTracer()
+    runtime.run_repository = repository
+    runtime.tracer = tracer
+    runtime.state_store = FakeStateStore()
+
+    response = await runtime.cancel_run(
+        "00000000-0000-0000-0000-000000000111",
+        "00000000-0000-0000-0000-000000000333",
+    )
+
+    assert runtime.state_store.cancel_requests == ["00000000-0000-0000-0000-000000000111"]
+    assert repository.status_updates[-1]["status"] == "cancelled"
+    assert [artifact["artifact_type"] for artifact in repository.replaced_artifacts] == ["answer", "citations", "task_plan"]
+
+    run = response.run
+    assert run.status == "cancelled"
+    assert [artifact.artifact_type for artifact in run.artifacts] == ["answer", "citations", "task_plan"]
+    assert run.final_output_text == "Audit compatibility drift\nBackfill replay coverage"
+
+    event_run_id, event_type, payload = tracer.events[-1]
+    assert event_run_id == "00000000-0000-0000-0000-000000000111"
+    assert event_type == "run.cancelled"
+    assert [artifact["artifact_type"] for artifact in payload["artifacts"]] == ["answer", "citations", "task_plan"]

@@ -60,6 +60,33 @@ type UpdateAgentKnowledgeBasesRequest struct {
 	KnowledgeBaseIDs []string `json:"knowledge_base_ids"`
 }
 
+type SubagentDefinitionUpsertRequest struct {
+	Name                string          `json:"name"`
+	Slug                string          `json:"slug"`
+	Description         string          `json:"description"`
+	SystemPrompt        string          `json:"system_prompt"`
+	Model               string          `json:"model"`
+	Status              string          `json:"status"`
+	DefinitionStatus    string          `json:"definition_status"`
+	LifecycleStatus     string          `json:"lifecycle_status"`
+	PublicationScope    string          `json:"publication_scope"`
+	Config              json.RawMessage `json:"config"`
+	Metadata            json.RawMessage `json:"metadata"`
+	OutputSchema        json.RawMessage `json:"output_schema"`
+	HandoffInputSchema  json.RawMessage `json:"handoff_input_schema"`
+	ToolAllowlist       json.RawMessage `json:"tool_allowlist"`
+	SkillAllowlist      json.RawMessage `json:"skill_allowlist"`
+	MCPAllowlist        json.RawMessage `json:"mcp_allowlist"`
+	KnowledgePolicy     json.RawMessage `json:"knowledge_policy"`
+	ReviewPolicy        json.RawMessage `json:"review_policy"`
+	RuntimePolicy       json.RawMessage `json:"runtime_policy"`
+	PublicationMetadata json.RawMessage `json:"publication_metadata"`
+}
+
+type UpdateAgentSubagentsRequest struct {
+	SubagentIDs []string `json:"subagent_ids"`
+}
+
 type ClearAgentContextRequest struct {
 	SessionID string `json:"session_id"`
 }
@@ -103,6 +130,7 @@ type MCPServerRefreshResponse struct {
 type AgentService struct {
 	aiClient           *grpc.AIClient
 	agentStore         *database.AgentStore
+	subagentStore      *database.SubagentStore
 	sessionStore       *database.SessionStore
 	skillStore         *database.SkillStore
 	mcpStore           *database.MCPStore
@@ -113,17 +141,19 @@ type AgentService struct {
 func NewAgentService(
 	aiClient *grpc.AIClient,
 	agentStore *database.AgentStore,
+	subagentStore *database.SubagentStore,
 	sessionStore *database.SessionStore,
 	skillStore *database.SkillStore,
 	mcpStore *database.MCPStore,
 ) *AgentService {
 	return &AgentService{
-		aiClient:     aiClient,
-		agentStore:   agentStore,
-		sessionStore: sessionStore,
-		skillStore:   skillStore,
-		mcpStore:     mcpStore,
-		skillsRoot:   resolveSkillsRoot(),
+		aiClient:      aiClient,
+		agentStore:    agentStore,
+		subagentStore: subagentStore,
+		sessionStore:  sessionStore,
+		skillStore:    skillStore,
+		mcpStore:      mcpStore,
+		skillsRoot:    resolveSkillsRoot(),
 	}
 }
 
@@ -467,6 +497,11 @@ func (s *AgentService) hydrateAgentBindings(definition *database.AgentDefinition
 		return nil, err
 	}
 	definition.KnowledgeBaseIDs = knowledgeBaseIDs
+	subagentIDs, err := s.subagentStore.ListAgentSubagentAuthorizationPublicationIDs(definition.ID)
+	if err != nil {
+		return nil, err
+	}
+	definition.SubagentIDs = subagentIDs
 	return definition, nil
 }
 
@@ -546,6 +581,18 @@ func (s *AgentService) GetMCPServer(tenantID, serverID string) (*database.MCPSer
 }
 
 func (s *AgentService) DeleteMCPServer(tenantID, serverID string) error {
+	bindingAgents, bindingCount, err := s.mcpStore.ListServerBindingAgents(serverID, tenantID, 5)
+	if err != nil {
+		return err
+	}
+	if bindingCount > 0 {
+		return fmt.Errorf(
+			"mcp server %s is still bound to %d agent(s): %s; remove those bindings from each agent's extensions page before deleting the server",
+			serverID,
+			bindingCount,
+			summarizeMCPBindingAgents(bindingAgents),
+		)
+	}
 	return s.mcpStore.DeleteServer(serverID, tenantID)
 }
 
@@ -625,6 +672,100 @@ func (s *AgentService) UpdateAgentKnowledgeBases(tenantID, userID, agentID strin
 		return err
 	}
 	return s.agentStore.ReplaceAgentKnowledgeBindings(agentID, tenantID, userID, req.KnowledgeBaseIDs)
+}
+
+func (s *AgentService) ListSubagentDefinitions(tenantID string, includeArchived bool) ([]*database.SubagentDefinition, error) {
+	items, err := s.subagentStore.ListSubagentDefinitions(tenantID, includeArchived)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if _, err := s.hydrateSubagentDefinition(item); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (s *AgentService) GetSubagentDefinition(tenantID, subagentID string) (*database.SubagentDefinition, error) {
+	item, err := s.subagentStore.GetSubagentDefinition(subagentID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateSubagentDefinition(item)
+}
+
+func (s *AgentService) CreateSubagentDefinition(tenantID, userID, userRole string, req *SubagentDefinitionUpsertRequest) (*database.SubagentDefinition, error) {
+	def, err := s.buildSubagentDefinitionForWrite(tenantID, userID, userRole, "", req)
+	if err != nil {
+		return nil, err
+	}
+	created, err := s.subagentStore.CreateSubagentDefinition(def)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateSubagentDefinition(created)
+}
+
+func (s *AgentService) UpdateSubagentDefinition(tenantID, userID, userRole, subagentID string, req *SubagentDefinitionUpsertRequest) (*database.SubagentDefinition, error) {
+	def, err := s.buildSubagentDefinitionForWrite(tenantID, userID, userRole, subagentID, req)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := s.subagentStore.UpdateSubagentDefinition(def)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateSubagentDefinition(updated)
+}
+
+func (s *AgentService) DeleteSubagentDefinition(tenantID, userRole, subagentID string) error {
+	if err := ensureSubagentAdminRole(userRole); err != nil {
+		return err
+	}
+	return s.subagentStore.DeleteSubagentDefinition(subagentID, tenantID)
+}
+
+func (s *AgentService) UpdateAgentSubagents(tenantID, userID, agentID string, req *UpdateAgentSubagentsRequest) error {
+	if _, err := s.agentStore.GetAgentDefinition(agentID, tenantID); err != nil {
+		return err
+	}
+	publicationIDs := normalizeServerIDs(req.SubagentIDs)
+	published, err := s.subagentStore.ListPublishedSubagentsByPublicationIDs(tenantID, publicationIDs)
+	if err != nil {
+		return err
+	}
+
+	publicationsByID := make(map[string]*database.SubagentDefinition, len(published))
+	for _, item := range published {
+		publicationsByID[item.PublicationID] = item
+	}
+
+	legacyDefinitionIDs := make([]string, 0, len(publicationIDs))
+	for _, publicationID := range publicationIDs {
+		subagent, ok := publicationsByID[publicationID]
+		if !ok {
+			return fmt.Errorf("subagent publication %s not found or not visible to this tenant", publicationID)
+		}
+		hydrated, err := s.hydrateSubagentDefinition(subagent)
+		if err != nil {
+			return err
+		}
+		if hydrated.Status != "active" {
+			return fmt.Errorf("subagent publication %s is not active", publicationID)
+		}
+		if strings.TrimSpace(hydrated.TargetAgentDefinitionID) != "" && hydrated.TargetAgentDefinitionID == agentID {
+			return fmt.Errorf("subagent publication %s cannot delegate back to the same agent definition", publicationID)
+		}
+		if strings.TrimSpace(hydrated.TargetAgentDefinitionID) != "" {
+			legacyDefinitionIDs = append(legacyDefinitionIDs, hydrated.ID)
+		}
+	}
+
+	if err := s.subagentStore.ReplaceAgentSubagentAuthorizations(agentID, publicationIDs, stringPtr(userID)); err != nil {
+		return err
+	}
+	return s.subagentStore.ReplaceAgentSubagentBindings(agentID, tenantID, legacyDefinitionIDs)
 }
 
 func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, error) {
@@ -736,6 +877,152 @@ func stringPtr(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func (s *AgentService) buildSubagentDefinitionForWrite(tenantID, userID, userRole, subagentID string, req *SubagentDefinitionUpsertRequest) (*database.SubagentDefinition, error) {
+	if err := ensureSubagentAdminRole(userRole); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, errors.New("name is required")
+	}
+
+	metadata, err := mergeSubagentMetadata(
+		database.NormalizeJSONRawForExport(req.Metadata, `{}`),
+		strings.TrimSpace(req.Slug),
+	)
+	if err != nil {
+		return nil, err
+	}
+	targetAgentDefinitionID, handoffPrompt, err := extractSubagentRuntimeMetadata(metadata)
+	if err != nil {
+		return nil, err
+	}
+	if targetAgentDefinitionID != "" {
+		targetAgent, err := s.agentStore.GetAgentDefinition(targetAgentDefinitionID, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("target agent definition %s not found", targetAgentDefinitionID)
+		}
+		if targetAgent.Status != "active" {
+			return nil, fmt.Errorf("target agent definition %s is not active", targetAgentDefinitionID)
+		}
+	}
+
+	def := &database.SubagentDefinition{
+		ID:                 subagentID,
+		TenantID:           tenantID,
+		Name:               name,
+		Description:        strings.TrimSpace(req.Description),
+		SystemPrompt:       req.SystemPrompt,
+		Model:              strings.TrimSpace(req.Model),
+		Status:             defaultString(strings.TrimSpace(req.Status), "active"),
+		DefinitionStatus:   defaultString(strings.TrimSpace(req.DefinitionStatus), "active"),
+		LifecycleStatus:    defaultString(strings.TrimSpace(req.LifecycleStatus), "active"),
+		PublicationScope:   defaultString(strings.TrimSpace(req.PublicationScope), "tenant"),
+		Config:             database.NormalizeJSONRawForExport(req.Config, `{}`),
+		Metadata:           metadata,
+		OutputSchema:       database.NormalizeJSONRawForExport(req.OutputSchema, `{}`),
+		HandoffInputSchema: database.NormalizeJSONRawForExport(req.HandoffInputSchema, `{}`),
+		ToolAllowlist:      database.NormalizeJSONRawForExport(req.ToolAllowlist, `[]`),
+		SkillAllowlist:     database.NormalizeJSONRawForExport(req.SkillAllowlist, `[]`),
+		MCPAllowlist:       database.NormalizeJSONRawForExport(req.MCPAllowlist, `[]`),
+		KnowledgePolicy:    database.NormalizeJSONRawForExport(req.KnowledgePolicy, `{}`),
+		ReviewPolicy:       database.NormalizeJSONRawForExport(req.ReviewPolicy, `{}`),
+		RuntimePolicy:      database.NormalizeJSONRawForExport(req.RuntimePolicy, `{}`),
+		PublicationMetadata: database.NormalizeJSONRawForExport(
+			req.PublicationMetadata,
+			`{}`,
+		),
+	}
+	if strings.TrimSpace(subagentID) == "" {
+		def.CreatedBy = stringPtr(userID)
+	} else {
+		def.UpdatedBy = stringPtr(userID)
+	}
+	def.PublicationTenantID = tenantID
+	def.TargetAgentDefinitionID = targetAgentDefinitionID
+	def.HandoffPrompt = handoffPrompt
+	return def, nil
+}
+
+func (s *AgentService) hydrateSubagentDefinition(definition *database.SubagentDefinition) (*database.SubagentDefinition, error) {
+	if definition == nil {
+		return nil, nil
+	}
+	targetAgentDefinitionID, handoffPrompt, err := extractSubagentRuntimeMetadata(definition.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	definition.TargetAgentDefinitionID = targetAgentDefinitionID
+	definition.HandoffPrompt = handoffPrompt
+	definition.Slug = extractSubagentSlug(definition.Metadata)
+	if strings.TrimSpace(definition.PublicationScope) == "" {
+		definition.PublicationScope = "tenant"
+	}
+	return definition, nil
+}
+
+func extractSubagentRuntimeMetadata(raw json.RawMessage) (string, string, error) {
+	payload := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return "", "", fmt.Errorf("invalid subagent metadata: %w", err)
+		}
+	}
+	targetAgentDefinitionID := strings.TrimSpace(stringValueFromMap(payload, "target_agent_definition_id"))
+	if targetAgentDefinitionID == "" {
+		targetAgentDefinitionID = strings.TrimSpace(stringValueFromMap(payload, "agent_definition_id"))
+	}
+	handoffPrompt := strings.TrimSpace(stringValueFromMap(payload, "handoff_prompt"))
+	return targetAgentDefinitionID, handoffPrompt, nil
+}
+
+func stringValueFromMap(payload map[string]any, key string) string {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func mergeSubagentMetadata(raw json.RawMessage, slug string) (json.RawMessage, error) {
+	payload := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, fmt.Errorf("invalid subagent metadata: %w", err)
+		}
+	}
+	if slug != "" {
+		payload["slug"] = slug
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode subagent metadata: %w", err)
+	}
+	return encoded, nil
+}
+
+func extractSubagentSlug(raw json.RawMessage) string {
+	payload := map[string]any{}
+	if len(raw) == 0 {
+		return ""
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(stringValueFromMap(payload, "slug"))
+}
+
+func ensureSubagentAdminRole(role string) error {
+	if strings.EqualFold(strings.TrimSpace(role), "admin") {
+		return nil
+	}
+	return ErrAgentUnauthorized
 }
 
 func defaultString(value, fallback string) string {
@@ -886,6 +1173,11 @@ func (s *AgentService) hydrateMCPServer(server *database.MCPServer) (*database.M
 	server.Connection = buildMCPConnectionSummary(server)
 	server.Catalog = buildMCPCatalogSummary(server, tools, time.Now().UTC())
 	server.Availability = buildMCPAvailabilitySummary(server, server.Connection, server.Catalog)
+	bindingAgents, bindingCount, err := s.mcpStore.ListServerBindingAgents(server.ID, server.TenantID, 6)
+	if err != nil {
+		return nil, err
+	}
+	server.BindingUsage = buildMCPBindingUsageSummary(server, bindingAgents, bindingCount)
 	return server, nil
 }
 
@@ -1026,6 +1318,69 @@ func buildMCPAvailabilitySummary(
 	}
 
 	return summary
+}
+
+func buildMCPBindingUsageSummary(
+	server *database.MCPServer,
+	agents []*database.MCPBindingAgent,
+	totalCount int,
+) *database.MCPBindingUsage {
+	summary := &database.MCPBindingUsage{
+		AgentCount: totalCount,
+		Summary:    "当前还没有 agent 绑定这个 server。",
+		Agents:     make([]*database.MCPBindingAgent, 0, len(agents)),
+	}
+
+	for _, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		summary.Agents = append(summary.Agents, &database.MCPBindingAgent{
+			AgentID: strings.TrimSpace(agent.AgentID),
+			Name:    strings.TrimSpace(agent.Name),
+			Status:  strings.TrimSpace(agent.Status),
+		})
+	}
+
+	if totalCount <= 0 {
+		if server != nil && server.Status != "active" {
+			summary.Summary = "Server 当前未被任何 agent 绑定。"
+		}
+		return summary
+	}
+
+	if moreCount := totalCount - len(summary.Agents); moreCount > 0 {
+		summary.MoreCount = moreCount
+	}
+
+	if totalCount == 1 {
+		summary.Summary = "当前有 1 个 agent 正在使用这个 server。"
+		return summary
+	}
+
+	summary.Summary = fmt.Sprintf("当前有 %d 个 agent 正在使用这个 server。", totalCount)
+	return summary
+}
+
+func summarizeMCPBindingAgents(agents []*database.MCPBindingAgent) string {
+	names := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		name := strings.TrimSpace(agent.Name)
+		if name == "" {
+			name = strings.TrimSpace(agent.AgentID)
+		}
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return "unknown agents"
+	}
+	return strings.Join(names, ", ")
 }
 
 func minInt(left, right int) int {

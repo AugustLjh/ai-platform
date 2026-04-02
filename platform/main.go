@@ -121,9 +121,10 @@ func main() {
 	sessionStore := database.NewSessionStore(pgPool)
 	chatService := service.NewChatService(aiClient, sessionStore)
 	agentStore := database.NewAgentStore(pgPool)
+	subagentStore := database.NewSubagentStore(pgPool)
 	skillStore := database.NewSkillStore(pgPool)
 	mcpStore := database.NewMCPStore(pgPool)
-	agentService := service.NewAgentService(aiClient, agentStore, sessionStore, skillStore, mcpStore)
+	agentService := service.NewAgentService(aiClient, agentStore, subagentStore, sessionStore, skillStore, mcpStore)
 
 	// Initialize middleware (with real JWT auth)
 	authMiddleware := middleware.NewAuthMiddleware(authService)
@@ -138,6 +139,7 @@ func main() {
 	agentHandler := httphandler.NewAgentHandler(agentService)
 	skillHandler := httphandler.NewSkillHandler(agentService)
 	mcpHandler := httphandler.NewMCPHandler(agentService)
+	subagentHandler := httphandler.NewSubagentHandler(agentService)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -290,6 +292,8 @@ func main() {
 					agentHandler.HandleClearAgentContext(w, r)
 				case strings.HasSuffix(r.URL.Path, "/mcp-servers"):
 					mcpHandler.HandleUpdateAgentMCPServers(w, r)
+				case strings.HasSuffix(r.URL.Path, "/subagents"):
+					subagentHandler.HandleUpdateAgentSubagents(w, r)
 				default:
 					agentHandler.HandleAgentByID(w, r)
 				}
@@ -302,6 +306,22 @@ func main() {
 	mux.Handle("/api/v1/agents",
 		chain(
 			http.HandlerFunc(agentHandler.HandleAgents),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/subagents/",
+		chain(
+			http.HandlerFunc(subagentHandler.HandleSubagentByID),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/subagents",
+		chain(
+			http.HandlerFunc(subagentHandler.HandleSubagents),
 			authMiddleware.Handler,
 			rateLimiter.Handler,
 			guardMiddleware.Handler,

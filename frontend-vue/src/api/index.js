@@ -3,6 +3,7 @@ import { buildApiUrl } from './base'
 export { agentsAPI } from './agents'
 export { skillsAPI } from './skills'
 export { mcpAPI } from './mcp'
+export { subagentsAPI } from './subagents'
 
 export const authAPI = {
   // Register

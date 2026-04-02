@@ -35,6 +35,7 @@ type MCPServer struct {
 	Connection   *MCPConnection   `json:"connection,omitempty"`
 	Catalog      *MCPCatalog      `json:"catalog,omitempty"`
 	Availability *MCPAvailability `json:"availability,omitempty"`
+	BindingUsage *MCPBindingUsage `json:"binding_usage,omitempty"`
 }
 
 type MCPServerTool struct {
@@ -75,6 +76,19 @@ type MCPAvailability struct {
 	Summary  string `json:"summary"`
 	Bindable bool   `json:"bindable"`
 	Reason   string `json:"reason,omitempty"`
+}
+
+type MCPBindingUsage struct {
+	AgentCount int                `json:"agent_count"`
+	Summary    string             `json:"summary"`
+	MoreCount  int                `json:"more_count,omitempty"`
+	Agents     []*MCPBindingAgent `json:"agents,omitempty"`
+}
+
+type MCPBindingAgent struct {
+	AgentID string `json:"agent_id"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
 }
 
 type MCPStore struct {
@@ -268,6 +282,51 @@ func (s *MCPStore) ListAgentMCPBindings(agentID string) ([]string, error) {
 		items = append(items, serverID)
 	}
 	return items, rows.Err()
+}
+
+func (s *MCPStore) ListServerBindingAgents(serverID, tenantID string, limit int) ([]*MCPBindingAgent, int, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var totalCount int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM agent_mcp_bindings bindings
+		INNER JOIN agent_definitions agents ON agents.id = bindings.agent_definition_id
+		WHERE bindings.server_id = $1 AND agents.tenant_id = $2
+	`, serverID, tenantID).Scan(&totalCount); err != nil {
+		return nil, 0, fmt.Errorf("failed to count mcp server bindings: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT agents.id, agents.name, agents.status
+		FROM agent_mcp_bindings bindings
+		INNER JOIN agent_definitions agents ON agents.id = bindings.agent_definition_id
+		WHERE bindings.server_id = $1 AND agents.tenant_id = $2
+		ORDER BY agents.updated_at DESC, agents.created_at DESC, agents.name ASC
+		LIMIT $3
+	`, serverID, tenantID, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list mcp server binding agents: %w", err)
+	}
+	defer rows.Close()
+
+	agents := make([]*MCPBindingAgent, 0, min(limit, totalCount))
+	for rows.Next() {
+		agent := &MCPBindingAgent{}
+		if err := rows.Scan(&agent.AgentID, &agent.Name, &agent.Status); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan mcp server binding agent: %w", err)
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return agents, totalCount, nil
 }
 
 func (s *MCPStore) ReplaceServerTools(serverID string, tools []*MCPServerTool) error {
