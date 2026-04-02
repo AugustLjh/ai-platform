@@ -8,6 +8,40 @@ from core.agent_runtime.skills.models import SkillRuntimeContext
 
 
 class AgentSummarizer:
+    def _example_value_for_schema(self, schema: Dict[str, Any] | None, field_name: str = "value") -> Any:
+        if not isinstance(schema, dict):
+            return {}
+
+        if "const" in schema:
+            return schema["const"]
+
+        enum_values = schema.get("enum")
+        if isinstance(enum_values, list) and enum_values:
+            return enum_values[0]
+
+        schema_type = schema.get("type")
+        if schema_type == "string":
+            if field_name in {"answer", "summary"}:
+                return "Concise final answer grounded in the execution record."
+            return f"{field_name} text"
+        if schema_type == "integer":
+            return 1
+        if schema_type == "number":
+            return 1
+        if schema_type == "boolean":
+            return False
+        if schema_type == "array":
+            item_schema = schema.get("items") if isinstance(schema.get("items"), dict) else {}
+            return [self._example_value_for_schema(item_schema, field_name=f"{field_name}_item")]
+        if schema_type == "object":
+            value: Dict[str, Any] = {}
+            for nested_key, nested_prop in (schema.get("properties") or {}).items():
+                if not isinstance(nested_prop, dict):
+                    continue
+                value[nested_key] = self._example_value_for_schema(nested_prop, field_name=nested_key)
+            return value
+        return {}
+
     def _build_schema_example(self, output_schema: Dict[str, Any] | None) -> Dict[str, Any] | None:
         if not isinstance(output_schema, dict) or not isinstance(output_schema.get("properties"), dict):
             return None
@@ -16,45 +50,7 @@ class AgentSummarizer:
         for key, prop in output_schema["properties"].items():
             if not isinstance(prop, dict):
                 continue
-            schema_type = prop.get("type")
-            if schema_type == "string":
-                if key in {"answer", "summary"}:
-                    example[key] = "Concise final answer grounded in the execution record."
-                else:
-                    example[key] = f"{key} text"
-            elif schema_type == "array":
-                item_schema = prop.get("items") if isinstance(prop.get("items"), dict) else {}
-                item_type = item_schema.get("type")
-                if item_type == "object":
-                    nested: Dict[str, Any] = {}
-                    for nested_key, nested_prop in (item_schema.get("properties") or {}).items():
-                        if not isinstance(nested_prop, dict):
-                            continue
-                        nested_type = nested_prop.get("type")
-                        if nested_type == "string":
-                            nested[nested_key] = f"{nested_key} text"
-                        elif nested_type == "integer":
-                            nested[nested_key] = 1
-                        elif nested_type == "array":
-                            nested[nested_key] = []
-                        elif nested_type == "object":
-                            nested[nested_key] = {}
-                    example[key] = [nested]
-                else:
-                    example[key] = [f"{key} item"]
-            elif schema_type == "object":
-                object_value: Dict[str, Any] = {}
-                for nested_key, nested_prop in (prop.get("properties") or {}).items():
-                    if not isinstance(nested_prop, dict):
-                        continue
-                    nested_type = nested_prop.get("type")
-                    if nested_type == "string":
-                        object_value[nested_key] = f"{nested_key} text"
-                    elif nested_type == "array":
-                        object_value[nested_key] = []
-                    elif nested_type == "object":
-                        object_value[nested_key] = {}
-                example[key] = object_value
+            example[key] = self._example_value_for_schema(prop, field_name=key)
         return example or None
 
     def _build_schema_guidance(self, output_schema: Dict[str, Any] | None) -> list[str]:
@@ -66,6 +62,18 @@ class AgentSummarizer:
             "Fill every declared top-level field with the correct JSON type, even when some sections are empty.",
             "Prefer concise but information-dense field values over verbose prose outside the schema.",
         ]
+        required = output_schema.get("required") if isinstance(output_schema.get("required"), list) else []
+        if required:
+            guidance.append(f"Do not omit required fields: {', '.join(required)}.")
+
+        enum_notes = []
+        for key, prop in output_schema["properties"].items():
+            if not isinstance(prop, dict):
+                continue
+            enum_values = prop.get("enum")
+            if isinstance(enum_values, list) and enum_values:
+                enum_notes.append(f"When {key} is present, use one of: {', '.join(str(item) for item in enum_values)}.")
+        guidance.extend(enum_notes[:4])
         if "task_plan" in keys:
             guidance.append("When task_plan is present, include ordered implementation steps and concrete risks.")
         if "review_findings" in keys:

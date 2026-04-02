@@ -8,6 +8,79 @@ const textKeys = [
   'content',
   'result'
 ]
+const artifactPriority = {
+  answer: 0,
+  review_findings: 1,
+  citations: 2,
+  code_files: 3,
+  task_plan: 4,
+  table: 5,
+  paged_collection: 6,
+  directory_tree: 7,
+  document_pages: 8,
+  document_excerpt: 9,
+  media_gallery: 10,
+  archive_bundle: 11,
+  file_bundle: 12
+}
+const implicitListKeys = ['items', 'results', 'entries', 'records', 'matches', 'documents', 'data']
+const pagedKeys = ['paged_collection', 'paged_results', 'page', 'page_result']
+const mediaKeys = ['media_gallery', 'image_gallery', 'images', 'media']
+const fileBundleKeys = ['file_bundle', 'attachments', 'resources', 'downloads']
+const directoryTreeKeys = ['directory_tree', 'tree', 'file_tree']
+const documentPageKeys = ['document_pages', 'pages', 'document_preview_pages']
+const archiveBundleKeys = ['archive_bundle', 'archive_entries', 'compressed_bundle']
+const codeFileExtensions = {
+  '.c': 'c',
+  '.cc': 'cpp',
+  '.cpp': 'cpp',
+  '.cs': 'csharp',
+  '.css': 'css',
+  '.go': 'go',
+  '.h': 'c',
+  '.html': 'html',
+  '.java': 'java',
+  '.js': 'javascript',
+  '.json': 'json',
+  '.jsx': 'javascript',
+  '.kt': 'kotlin',
+  '.md': 'markdown',
+  '.php': 'php',
+  '.py': 'python',
+  '.rb': 'ruby',
+  '.rs': 'rust',
+  '.sh': 'bash',
+  '.sql': 'sql',
+  '.swift': 'swift',
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.txt': 'text',
+  '.xml': 'xml',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.zsh': 'zsh'
+}
+const mediaExtensions = {
+  '.apng': 'image',
+  '.avif': 'image',
+  '.gif': 'image',
+  '.jpeg': 'image',
+  '.jpg': 'image',
+  '.png': 'image',
+  '.svg': 'image',
+  '.webp': 'image',
+  '.bmp': 'image',
+  '.ico': 'image',
+  '.mp3': 'audio',
+  '.wav': 'audio',
+  '.ogg': 'audio',
+  '.m4a': 'audio',
+  '.aac': 'audio',
+  '.mp4': 'video',
+  '.mov': 'video',
+  '.webm': 'video',
+  '.mkv': 'video'
+}
 
 export const parseJSON = (value, fallback = null) => {
   if (value === null || value === undefined || value === '') {
@@ -20,6 +93,26 @@ export const parseJSON = (value, fallback = null) => {
     return JSON.parse(value)
   } catch (error) {
     return fallback
+  }
+}
+
+const parseJSONLike = (value) => {
+  if (typeof value !== 'string') {
+    return value
+  }
+  const text = value.trim()
+  if (text.length < 2) {
+    return value
+  }
+  const first = text[0]
+  const last = text[text.length - 1]
+  if (!((first === '{' && last === '}') || (first === '[' && last === ']'))) {
+    return value
+  }
+  try {
+    return JSON.parse(text)
+  } catch {
+    return value
   }
 }
 
@@ -43,7 +136,10 @@ const extractTextCandidate = (value) => {
   }
 
   if (Array.isArray(value)) {
-    const strings = value.filter(isNonEmptyString).map((item) => item.trim())
+    const strings = value
+      .map((item) => extractTextCandidate(item))
+      .filter(Boolean)
+      .slice(0, 3)
     return strings.length > 0 ? strings.join('\n') : ''
   }
 
@@ -66,22 +162,406 @@ const extractTextCandidate = (value) => {
     }
   }
 
+  for (const nestedKey of ['document_excerpt', 'document_excerpts', 'excerpts', 'excerpt']) {
+    const nested = value[nestedKey]
+    if (Array.isArray(nested)) {
+      for (const entry of nested) {
+        if (entry && typeof entry === 'object' && isNonEmptyString(entry.text)) {
+          return entry.text.trim()
+        }
+      }
+    }
+    const nestedText = extractTextCandidate(nested)
+    if (nestedText) {
+      return nestedText
+    }
+  }
+
+  for (const nestedKey of ['review_findings', 'findings', 'issues', 'risks']) {
+    const nested = value[nestedKey]
+    if (Array.isArray(nested)) {
+      for (const entry of nested) {
+        if (!entry || typeof entry !== 'object') {
+          continue
+        }
+        if (isNonEmptyString(entry.title)) {
+          return entry.title.trim()
+        }
+        if (isNonEmptyString(entry.description)) {
+          return entry.description.trim()
+        }
+      }
+    }
+    const nestedText = extractTextCandidate(nested)
+    if (nestedText) {
+      return nestedText
+    }
+  }
+
+  for (const nestedKey of [...pagedKeys, ...mediaKeys, ...fileBundleKeys]) {
+    const nestedText = extractTextCandidate(value[nestedKey])
+    if (nestedText) {
+      return nestedText
+    }
+  }
+
+  for (const nestedKey of documentPageKeys) {
+    const nested = value[nestedKey]
+    if (Array.isArray(nested)) {
+      for (const entry of nested) {
+        if (entry && typeof entry === 'object') {
+          for (const pageKey of ['text', 'content', 'excerpt', 'summary']) {
+            if (isNonEmptyString(entry[pageKey])) {
+              return entry[pageKey].trim()
+            }
+          }
+        }
+      }
+    }
+    const nestedText = extractTextCandidate(nested)
+    if (nestedText) {
+      return nestedText
+    }
+  }
+
+  for (const nestedKey of ['task_plan', 'plan', 'implementation_plan', 'steps', 'items']) {
+    const nested = extractTextCandidate(value[nestedKey])
+    if (nested) {
+      return nested
+    }
+  }
+
+  for (const key of ['text', 'description', 'details', 'title']) {
+    if (isNonEmptyString(value[key])) {
+      return value[key].trim()
+    }
+  }
+
   return ''
 }
 
-export const normalizeArtifact = (raw = {}) => ({
-  id: raw.id || '',
-  runId: raw.run_id || raw.runId || '',
-  stepId: raw.step_id || raw.stepId || '',
-  artifactType: raw.artifact_type || raw.artifactType || 'answer',
-  name: raw.name || 'Untitled Artifact',
-  mimeType: raw.mime_type || raw.mimeType || '',
-  uri: raw.uri || '',
-  payload: parseJSON(raw.payload, {}),
-  metadata: parseJSON(raw.metadata, {}),
-  createdAt: raw.created_at || raw.createdAt || null,
-  updatedAt: raw.updated_at || raw.updatedAt || null
+const normalizeStructuredResultRoot = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return value
+  }
+
+  if (!('task_plan' in value) && Array.isArray(value.steps)) {
+    return {
+      ...value,
+      task_plan: {
+        summary: value.summary || value.answer || '',
+        steps: value.steps || [],
+        decisions: value.decisions || []
+      }
+    }
+  }
+
+  return value
+}
+
+const hasArtifactType = (artifacts, artifactType) => artifacts.some((artifact) => artifact?.artifactType === artifactType)
+
+const looksLikeCitationList = (value) => Array.isArray(value) && value.some((item) => item && typeof item === 'object' && !Array.isArray(item) && (
+  isNonEmptyString(item.url) ||
+  isNonEmptyString(item.link) ||
+  (isNonEmptyString(item.source) && (isNonEmptyString(item.snippet) || isNonEmptyString(item.quote) || isNonEmptyString(item.excerpt)))
+))
+
+const looksLikeFindingList = (value) => Array.isArray(value) && value.some((item) => item && typeof item === 'object' && !Array.isArray(item) && (
+  isNonEmptyString(item.severity) ||
+  isNonEmptyString(item.level) ||
+  isNonEmptyString(item.description) ||
+  isNonEmptyString(item.details) ||
+  isNonEmptyString(item.message)
+))
+
+const looksLikeCodeFileList = (value) => Array.isArray(value) && value.some((item) => item && typeof item === 'object' && !Array.isArray(item) && (
+  isNonEmptyString(item.path) ||
+  isNonEmptyString(item.file_path) ||
+  isNonEmptyString(item.name)
+) && (
+  isNonEmptyString(item.content) ||
+  isNonEmptyString(item.patch)
+))
+
+const looksLikeMediaList = (value) => Array.isArray(value) && normalizeMediaItems(value).length > 0
+
+const looksLikeFileBundleList = (value) => Array.isArray(value) && normalizeFileBundle(value).length > 0
+
+const looksLikeExcerptList = (value) => {
+  if (isNonEmptyString(value)) {
+    return true
+  }
+  if (!Array.isArray(value)) {
+    return false
+  }
+  if (value.every((item) => isNonEmptyString(item))) {
+    return true
+  }
+  return value.some((item) => item && typeof item === 'object' && !Array.isArray(item) && (
+    isNonEmptyString(item.text) ||
+    isNonEmptyString(item.content) ||
+    isNonEmptyString(item.excerpt)
+  ))
+}
+
+const appendImplicitListArtifacts = (artifacts, value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return
+  }
+
+  for (const key of implicitListKeys) {
+    const candidate = value[key]
+    if (candidate === undefined || candidate === null || candidate === '') {
+      continue
+    }
+
+    if (!hasArtifactType(artifacts, 'citations') && looksLikeCitationList(candidate)) {
+      const items = normalizeCitations(candidate)
+      if (items.length > 0) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'citations',
+          name: titleize(key, 'Citations'),
+          payload: { items }
+        }))
+        continue
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'review_findings') && looksLikeFindingList(candidate)) {
+      const items = normalizeFindings(candidate)
+      if (items.length > 0) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'review_findings',
+          name: titleize(key, 'Review Findings'),
+          payload: { items }
+        }))
+        continue
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'code_files') && looksLikeCodeFileList(candidate)) {
+      const files = normalizeCodeFiles(candidate)
+      if (files.length > 0) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'code_files',
+          name: titleize(key, 'Code Files'),
+          payload: { files }
+        }))
+        continue
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'media_gallery') && looksLikeMediaList(candidate)) {
+      const items = normalizeMediaItems(candidate)
+      if (items.length > 0) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'media_gallery',
+          name: titleize(key, 'Media Gallery'),
+          payload: { items }
+        }))
+        continue
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'file_bundle') && looksLikeFileBundleList(candidate)) {
+      const files = normalizeFileBundle(candidate)
+      if (files.length > 0) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'file_bundle',
+          name: titleize(key, 'File Bundle'),
+          payload: { files }
+        }))
+        continue
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'paged_collection')) {
+      const pagedCollection = normalizePagedCollection(candidate, {
+        context: value,
+        title: titleize(key, 'Paged Collection')
+      })
+      if (pagedCollection) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'paged_collection',
+          name: titleize(key, 'Paged Collection'),
+          payload: pagedCollection
+        }))
+        continue
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'document_excerpt') && looksLikeExcerptList(candidate)) {
+      const items = normalizeExcerpts(candidate)
+      if (items.length > 0) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'document_excerpt',
+          name: titleize(key, 'Document Excerpt'),
+          payload: { items }
+        }))
+        continue
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'table')) {
+      const table = normalizeTable(candidate)
+      if (table) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'table',
+          name: titleize(key, 'Table'),
+          payload: table
+        }))
+      }
+    }
+  }
+}
+
+const stableStringify = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+const artifactSignature = (artifact) => stableStringify({
+  artifactType: artifact.artifactType,
+  payload: artifact.payload,
+  mimeType: artifact.mimeType,
+  uri: artifact.uri
 })
+
+const normalizeArtifactPayload = (artifactType, payload) => {
+  const type = String(artifactType || '').trim() || 'answer'
+
+  if (type === 'answer') {
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const text = extractTextCandidate(payload.text) || extractTextCandidate(payload)
+      return {
+        text: text || '',
+        format: payload.format || 'markdown'
+      }
+    }
+    return {
+      text: extractTextCandidate(payload) || '',
+      format: 'markdown'
+    }
+  }
+
+  if (type === 'citations') {
+    const items = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.items : payload
+    return { items: normalizeCitations(items) }
+  }
+
+  if (type === 'review_findings') {
+    const items = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.items : payload
+    return { items: normalizeFindings(items) }
+  }
+
+  if (type === 'code_files') {
+    const files = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.files : payload
+    return { files: normalizeCodeFiles(files) }
+  }
+
+  if (type === 'file_bundle') {
+    const files = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.files : payload
+    return { files: normalizeFileBundle(files) }
+  }
+
+  if (type === 'archive_bundle') {
+    return normalizeArchiveBundle(payload, {
+      title: payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.title || '' : '',
+      force: true
+    }) || payload
+  }
+
+  if (type === 'media_gallery') {
+    const items = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.items : payload
+    return { items: normalizeMediaItems(items) }
+  }
+
+  if (type === 'directory_tree') {
+    return normalizeDirectoryTree(payload, {
+      title: payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.title || '' : '',
+      force: true
+    }) || payload
+  }
+
+  if (type === 'document_pages') {
+    return normalizeDocumentPages(payload, {
+      title: payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.title || '' : '',
+      force: true
+    }) || payload
+  }
+
+  if (type === 'document_excerpt') {
+    const items = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.items : payload
+    return { items: normalizeExcerpts(items) }
+  }
+
+  if (type === 'paged_collection') {
+    return normalizePagedCollection(payload, {
+      title: payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.title || '' : '',
+      force: true
+    }) || payload
+  }
+
+  if (type === 'table') {
+    return normalizeTable(payload) || payload
+  }
+
+  return payload
+}
+
+export const normalizeArtifact = (raw = {}) => {
+  const artifactType = raw.artifact_type || raw.artifactType || 'answer'
+  const artifact = {
+    id: raw.id || '',
+    runId: raw.run_id || raw.runId || '',
+    stepId: raw.step_id || raw.stepId || '',
+    artifactType,
+    name: raw.name || 'Untitled Artifact',
+    mimeType: raw.mime_type || raw.mimeType || '',
+    uri: raw.uri || '',
+    payload: normalizeArtifactPayload(
+      artifactType,
+      parseJSON(raw.payload, {})
+    ),
+    metadata: parseJSON(raw.metadata, {}),
+    createdAt: raw.created_at || raw.createdAt || null,
+    updatedAt: raw.updated_at || raw.updatedAt || null
+  }
+
+  return {
+    ...artifact,
+    clientKey: raw.client_key || raw.clientKey || raw.id || artifactSignature(artifact)
+  }
+}
+
+export const mergeArtifacts = (...groups) => {
+  const merged = []
+  const seen = new Set()
+
+  for (const group of groups) {
+    if (!Array.isArray(group)) continue
+    for (const item of group) {
+      if (!item || typeof item !== 'object') continue
+      const artifact = normalizeArtifact(item)
+      const signature = artifactSignature(artifact)
+      if (seen.has(signature)) continue
+      seen.add(signature)
+      merged.push(artifact)
+    }
+  }
+
+  return merged.sort((left, right) => {
+    const priorityDiff = (artifactPriority[left.artifactType] ?? 100) - (artifactPriority[right.artifactType] ?? 100)
+    if (priorityDiff !== 0) return priorityDiff
+    return String(left.name || '').localeCompare(String(right.name || ''))
+  })
+}
 
 const normalizeFindings = (value) => {
   if (!Array.isArray(value)) return []
@@ -94,7 +574,9 @@ const normalizeFindings = (value) => {
         path: item.path || item.file || '',
         line: item.line || null,
         code: item.code || '',
-        metadata: Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'summary', 'message', 'severity', 'level', 'description', 'details', 'path', 'file', 'line', 'code'].includes(key)))
+        metadata: item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+          ? { ...item.metadata }
+          : Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'summary', 'message', 'severity', 'level', 'description', 'details', 'path', 'file', 'line', 'code', 'metadata'].includes(key)))
       }
     }
     return {
@@ -113,7 +595,9 @@ const normalizeCitations = (value) => {
         title: item.title || item.name || item.source || `Source ${index + 1}`,
         url: item.url || item.link || '',
         snippet: item.snippet || item.quote || item.excerpt || '',
-        metadata: Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'name', 'source', 'url', 'link', 'snippet', 'quote', 'excerpt'].includes(key)))
+        metadata: item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+          ? { ...item.metadata }
+          : Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'name', 'source', 'url', 'link', 'snippet', 'quote', 'excerpt', 'metadata'].includes(key)))
       }
     }
     return {
@@ -140,7 +624,9 @@ const normalizeCodeFiles = (value) => {
         path: item.path || item.file_path || item.name || `file-${index + 1}`,
         language: item.language || '',
         content: typeof content === 'string' ? content : JSON.stringify(content || {}, null, 2),
-        metadata: Object.fromEntries(Object.entries(item).filter(([key]) => !['path', 'file_path', 'name', 'language', 'content', 'patch'].includes(key)))
+        metadata: item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+          ? { ...item.metadata }
+          : Object.fromEntries(Object.entries(item).filter(([key]) => !['path', 'file_path', 'name', 'language', 'content', 'patch', 'metadata'].includes(key)))
       }
     }
     return {
@@ -163,7 +649,9 @@ const normalizeExcerpts = (value) => {
         title: item.title || item.heading || '',
         text: item.text || item.content || item.excerpt || '',
         source: item.source || '',
-        metadata: Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'heading', 'text', 'content', 'excerpt', 'source'].includes(key)))
+        metadata: item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+          ? { ...item.metadata }
+          : Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'heading', 'text', 'content', 'excerpt', 'source', 'metadata'].includes(key)))
       }
     }
     return { title: '', text: String(item || ''), source: '', metadata: {} }
@@ -188,10 +676,595 @@ const normalizeTable = (value) => {
   return null
 }
 
+const normalizeMetadata = (value, excludedKeys = []) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  const metadata = value.metadata && typeof value.metadata === 'object' && !Array.isArray(value.metadata)
+    ? { ...value.metadata }
+    : {}
+  for (const [key, item] of Object.entries(value)) {
+    if (!excludedKeys.includes(key) && key !== 'metadata') {
+      metadata[key] = item
+    }
+  }
+  return metadata
+}
+
+const coerceInt = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+}
+
+const coerceBool = (value) => {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase()
+    if (['true', '1', 'yes'].includes(text)) return true
+    if (['false', '0', 'no'].includes(text)) return false
+  }
+  return null
+}
+
+const normalizeInlineUri = (source, mimeType = '', data = '') => {
+  const sourceText = String(source || '').trim()
+  if (sourceText) {
+    return sourceText
+  }
+  if (!isNonEmptyString(data)) {
+    return ''
+  }
+  const dataText = data.trim()
+  if (dataText.startsWith('data:')) {
+    return dataText
+  }
+  return `data:${String(mimeType || 'application/octet-stream').trim() || 'application/octet-stream'};base64,${dataText}`
+}
+
+const guessMediaKind = (path, mimeType = '') => {
+  const normalizedMime = String(mimeType || '').trim().toLowerCase()
+  if (normalizedMime.startsWith('image/')) return 'image'
+  if (normalizedMime.startsWith('video/')) return 'video'
+  if (normalizedMime.startsWith('audio/')) return 'audio'
+
+  const normalizedPath = String(path || '').trim().toLowerCase()
+  const extension = normalizedPath.includes('.') ? `.${normalizedPath.split('.').pop()}` : ''
+  return mediaExtensions[extension] || ''
+}
+
+const extractPaginationMetadata = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  let source = value.pagination && typeof value.pagination === 'object' && !Array.isArray(value.pagination)
+    ? value.pagination
+    : null
+  if (!source) {
+    for (const alias of ['page_info', 'pageInfo']) {
+      if (value[alias] && typeof value[alias] === 'object' && !Array.isArray(value[alias])) {
+        source = value[alias]
+        break
+      }
+    }
+  }
+  source = source || value
+
+  const metadata = {
+    cursor: source.cursor || '',
+    next_cursor: source.next_cursor || source.nextCursor || '',
+    previous_cursor: source.previous_cursor || source.previousCursor || source.prev_cursor || '',
+    has_more: coerceBool(source.has_more ?? source.hasMore),
+    page: coerceInt(source.page ?? source.page_index ?? source.pageIndex),
+    page_size: coerceInt(source.page_size ?? source.pageSize ?? source.limit),
+    offset: coerceInt(source.offset),
+    total_count: coerceInt(source.total_count ?? source.totalCount ?? source.total)
+  }
+
+  return Object.fromEntries(Object.entries(metadata).filter(([, item]) => item !== null && item !== ''))
+}
+
+const extractPagedItems = (value) => {
+  if (Array.isArray(value)) return value
+  if (!value || typeof value !== 'object') return []
+  for (const key of [...implicitListKeys, 'rows']) {
+    if (Array.isArray(value[key])) {
+      return value[key]
+    }
+  }
+  return []
+}
+
+const normalizePagedCollection = (value, { context = null, title = '', force = false } = {}) => {
+  const items = extractPagedItems(value)
+  if (!Array.isArray(items) || items.length === 0) {
+    return null
+  }
+
+  const pagination = extractPaginationMetadata(value && typeof value === 'object' && !Array.isArray(value) ? value : context)
+  if (!force && Object.keys(pagination).length === 0) {
+    return null
+  }
+
+  const columns = items[0] && typeof items[0] === 'object' && !Array.isArray(items[0])
+    ? Object.keys(items[0])
+    : []
+
+  return {
+    title,
+    items,
+    columns,
+    display: columns.length > 0 ? 'table' : 'list',
+    pagination: {
+      ...pagination,
+      returned_count: items.length
+    }
+  }
+}
+
+const normalizeMediaItems = (value) => {
+  const entries = Array.isArray(value) ? value : (value && typeof value === 'object' ? [value] : [])
+  return entries.flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return []
+    }
+    const resource = entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)
+      ? entry.resource
+      : {}
+    const source = String(entry.uri || entry.url || entry.href || resource.uri || resource.url || '').trim()
+    const mimeType = String(entry.mimeType || entry.mime_type || resource.mimeType || resource.mime_type || '').trim()
+    const path = String(entry.path || entry.file_path || resource.path || resource.file_path || resource.name || pathFromSource(source)).trim()
+    const kind = guessMediaKind(path, mimeType)
+    if (!['image', 'video', 'audio'].includes(kind)) {
+      return []
+    }
+    const data = entry.data || entry.blob || resource.data || resource.blob || ''
+    const title = String(entry.title || entry.name || resource.title || resource.name || path || `Media ${index + 1}`).trim()
+    return [{
+      title,
+      uri: normalizeInlineUri(source, mimeType, data),
+      mime_type: mimeType,
+      kind,
+      alt: String(entry.alt || entry.description || resource.alt || title).trim(),
+      path,
+      source,
+      size_bytes: coerceInt(entry.size_bytes ?? entry.sizeBytes ?? entry.bytes ?? resource.size_bytes ?? resource.sizeBytes ?? resource.bytes),
+      metadata: normalizeMetadata(
+        { ...resource, ...entry },
+        ['resource', 'uri', 'url', 'href', 'mimeType', 'mime_type', 'path', 'file_path', 'name', 'title', 'alt', 'description', 'data', 'blob', 'size_bytes', 'sizeBytes', 'bytes']
+      )
+    }]
+  })
+}
+
+const normalizeFileBundle = (value) => {
+  const entries = Array.isArray(value) ? value : (value && typeof value === 'object' ? [value] : [])
+  return entries.flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return []
+    }
+    const resource = entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)
+      ? entry.resource
+      : {}
+    const source = String(entry.uri || entry.url || entry.href || resource.uri || resource.url || '').trim()
+    const mimeType = String(entry.mimeType || entry.mime_type || resource.mimeType || resource.mime_type || '').trim()
+    const path = String(entry.path || entry.file_path || resource.path || resource.file_path || resource.name || pathFromSource(source)).trim()
+    if (!(source || mimeType || isNonEmptyString(entry.name) || isNonEmptyString(entry.title) || isNonEmptyString(resource.name) || isNonEmptyString(resource.title) || isNonEmptyString(entry.data) || isNonEmptyString(resource.data))) {
+      return []
+    }
+    if (['image', 'video', 'audio'].includes(guessMediaKind(path, mimeType))) {
+      return []
+    }
+
+    let previewText = ''
+    for (const candidate of [entry.preview_text, entry.previewText, entry.text, entry.content, entry.excerpt, resource.preview_text, resource.previewText, resource.text, resource.content, resource.excerpt]) {
+      if (isNonEmptyString(candidate)) {
+        previewText = candidate.trim()
+        break
+      }
+    }
+
+    return [{
+      name: String(entry.name || entry.title || resource.name || resource.title || path || `File ${index + 1}`).trim(),
+      path,
+      uri: normalizeInlineUri(source, mimeType, entry.data || resource.data || ''),
+      mime_type: mimeType,
+      size_bytes: coerceInt(entry.size_bytes ?? entry.sizeBytes ?? entry.bytes ?? resource.size_bytes ?? resource.sizeBytes ?? resource.bytes),
+      description: String(entry.description || resource.description || '').trim(),
+      preview_text: previewText,
+      source,
+      metadata: normalizeMetadata(
+        { ...resource, ...entry },
+        ['resource', 'uri', 'url', 'href', 'mimeType', 'mime_type', 'path', 'file_path', 'name', 'title', 'description', 'preview_text', 'previewText', 'text', 'content', 'excerpt', 'data', 'blob', 'size_bytes', 'sizeBytes', 'bytes']
+      )
+    }]
+  })
+}
+
+const pathSegments = (value) => String(value || '').trim().replace(/^\/+|\/+$/g, '').split('/').filter(Boolean)
+
+const coerceTreeNodeType = (value) => {
+  if (typeof value === 'boolean') {
+    return value ? 'directory' : 'file'
+  }
+  const text = String(value || '').trim().toLowerCase()
+  if (['dir', 'directory', 'folder'].includes(text)) return 'directory'
+  if (['file', 'document', 'blob', 'leaf'].includes(text)) return 'file'
+  return ''
+}
+
+const normalizeDirectoryTreeNode = (entry, index = 0) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    const path = String(entry || '').trim()
+    if (!path) return null
+    const trimmedPath = path.replace(/\/+$/, '')
+    const name = trimmedPath.split('/').filter(Boolean).pop() || trimmedPath || `Node ${index + 1}`
+    return {
+      name,
+      path: trimmedPath,
+      node_type: path.endsWith('/') ? 'directory' : 'file',
+      children: [],
+      metadata: {}
+    }
+  }
+
+  const resource = entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)
+    ? entry.resource
+    : {}
+  const merged = { ...resource, ...entry }
+  const rawPath = String(
+    merged.path ||
+    merged.file_path ||
+    merged.uri ||
+    merged.url ||
+    merged.href ||
+    merged.name ||
+    merged.title ||
+    ''
+  ).trim()
+  const path = rawPath.replace(/\/+$/, '')
+  const childrenSource = Array.isArray(merged.children)
+    ? merged.children
+    : Array.isArray(merged.nodes)
+      ? merged.nodes
+      : Array.isArray(merged.entries)
+        ? merged.entries
+        : Array.isArray(merged.items)
+          ? merged.items
+          : []
+  let nodeType = coerceTreeNodeType(merged.node_type) ||
+    coerceTreeNodeType(merged.type) ||
+    coerceTreeNodeType(merged.kind) ||
+    coerceTreeNodeType(merged.is_dir) ||
+    coerceTreeNodeType(merged.is_directory)
+  if (!nodeType) {
+    nodeType = childrenSource.length > 0 || rawPath.endsWith('/') ? 'directory' : 'file'
+  }
+
+  const children = childrenSource
+    .map((item, childIndex) => normalizeDirectoryTreeNode(item, childIndex))
+    .filter(Boolean)
+  if (children.length > 0) {
+    nodeType = 'directory'
+  }
+
+  return {
+    name: String(merged.name || merged.title || path.split('/').filter(Boolean).pop() || path || `Node ${index + 1}`).trim(),
+    path,
+    node_type: nodeType,
+    uri: String(merged.uri || merged.url || merged.href || '').trim(),
+    mime_type: String(merged.mimeType || merged.mime_type || '').trim(),
+    size_bytes: coerceInt(merged.size_bytes ?? merged.sizeBytes ?? merged.bytes),
+    children,
+    metadata: normalizeMetadata(
+      merged,
+      ['metadata', 'resource', 'name', 'title', 'path', 'file_path', 'type', 'kind', 'node_type', 'is_dir', 'is_directory', 'children', 'nodes', 'entries', 'items', 'uri', 'url', 'href', 'mimeType', 'mime_type', 'size_bytes', 'sizeBytes', 'bytes']
+    )
+  }
+}
+
+const insertDirectoryPath = (rootNodes, entry, index) => {
+  const path = String(entry.path || entry.file_path || entry.name || entry.title || '').trim()
+  const segments = pathSegments(path)
+  if (segments.length === 0) {
+    const normalized = normalizeDirectoryTreeNode(entry, index)
+    if (normalized) rootNodes.push(normalized)
+    return
+  }
+
+  let nodeType = coerceTreeNodeType(entry.node_type) ||
+    coerceTreeNodeType(entry.type) ||
+    coerceTreeNodeType(entry.kind) ||
+    coerceTreeNodeType(entry.is_dir) ||
+    coerceTreeNodeType(entry.is_directory)
+  if (!nodeType) {
+    nodeType = path.endsWith('/') ? 'directory' : 'file'
+  }
+
+  let current = rootNodes
+  const accumulated = []
+  segments.forEach((segment, segmentIndex) => {
+    accumulated.push(segment)
+    const isLeaf = segmentIndex === segments.length - 1
+    const expectedType = isLeaf ? nodeType : 'directory'
+    let existing = current.find((item) => item.name === segment)
+    if (!existing) {
+      existing = {
+        name: segment,
+        path: accumulated.join('/'),
+        node_type: expectedType,
+        children: [],
+        metadata: {}
+      }
+      current.push(existing)
+    }
+    if (!isLeaf) {
+      existing.node_type = 'directory'
+      existing.children = Array.isArray(existing.children) ? existing.children : []
+      current = existing.children
+      return
+    }
+
+    const normalized = normalizeDirectoryTreeNode(entry, index) || {}
+    Object.assign(existing, {
+      name: segment,
+      path: accumulated.join('/'),
+      node_type: expectedType,
+      uri: normalized.uri || '',
+      mime_type: normalized.mime_type || '',
+      size_bytes: normalized.size_bytes ?? null,
+      metadata: normalized.metadata || {}
+    })
+    if (Array.isArray(normalized.children) && normalized.children.length > 0) {
+      existing.children = normalized.children
+      existing.node_type = 'directory'
+    }
+  })
+}
+
+const countDirectoryTree = (nodes, depth = 1) => {
+  let fileCount = 0
+  let directoryCount = 0
+  let maxDepth = Array.isArray(nodes) && nodes.length > 0 ? depth : 0
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    const children = Array.isArray(node.children) ? node.children : []
+    if (node.node_type === 'directory') {
+      directoryCount += 1
+    } else {
+      fileCount += 1
+    }
+    const childCounts = countDirectoryTree(children, depth + 1)
+    fileCount += childCounts.file_count
+    directoryCount += childCounts.directory_count
+    maxDepth = Math.max(maxDepth, childCounts.max_depth)
+  }
+  return { file_count: fileCount, directory_count: directoryCount, max_depth: maxDepth }
+}
+
+const normalizeDirectoryTree = (value, { title = '', force = false } = {}) => {
+  let rootName = ''
+  let nodes = []
+  let explicitStructure = false
+
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const childEntries = Array.isArray(value.children)
+      ? value.children
+      : Array.isArray(value.nodes)
+        ? value.nodes
+        : Array.isArray(value.entries)
+          ? value.entries
+          : Array.isArray(value.items)
+            ? value.items
+            : []
+    rootName = String(value.name || value.title || value.path || '').trim().replace(/\/+$/, '')
+    if (childEntries.length > 0) {
+      explicitStructure = true
+      nodes = childEntries.map((item, index) => normalizeDirectoryTreeNode(item, index)).filter(Boolean)
+    } else if (typeof value.path === 'string' && (
+      coerceTreeNodeType(value.type) === 'directory' ||
+      coerceTreeNodeType(value.kind) === 'directory' ||
+      String(value.path || '').endsWith('/')
+    )) {
+      const normalized = normalizeDirectoryTreeNode(value, 0)
+      if (normalized) nodes = [normalized]
+    }
+  } else if (Array.isArray(value)) {
+    const entries = value.filter((item) => (typeof item === 'string' && String(item).trim()) || (item && typeof item === 'object' && !Array.isArray(item)))
+    if (entries.length > 0) {
+      if (entries.some((item) => item && typeof item === 'object' && Array.isArray(item.children))) {
+        nodes = entries.map((item, index) => normalizeDirectoryTreeNode(item, index)).filter(Boolean)
+      } else {
+        const flatRoot = []
+        entries.forEach((item, index) => {
+          if (item && typeof item === 'object' && !Array.isArray(item)) {
+            insertDirectoryPath(flatRoot, item, index)
+          } else {
+            insertDirectoryPath(flatRoot, { path: String(item) }, index)
+          }
+        })
+        nodes = flatRoot
+      }
+    }
+  }
+
+  if (nodes.length === 0) return null
+  if (!force && !(
+    explicitStructure ||
+    nodes.some((node) => Array.isArray(node.children) && node.children.length > 0) ||
+    nodes.some((node) => node.node_type === 'directory')
+  )) {
+    return null
+  }
+
+  return {
+    title: title || rootName,
+    root_name: rootName,
+    nodes,
+    summary: countDirectoryTree(nodes)
+  }
+}
+
+const looksLikeDocumentPageEntry = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  if (value.page !== undefined || value.page_number !== undefined || value.pageNumber !== undefined) return true
+  return ['text', 'content', 'excerpt', 'thumbnail_uri', 'thumbnailUrl', 'image_uri', 'imageUrl'].some((key) => isNonEmptyString(value[key]))
+}
+
+const normalizeDocumentPages = (value, { title = '', force = false } = {}) => {
+  let payload = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  let pagesSource = value
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    for (const key of ['pages', 'items', 'entries']) {
+      if (Array.isArray(payload[key])) {
+        pagesSource = payload[key]
+        break
+      }
+    }
+  }
+
+  if (!Array.isArray(pagesSource) || pagesSource.length === 0) return null
+  if (!force && !pagesSource.some((item) => looksLikeDocumentPageEntry(item))) return null
+
+  const pages = pagesSource.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      const text = String(entry || '').trim()
+      if (!text) return null
+      return {
+        page_number: index + 1,
+        title: `Page ${index + 1}`,
+        text,
+        uri: '',
+        thumbnail_uri: '',
+        mime_type: '',
+        source: '',
+        metadata: {}
+      }
+    }
+
+    const pageNumber = coerceInt(entry.page_number ?? entry.pageNumber ?? entry.page ?? entry.index) || index + 1
+    return {
+      page_number: pageNumber,
+      title: String(entry.title || entry.heading || `Page ${pageNumber}`).trim(),
+      text: String(entry.text || entry.content || entry.excerpt || '').trim(),
+      uri: String(entry.uri || entry.url || '').trim(),
+      thumbnail_uri: String(entry.thumbnail_uri || entry.thumbnailUrl || entry.image_uri || entry.imageUrl || '').trim(),
+      mime_type: String(entry.mimeType || entry.mime_type || '').trim(),
+      source: String(entry.source || entry.uri || entry.url || '').trim(),
+      metadata: normalizeMetadata(
+        entry,
+        ['metadata', 'page_number', 'pageNumber', 'page', 'index', 'title', 'heading', 'text', 'content', 'excerpt', 'uri', 'url', 'thumbnail_uri', 'thumbnailUrl', 'image_uri', 'imageUrl', 'mimeType', 'mime_type', 'source']
+      )
+    }
+  }).filter(Boolean)
+
+  if (pages.length === 0) return null
+
+  return {
+    title: title || String(payload.title || payload.name || '').trim(),
+    page_count: coerceInt(payload.page_count ?? payload.pageCount) || pages.length,
+    pages
+  }
+}
+
+const archiveFormatFromValue = (value) => {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return ''
+  for (const suffix of ['.tar.gz', '.tgz', '.tar', '.zip', '.rar', '.7z', '.gz']) {
+    if (text.endsWith(suffix)) {
+      return suffix.replace(/^\./, '')
+    }
+  }
+  if (['zip', 'tar', 'tgz', 'tar.gz', 'rar', '7z', 'gz'].includes(text)) {
+    return text
+  }
+  return ''
+}
+
+const looksLikeArchivePayload = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  if (archiveFormatFromValue(value.format)) return true
+  if (archiveFormatFromValue(value.path) || archiveFormatFromValue(value.name) || archiveFormatFromValue(value.uri)) return true
+  return ['application/zip', 'application/x-tar', 'application/gzip', 'application/x-7z-compressed', 'application/vnd.rar'].includes(
+    String(value.mimeType || value.mime_type || '').trim().toLowerCase()
+  )
+}
+
+const normalizeArchiveBundle = (value, { title = '', force = false } = {}) => {
+  const payload = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  let entriesSource = value
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    for (const key of ['entries', 'items', 'members', 'files']) {
+      if (Array.isArray(payload[key])) {
+        entriesSource = payload[key]
+        break
+      }
+    }
+  }
+
+  if (!Array.isArray(entriesSource) || entriesSource.length === 0) return null
+  if (!force && !looksLikeArchivePayload(payload)) return null
+
+  let totalSize = 0
+  let totalCompressedSize = 0
+  const files = entriesSource.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      const path = String(entry || '').trim()
+      if (!path) return null
+      return {
+        name: path.split('/').filter(Boolean).pop() || path,
+        path,
+        mime_type: '',
+        size_bytes: null,
+        compressed_size_bytes: null,
+        checksum: '',
+        description: '',
+        metadata: {}
+      }
+    }
+
+    const sizeBytes = coerceInt(entry.size_bytes ?? entry.sizeBytes ?? entry.bytes)
+    const compressedSizeBytes = coerceInt(entry.compressed_size_bytes ?? entry.compressedSizeBytes ?? entry.compressed_bytes ?? entry.compressedBytes)
+    if (typeof sizeBytes === 'number') totalSize += sizeBytes
+    if (typeof compressedSizeBytes === 'number') totalCompressedSize += compressedSizeBytes
+    return {
+      name: String(entry.name || entry.title || entry.path || entry.file_path || `Entry ${index + 1}`).trim(),
+      path: String(entry.path || entry.file_path || entry.name || '').trim(),
+      mime_type: String(entry.mimeType || entry.mime_type || '').trim(),
+      size_bytes: sizeBytes,
+      compressed_size_bytes: compressedSizeBytes,
+      checksum: String(entry.checksum || entry.digest || entry.sha256 || '').trim(),
+      description: String(entry.description || '').trim(),
+      metadata: normalizeMetadata(
+        entry,
+        ['metadata', 'name', 'title', 'path', 'file_path', 'mimeType', 'mime_type', 'size_bytes', 'sizeBytes', 'bytes', 'compressed_size_bytes', 'compressedSizeBytes', 'compressed_bytes', 'compressedBytes', 'checksum', 'digest', 'sha256', 'description']
+      )
+    }
+  }).filter(Boolean)
+
+  if (files.length === 0) return null
+
+  const archiveName = String(payload.name || payload.title || payload.path || payload.uri || '').trim()
+  return {
+    title: title || archiveName,
+    archive_name: archiveName,
+    format: archiveFormatFromValue(payload.format) || archiveFormatFromValue(payload.path) || archiveFormatFromValue(payload.name) || archiveFormatFromValue(payload.uri),
+    entry_count: files.length,
+    total_size_bytes: totalSize || null,
+    total_compressed_size_bytes: totalCompressedSize || null,
+    files
+  }
+}
+
 export const buildArtifactsFromStructuredResult = (value, fallbackText = '') => {
   const artifacts = []
-  const answerText = extractTextCandidate(value) || extractTextCandidate(fallbackText)
-  const structured = value && typeof value === 'object' ? value : null
+  const normalizedValue = normalizeStructuredResultRoot(parseJSONLike(value))
+  const answerText = extractTextCandidate(normalizedValue) || extractTextCandidate(fallbackText)
+  const structured = normalizedValue && typeof normalizedValue === 'object' ? normalizedValue : null
 
   if (answerText) {
     artifacts.push(normalizeArtifact({
@@ -249,6 +1322,91 @@ export const buildArtifactsFromStructuredResult = (value, fallbackText = '') => 
       }
     }
 
+    for (const key of directoryTreeKeys) {
+      const directoryTree = normalizeDirectoryTree(structured[key], {
+        title: titleize(key, 'Directory Tree'),
+        force: Object.prototype.hasOwnProperty.call(structured, key)
+      })
+      if (directoryTree) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'directory_tree',
+          name: titleize(key, 'Directory Tree'),
+          payload: directoryTree
+        }))
+        break
+      }
+    }
+
+    for (const key of documentPageKeys) {
+      const documentPages = normalizeDocumentPages(structured[key], {
+        title: titleize(key, 'Document Pages'),
+        force: Object.prototype.hasOwnProperty.call(structured, key)
+      })
+      if (documentPages) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'document_pages',
+          name: titleize(key, 'Document Pages'),
+          payload: documentPages
+        }))
+        break
+      }
+    }
+
+    for (const key of pagedKeys) {
+      const pagedCollection = normalizePagedCollection(structured[key], {
+        context: structured,
+        title: titleize(key, 'Paged Collection'),
+        force: Object.prototype.hasOwnProperty.call(structured, key)
+      })
+      if (pagedCollection) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'paged_collection',
+          name: titleize(key, 'Paged Collection'),
+          payload: pagedCollection
+        }))
+        break
+      }
+    }
+
+    for (const key of mediaKeys) {
+      const items = normalizeMediaItems(structured[key])
+      if (items.length > 0) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'media_gallery',
+          name: titleize(key, 'Media Gallery'),
+          payload: { items }
+        }))
+        break
+      }
+    }
+
+    for (const key of fileBundleKeys) {
+      const files = normalizeFileBundle(structured[key])
+      if (files.length > 0) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'file_bundle',
+          name: titleize(key, 'File Bundle'),
+          payload: { files }
+        }))
+        break
+      }
+    }
+
+    for (const key of archiveBundleKeys) {
+      const archiveBundle = normalizeArchiveBundle(structured[key], {
+        title: titleize(key, 'Archive Bundle'),
+        force: Object.prototype.hasOwnProperty.call(structured, key)
+      })
+      if (archiveBundle) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'archive_bundle',
+          name: titleize(key, 'Archive Bundle'),
+          payload: archiveBundle
+        }))
+        break
+      }
+    }
+
     for (const key of ['table', 'tables', 'rows']) {
       const table = normalizeTable(structured[key])
       if (table) {
@@ -272,20 +1430,100 @@ export const buildArtifactsFromStructuredResult = (value, fallbackText = '') => 
         break
       }
     }
+
+    appendImplicitListArtifacts(artifacts, structured)
+
+    if (!hasArtifactType(artifacts, 'directory_tree')) {
+      const directoryTree = normalizeDirectoryTree(structured)
+      if (directoryTree) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'directory_tree',
+          name: directoryTree.title || 'Directory Tree',
+          payload: directoryTree
+        }))
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'document_pages')) {
+      const documentPages = normalizeDocumentPages(structured)
+      if (documentPages) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'document_pages',
+          name: documentPages.title || 'Document Pages',
+          payload: documentPages
+        }))
+      }
+    }
+
+    if (!hasArtifactType(artifacts, 'archive_bundle')) {
+      const archiveBundle = normalizeArchiveBundle(structured)
+      if (archiveBundle) {
+        artifacts.push(normalizeArtifact({
+          artifact_type: 'archive_bundle',
+          name: archiveBundle.title || 'Archive Bundle',
+          payload: archiveBundle
+        }))
+      }
+    }
   }
 
   if (Array.isArray(value)) {
+    const directoryTree = normalizeDirectoryTree(value)
+    if (directoryTree) {
+      artifacts.push(normalizeArtifact({
+        artifact_type: 'directory_tree',
+        name: directoryTree.title || 'Directory Tree',
+        payload: directoryTree
+      }))
+    }
+
+    const documentPages = normalizeDocumentPages(value)
+    if (documentPages) {
+      artifacts.push(normalizeArtifact({
+        artifact_type: 'document_pages',
+        name: documentPages.title || 'Document Pages',
+        payload: documentPages
+      }))
+    }
+
+    const mediaItems = normalizeMediaItems(value)
+    if (mediaItems.length > 0) {
+      artifacts.push(normalizeArtifact({
+        artifact_type: 'media_gallery',
+        name: 'Media Gallery',
+        payload: { items: mediaItems }
+      }))
+    }
+
+    const bundleFiles = normalizeFileBundle(value)
+    if (bundleFiles.length > 0) {
+      artifacts.push(normalizeArtifact({
+        artifact_type: 'file_bundle',
+        name: 'File Bundle',
+        payload: { files: bundleFiles }
+      }))
+    }
+
+    const archiveBundle = normalizeArchiveBundle(value)
+    if (archiveBundle) {
+      artifacts.push(normalizeArtifact({
+        artifact_type: 'archive_bundle',
+        name: archiveBundle.title || 'Archive Bundle',
+        payload: archiveBundle
+      }))
+    }
+
     const table = normalizeTable(value)
     if (table) {
       artifacts.push(normalizeArtifact({
-        artifact_type: 'table',
+          artifact_type: 'table',
         name: 'Result Table',
         payload: table
       }))
     }
   }
 
-  return artifacts
+  return mergeArtifacts(artifacts)
 }
 
 const normalizeMCPContentItems = (items = []) => {
@@ -322,52 +1560,433 @@ const normalizeMCPContentItems = (items = []) => {
     .filter((item) => item.text)
 }
 
-export const buildArtifactsFromToolResult = (result, toolCall = {}) => {
+const pathFromSource = (source) => {
+  const text = String(source || '').trim()
+  if (!text) {
+    return ''
+  }
+  try {
+    const url = new URL(text)
+    return url.pathname.split('/').filter(Boolean).pop() || text
+  } catch {
+    return text.split('#')[0].split('?')[0].split('/').filter(Boolean).pop() || text
+  }
+}
+
+const guessLanguage = (path, mimeType = '') => {
+  const normalizedPath = String(path || '').trim().toLowerCase()
+  const extension = normalizedPath.includes('.') ? `.${normalizedPath.split('.').pop()}` : ''
+  if (codeFileExtensions[extension]) {
+    return codeFileExtensions[extension]
+  }
+
+  const normalizedMime = String(mimeType || '').trim().toLowerCase()
+  const mimeTokens = {
+    javascript: 'javascript',
+    typescript: 'typescript',
+    json: 'json',
+    markdown: 'markdown',
+    html: 'html',
+    css: 'css',
+    xml: 'xml',
+    yaml: 'yaml',
+    python: 'python',
+    shell: 'bash'
+  }
+  for (const [token, language] of Object.entries(mimeTokens)) {
+    if (normalizedMime.includes(token)) {
+      return language
+    }
+  }
+  return ''
+}
+
+const isCodeLikeContent = (path, mimeType) => {
+  const normalizedPath = String(path || '').trim().toLowerCase()
+  const extension = normalizedPath.includes('.') ? `.${normalizedPath.split('.').pop()}` : ''
+  if (codeFileExtensions[extension] && extension !== '.txt') {
+    return true
+  }
+
+  const normalizedMime = String(mimeType || '').trim().toLowerCase()
+  if (!normalizedMime) {
+    return false
+  }
+
+  return (
+    normalizedMime.startsWith('text/x-') ||
+    normalizedMime.startsWith('application/x-') ||
+    [
+      'application/json',
+      'application/javascript',
+      'application/xml',
+      'text/css',
+      'text/html',
+      'text/javascript',
+      'text/markdown',
+      'text/xml'
+    ].includes(normalizedMime) ||
+    normalizedMime.endsWith('+json') ||
+    normalizedMime.endsWith('+xml')
+  )
+}
+
+const extractContentCore = (entry, index) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return {
+      title: `Content ${index + 1}`,
+      text: String(entry || '').trim(),
+      source: '',
+      uri: '',
+      mimeType: '',
+      path: '',
+      kind: '',
+      description: '',
+      sizeBytes: null
+    }
+  }
+
+  const resource = entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)
+    ? entry.resource
+    : {}
+  const source = String(entry.uri || entry.url || entry.href || resource.uri || resource.url || '').trim()
+  const mimeType = String(entry.mimeType || entry.mime_type || resource.mimeType || resource.mime_type || '').trim()
+  const path = String(entry.path || entry.file_path || resource.path || resource.file_path || resource.name || pathFromSource(source)).trim()
+
+  let text = ''
+  const itemType = String(entry.type || '').trim().toLowerCase()
+  if (itemType === 'text' && isNonEmptyString(entry.text)) {
+    text = entry.text.trim()
+  }
+  if (!text) {
+    for (const candidate of [entry.text, entry.content, entry.excerpt, resource.text, resource.content, resource.excerpt]) {
+      if (isNonEmptyString(candidate)) {
+        text = candidate.trim()
+        break
+      }
+    }
+  }
+  if (!text) {
+    text = extractTextCandidate(resource) || extractTextCandidate(entry) || ''
+  }
+
+  return {
+    title: String(entry.title || entry.name || resource.title || resource.name || path || `Content ${index + 1}`).trim(),
+    text: String(text || '').trim(),
+    source,
+    uri: normalizeInlineUri(source, mimeType, entry.data || entry.blob || resource.data || resource.blob || ''),
+    mimeType,
+    path,
+    kind: guessMediaKind(path, mimeType),
+    description: String(entry.description || resource.description || '').trim(),
+    sizeBytes: coerceInt(entry.size_bytes ?? entry.sizeBytes ?? entry.bytes ?? resource.size_bytes ?? resource.sizeBytes ?? resource.bytes)
+  }
+}
+
+const buildToolArtifactName = (toolName, artifactName, fallback) => {
+  const toolLabel = String(toolName || '').trim() || 'Tool Result'
+  const baseName = String(artifactName || '').trim() || fallback
+  if (baseName.toLowerCase().startsWith(toolLabel.toLowerCase())) {
+    return baseName
+  }
+  return `${toolLabel} - ${baseName}`
+}
+
+const buildEmbeddedResourceArtifacts = (entry, toolCall = {}) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return []
+  }
+
+  const toolName = toolCall.toolName || toolCall.tool_name || 'Tool Result'
+  const toolKind = toolCall.toolKind || toolCall.tool_kind || ''
+  const toolCallId = toolCall.id || toolCall.tool_call_id || ''
+  const stepId = toolCall.stepId || toolCall.step_id || ''
+  const candidates = [entry]
+  if (entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)) {
+    candidates.push(entry.resource)
+  }
+
+  const promoted = []
+  for (const candidate of candidates) {
+    const directoryTree = normalizeDirectoryTree(candidate)
+    if (directoryTree) {
+      promoted.push(normalizeArtifact({
+        artifact_type: 'directory_tree',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, directoryTree.title, 'Directory Tree'),
+        payload: directoryTree,
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
+        }
+      }))
+    }
+
+    const documentPages = normalizeDocumentPages(candidate)
+    if (documentPages) {
+      promoted.push(normalizeArtifact({
+        artifact_type: 'document_pages',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, documentPages.title, 'Document Pages'),
+        payload: documentPages,
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
+        }
+      }))
+    }
+
+    const archiveBundle = normalizeArchiveBundle(candidate)
+    if (archiveBundle) {
+      promoted.push(normalizeArtifact({
+        artifact_type: 'archive_bundle',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, archiveBundle.title, 'Archive Bundle'),
+        payload: archiveBundle,
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
+        }
+      }))
+    }
+  }
+
+  return mergeArtifacts(promoted)
+}
+
+export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}) => {
   const payload = parseJSON(result, result)
   if (!payload || typeof payload !== 'object') {
     return []
   }
 
   const toolName = toolCall.toolName || toolCall.tool_name || 'Tool Result'
+  const toolKind = toolCall.toolKind || toolCall.tool_kind || ''
+  const toolCallId = toolCall.id || toolCall.tool_call_id || ''
+  const stepId = toolCall.stepId || toolCall.step_id || ''
+  const includeAnswer = options.includeAnswer !== false
   const structuredContent = payload.structured_content ?? payload.structuredContent
   const text = isNonEmptyString(payload.text) ? payload.text.trim() : ''
-  const contentItems = normalizeMCPContentItems(payload.content)
+  const promoted = []
 
   if (structuredContent !== null && structuredContent !== undefined && structuredContent !== '') {
-    const artifacts = buildArtifactsFromStructuredResult(structuredContent, text)
-    if (artifacts.length > 0) {
-      return artifacts.map((artifact) => ({
+    promoted.push(...buildArtifactsFromStructuredResult(structuredContent, text)
+      .filter((artifact) => includeAnswer || artifact.artifactType !== 'answer')
+      .map((artifact) => normalizeArtifact({
         ...artifact,
-        name: artifact.name || `${toolName} Result`
-      }))
-    }
+        step_id: stepId || artifact.stepId || artifact.step_id || '',
+        name: buildToolArtifactName(toolName, artifact.name, 'Result'),
+        metadata: {
+          ...artifact.metadata,
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
+        }
+      })))
+  }
+
+  const contentItems = []
+  const contentCodeFiles = []
+  const contentMediaItems = []
+  const contentFileBundle = []
+  if (Array.isArray(payload.content)) {
+    payload.content.forEach((entry, index) => {
+      const embeddedArtifacts = buildEmbeddedResourceArtifacts(entry, toolCall)
+      if (embeddedArtifacts.length > 0) {
+        promoted.push(...embeddedArtifacts)
+        return
+      }
+
+      const core = extractContentCore(entry, index)
+      const parsedText = parseJSONLike(core.text)
+      if (parsedText && typeof parsedText === 'object') {
+        promoted.push(...buildArtifactsFromStructuredResult(parsedText)
+          .filter((artifact) => includeAnswer || artifact.artifactType !== 'answer')
+          .map((artifact) => normalizeArtifact({
+            ...artifact,
+            step_id: stepId || artifact.stepId || artifact.step_id || '',
+            name: buildToolArtifactName(toolName, artifact.name, 'Result'),
+            metadata: {
+              ...artifact.metadata,
+              source: 'tool_call',
+              tool_name: toolName,
+              tool_kind: toolKind,
+              tool_call_id: toolCallId,
+              promoted_to_run: true
+            }
+          })))
+        return
+      }
+
+      if (['image', 'video', 'audio'].includes(core.kind) && core.uri) {
+        contentMediaItems.push({
+          title: core.title,
+          uri: core.uri,
+          mime_type: core.mimeType,
+          kind: core.kind,
+          alt: core.description || core.title,
+          path: core.path,
+          source: core.source,
+          size_bytes: core.sizeBytes
+        })
+        return
+      }
+
+      if (core.text && isCodeLikeContent(core.path, core.mimeType)) {
+        contentCodeFiles.push({
+          path: core.path || core.title,
+          language: guessLanguage(core.path, core.mimeType),
+          content: core.text,
+          metadata: {
+            source: core.source,
+            mime_type: core.mimeType
+          }
+        })
+        return
+      }
+
+      if (core.text) {
+        contentItems.push({
+          title: core.title,
+          text: core.text,
+          source: core.source || core.mimeType
+        })
+        return
+      }
+
+      if (core.uri || core.path) {
+        contentFileBundle.push({
+          name: core.title,
+          path: core.path,
+          uri: core.uri,
+          mime_type: core.mimeType,
+          size_bytes: core.sizeBytes,
+          description: core.description,
+          preview_text: '',
+          source: core.source
+        })
+      }
+    })
+  }
+
+  if (contentCodeFiles.length > 0) {
+    promoted.push(normalizeArtifact({
+      artifact_type: 'code_files',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, '', 'Files'),
+      payload: {
+        files: contentCodeFiles
+      },
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true
+      }
+    }))
+  }
+
+  if (contentMediaItems.length > 0) {
+    promoted.push(normalizeArtifact({
+      artifact_type: 'media_gallery',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, '', 'Media'),
+      payload: {
+        items: contentMediaItems
+      },
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true
+      }
+    }))
+  }
+
+  if (contentFileBundle.length > 0) {
+    promoted.push(normalizeArtifact({
+      artifact_type: 'file_bundle',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, '', 'Files'),
+      payload: {
+        files: contentFileBundle
+      },
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true
+      }
+    }))
   }
 
   if (contentItems.length > 0) {
-    return [
+    promoted.push(normalizeArtifact({
+      artifact_type: 'document_excerpt',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, '', 'Preview'),
+      payload: {
+        items: contentItems
+      },
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true
+      }
+    }))
+  }
+
+  if (promoted.length > 0) {
+    return mergeArtifacts(promoted)
+  }
+
+  const fallbackContentItems = normalizeMCPContentItems(payload.content)
+  if (fallbackContentItems.length > 0) {
+    return mergeArtifacts([
       normalizeArtifact({
         artifact_type: 'document_excerpt',
-        name: `${toolName} Preview`,
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, '', 'Preview'),
         payload: {
-          items: contentItems.map((item) => ({
+          items: fallbackContentItems.map((item) => ({
             title: item.title,
             text: item.text,
             source: item.source
           }))
         },
         metadata: {
-          tool_kind: toolCall.toolKind || toolCall.tool_kind || '',
-          source: 'tool_call'
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
         }
       })
-    ]
+    ])
   }
 
   if (text) {
-    return [
+    return mergeArtifacts([
       normalizeArtifact({
         artifact_type: 'document_excerpt',
-        name: `${toolName} Preview`,
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, '', 'Preview'),
         payload: {
           items: [
             {
@@ -378,14 +1997,26 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}) => {
           ]
         },
         metadata: {
-          tool_kind: toolCall.toolKind || toolCall.tool_kind || '',
-          source: 'tool_call'
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
         }
       })
-    ]
+    ])
   }
 
   return []
+}
+
+export const buildRunArtifactsFromToolCalls = (toolCalls = [], existingArtifacts = []) => {
+  const promoted = Array.isArray(toolCalls)
+    ? toolCalls
+      .filter((toolCall) => (toolCall?.status || '') === 'completed')
+      .flatMap((toolCall) => buildArtifactsFromToolResult(toolCall?.result || {}, toolCall, { includeAnswer: false }))
+    : []
+  return mergeArtifacts(existingArtifacts, promoted)
 }
 
 export const normalizeRunResult = (raw = {}) => {
@@ -398,13 +2029,13 @@ export const normalizeRunResult = (raw = {}) => {
     : ''
   const answerText = finalOutputText || legacyFinalOutput || extractTextCandidate(finalOutputJson)
   const explicitArtifacts = Array.isArray(raw.artifacts) ? raw.artifacts.map(normalizeArtifact) : []
-  const derivedArtifacts = explicitArtifacts.length > 0 ? explicitArtifacts : buildArtifactsFromStructuredResult(finalOutputJson, answerText)
+  const derivedArtifacts = buildArtifactsFromStructuredResult(finalOutputJson, answerText)
 
   return {
     finalOutput: legacyFinalOutput || answerText,
     finalOutputText: answerText,
     finalOutputJson,
-    artifacts: derivedArtifacts
+    artifacts: mergeArtifacts(explicitArtifacts, derivedArtifacts)
   }
 }
 
@@ -428,8 +2059,14 @@ export const getRunAnswerText = (run = {}) => {
 export const artifactTypeLabel = (type) => {
   const labels = {
     answer: '回答',
+    archive_bundle: '压缩包清单',
     code_files: '代码文件',
     citations: '引用',
+    directory_tree: '目录树',
+    document_pages: '多页文档',
+    file_bundle: '附件文件',
+    media_gallery: '媒体资源',
+    paged_collection: '分页结果',
     review_findings: '审查发现',
     task_plan: '任务计划',
     table: '表格',

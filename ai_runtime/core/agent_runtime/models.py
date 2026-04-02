@@ -9,12 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field
 RunStatus = Literal["queued", "running", "waiting_user", "completed", "failed", "cancelled"]
 StepStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 ToolCallStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
-PlannerActionType = Literal["final_answer", "tool_call", "ask_user"]
+PlannerActionType = Literal["final_answer", "tool_call", "ask_user", "delegate"]
 PlannerStepStatus = Literal["completed", "in_progress", "pending"]
 ArtifactType = Literal[
     "answer",
     "code_files",
     "citations",
+    "file_bundle",
+    "media_gallery",
+    "paged_collection",
     "review_findings",
     "task_plan",
     "table",
@@ -141,6 +144,9 @@ class PlannerAction(BaseModel):
     question: Optional[str] = None
     tool_name: Optional[str] = None
     tool_arguments: Dict[str, Any] = Field(default_factory=dict)
+    delegate_target: Optional[str] = None
+    delegate_task: Optional[str] = None
+    delegate_input: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PlannerStep(BaseModel):

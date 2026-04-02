@@ -4,6 +4,7 @@
       <div>
         <h3>结构化结果</h3>
         <p>优先展示运行产物，而不是把所有结果压平成一段 markdown。</p>
+        <p v-if="surfaceSummary" class="surface-summary">{{ surfaceSummary }}</p>
       </div>
       <span class="panel-count">{{ artifactCount }}</span>
     </div>
@@ -13,7 +14,7 @@
     </div>
 
     <div v-else class="artifact-list">
-      <article v-for="artifact in answerArtifacts" :key="artifact.id || artifact.name" class="artifact-card answer-card">
+      <article v-for="artifact in answerArtifacts" :key="artifact.clientKey" class="artifact-card answer-card">
         <div class="artifact-head">
           <div>
             <div class="artifact-kicker">回答</div>
@@ -25,23 +26,35 @@
 
       <AgentFindingsCard
         v-for="artifact in findingArtifacts"
-        :key="artifact.id || artifact.name"
+        :key="artifact.clientKey"
         :artifact="artifact"
       />
 
       <AgentCitationsCard
         v-for="artifact in citationArtifacts"
-        :key="artifact.id || artifact.name"
+        :key="artifact.clientKey"
         :artifact="artifact"
       />
 
       <AgentCodeFilesCard
         v-for="artifact in codeFileArtifacts"
-        :key="artifact.id || artifact.name"
+        :key="artifact.clientKey"
         :artifact="artifact"
       />
 
-      <article v-for="artifact in planArtifacts" :key="artifact.id || artifact.name" class="artifact-card">
+      <AgentRichArtifactCard
+        v-for="artifact in directoryTreeArtifacts"
+        :key="artifact.clientKey"
+        :artifact="artifact"
+      />
+
+      <AgentRichArtifactCard
+        v-for="artifact in pagedArtifacts"
+        :key="artifact.clientKey"
+        :artifact="artifact"
+      />
+
+      <article v-for="artifact in planArtifacts" :key="artifact.clientKey" class="artifact-card">
         <div class="artifact-head">
           <div>
             <div class="artifact-kicker">任务计划</div>
@@ -51,7 +64,7 @@
         <pre>{{ formatJSON(artifact.payload) }}</pre>
       </article>
 
-      <article v-for="artifact in tableArtifacts" :key="artifact.id || artifact.name" class="artifact-card">
+      <article v-for="artifact in tableArtifacts" :key="artifact.clientKey" class="artifact-card">
         <div class="artifact-head">
           <div>
             <div class="artifact-kicker">表格</div>
@@ -74,7 +87,7 @@
         </div>
       </article>
 
-      <article v-for="artifact in excerptArtifacts" :key="artifact.id || artifact.name" class="artifact-card">
+      <article v-for="artifact in excerptArtifacts" :key="artifact.clientKey" class="artifact-card">
         <div class="artifact-head">
           <div>
             <div class="artifact-kicker">文档摘录</div>
@@ -89,6 +102,30 @@
           </section>
         </div>
       </article>
+
+      <AgentRichArtifactCard
+        v-for="artifact in documentPageArtifacts"
+        :key="artifact.clientKey"
+        :artifact="artifact"
+      />
+
+      <AgentRichArtifactCard
+        v-for="artifact in mediaArtifacts"
+        :key="artifact.clientKey"
+        :artifact="artifact"
+      />
+
+      <AgentRichArtifactCard
+        v-for="artifact in fileBundleArtifacts"
+        :key="artifact.clientKey"
+        :artifact="artifact"
+      />
+
+      <AgentRichArtifactCard
+        v-for="artifact in archiveArtifacts"
+        :key="artifact.clientKey"
+        :artifact="artifact"
+      />
 
       <article v-if="hasStructuredJson" class="artifact-card">
         <div class="artifact-head">
@@ -109,6 +146,7 @@ import { renderMarkdown } from '@/utils/markdown'
 import AgentCitationsCard from './AgentCitationsCard.vue'
 import AgentCodeFilesCard from './AgentCodeFilesCard.vue'
 import AgentFindingsCard from './AgentFindingsCard.vue'
+import AgentRichArtifactCard from './AgentRichArtifactCard.vue'
 
 const props = defineProps({
   artifacts: {
@@ -118,6 +156,10 @@ const props = defineProps({
   finalOutputJson: {
     type: [Object, Array, String, Number, Boolean],
     default: null
+  },
+  surfaceMeta: {
+    type: Object,
+    default: null
   }
 })
 
@@ -125,25 +167,40 @@ const answerArtifacts = computed(() => props.artifacts.filter((artifact) => arti
 const findingArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'review_findings'))
 const citationArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'citations'))
 const codeFileArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'code_files'))
+const directoryTreeArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'directory_tree'))
+const pagedArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'paged_collection'))
 const planArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'task_plan'))
 const tableArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'table'))
+const documentPageArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'document_pages'))
 const excerptArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'document_excerpt'))
+const mediaArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'media_gallery'))
+const archiveArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'archive_bundle'))
+const fileBundleArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'file_bundle'))
 const artifactCount = computed(() => props.artifacts.length)
 const hasStructuredJson = computed(() => props.finalOutputJson !== null && props.finalOutputJson !== undefined)
+const surfaceSummary = computed(() => {
+  const meta = props.surfaceMeta
+  if (!meta || typeof meta !== 'object') return ''
+  if (meta.hasEmptyEventHistory) {
+    return '当前结果面直接由持久化 run 快照恢复；事件历史为空时也会保持相同展示。'
+  }
+  if (meta.resumed) {
+    return `当前展示第 ${meta.attemptIndex || 1} 轮执行结果，已从最近一次恢复边界重新回放。`
+  }
+  if (meta.source === 'event_replay') {
+    return '当前结果面由 run events 回放恢复，并与实时流式 patch 共用同一套语义。'
+  }
+  return ''
+})
 
 const answerText = (artifact) => String(artifact?.payload?.text || '').trim()
 const formatJSON = (value) => JSON.stringify(value || {}, null, 2)
 const tableColumns = (artifact) => Array.isArray(artifact?.payload?.columns) ? artifact.payload.columns : []
 const tableRows = (artifact) => Array.isArray(artifact?.payload?.rows) ? artifact.payload.rows : []
 const excerptItems = (artifact) => Array.isArray(artifact?.payload?.items) ? artifact.payload.items : []
-
 const displayCell = (value) => {
-  if (value === null || value === undefined) {
-    return ''
-  }
-  if (typeof value === 'object') {
-    return JSON.stringify(value)
-  }
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
 }
 </script>
@@ -173,6 +230,11 @@ const displayCell = (value) => {
 .panel-head p {
   color: var(--gray-600);
   font-size: 14px;
+}
+
+.surface-summary {
+  margin-top: 8px;
+  color: var(--primary-700);
 }
 
 .panel-count {
@@ -274,11 +336,61 @@ th {
   color: var(--gray-700);
 }
 
+.file-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
 .excerpt-source {
   display: inline-block;
   margin-top: 10px;
   font-size: 12px;
   color: var(--gray-500);
+}
+
+.artifact-meta {
+  color: var(--gray-500);
+  font-size: 12px;
+}
+
+.media-grid {
+  margin-top: 14px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.media-card {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  overflow: hidden;
+  background: #fcfdfd;
+}
+
+.media-preview,
+.media-fallback {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.1), rgba(15, 23, 42, 0.08));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary-700);
+  font-weight: 700;
+}
+
+.media-copy {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+}
+
+.media-copy span {
+  color: var(--gray-500);
+  font-size: 12px;
 }
 
 pre {

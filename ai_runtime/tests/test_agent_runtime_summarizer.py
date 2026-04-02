@@ -76,3 +76,38 @@ def test_summarizer_normalizes_allof_schema_before_rendering_prompt():
     assert "\"citations\"" in prompt
     assert "\"allOf\"" not in prompt
     assert "When citations is present, include sources that directly support the answer." in prompt
+
+
+def test_summarizer_prompt_mentions_required_fields_and_enum_guidance():
+    summarizer = AgentSummarizer()
+
+    prompt = summarizer._build_system_prompt(
+        system_prompt="",
+        output_schema={
+            "type": "object",
+            "required": ["answer", "status"],
+            "properties": {
+                "answer": {"type": "string"},
+                "status": {"type": "string", "enum": ["done", "blocked"]},
+                "task_plan": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "status": {"type": "string", "enum": ["completed", "pending"]},
+                                },
+                            },
+                        }
+                    },
+                },
+            },
+        },
+    )
+
+    assert "Do not omit required fields: answer, status." in prompt
+    assert "When status is present, use one of: done, blocked." in prompt
+    assert "\"status\": \"done\"" in prompt

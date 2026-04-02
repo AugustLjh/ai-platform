@@ -92,6 +92,7 @@
           <AgentArtifactPanel
             :artifacts="surfaceArtifacts"
             :final-output-json="surfaceOutputJson"
+            :surface-meta="executionSurface"
           />
         </div>
       </div>
@@ -155,6 +156,7 @@
         <AgentArtifactPanel
           :artifacts="artifacts"
           :final-output-json="run?.finalOutputJson"
+          :surface-meta="executionSurface"
         />
         <AgentPlanPanel :plan="plan" />
       </div>
@@ -193,6 +195,7 @@ const steps = computed(() => agentsStore.steps)
 const toolCalls = computed(() => agentsStore.toolCalls)
 const plan = computed(() => agentsStore.plan)
 const artifacts = computed(() => agentsStore.artifacts)
+const executionSurface = computed(() => agentsStore.executionSurface)
 const errorMessage = computed(() => agentsStore.error || '')
 
 const statusMap = {
