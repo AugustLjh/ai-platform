@@ -260,8 +260,8 @@ func TestMaskSensitiveObjectMasksNestedSecrets(t *testing.T) {
 
 func TestExtractSubagentRuntimeMetadata(t *testing.T) {
 	metadata, err := json.Marshal(map[string]any{
-		"target_agent_definition_id": "agent-reviewer",
-		"handoff_prompt":             "Review with a strict checklist.",
+		"host_agent_definition_id": "agent-reviewer",
+		"handoff_prompt":           "Review with a strict checklist.",
 	})
 	if err != nil {
 		t.Fatalf("failed to encode metadata: %v", err)
@@ -272,7 +272,7 @@ func TestExtractSubagentRuntimeMetadata(t *testing.T) {
 		t.Fatalf("extractSubagentRuntimeMetadata returned error: %v", err)
 	}
 	if targetAgentDefinitionID != "agent-reviewer" {
-		t.Fatalf("expected target agent definition id agent-reviewer, got %s", targetAgentDefinitionID)
+		t.Fatalf("expected host agent definition id agent-reviewer, got %s", targetAgentDefinitionID)
 	}
 	if handoffPrompt != "Review with a strict checklist." {
 		t.Fatalf("expected handoff prompt to round-trip, got %s", handoffPrompt)
@@ -322,14 +322,14 @@ func TestExtractSubagentRuntimeMetadataAllowsManagedCapabilityWithoutCompatibili
 
 func TestMergeSubagentMetadataPreservesRuntimeBridgeAndSlug(t *testing.T) {
 	metadata, err := json.Marshal(map[string]any{
+		"legacy_setting":             true,
 		"target_agent_definition_id": "agent-reviewer",
-		"handoff_prompt":             "Use a strict checklist.",
 	})
 	if err != nil {
 		t.Fatalf("failed to encode metadata: %v", err)
 	}
 
-	merged, err := mergeSubagentMetadata(metadata, "managed-reviewer")
+	merged, err := mergeSubagentMetadata(metadata, "managed-reviewer", "agent-reviewer", "Use a strict checklist.")
 	if err != nil {
 		t.Fatalf("mergeSubagentMetadata returned error: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestMergeSubagentMetadataPreservesRuntimeBridgeAndSlug(t *testing.T) {
 		t.Fatalf("extractSubagentRuntimeMetadata returned error: %v", err)
 	}
 	if targetAgentDefinitionID != "agent-reviewer" {
-		t.Fatalf("expected target_agent_definition_id to survive merge, got %s", targetAgentDefinitionID)
+		t.Fatalf("expected host agent definition id to survive merge, got %s", targetAgentDefinitionID)
 	}
 	if handoffPrompt != "Use a strict checklist." {
 		t.Fatalf("expected handoff_prompt to survive merge, got %s", handoffPrompt)
@@ -347,10 +347,20 @@ func TestMergeSubagentMetadataPreservesRuntimeBridgeAndSlug(t *testing.T) {
 	if extractSubagentSlug(merged) != "managed-reviewer" {
 		t.Fatalf("expected slug to be injected, got %s", extractSubagentSlug(merged))
 	}
+	payload, ok := parseJSONRaw(merged, `{}`).(map[string]any)
+	if !ok {
+		t.Fatalf("expected merged metadata object, got %#v", parseJSONRaw(merged, `{}`))
+	}
+	if _, exists := payload["target_agent_definition_id"]; exists {
+		t.Fatal("expected legacy target_agent_definition_id key to be removed during canonicalization")
+	}
+	if payload["legacy_setting"] != true {
+		t.Fatalf("expected unrelated metadata to survive merge, got %#v", payload["legacy_setting"])
+	}
 }
 
 func TestMergeSubagentMetadataSupportsManagedCapabilityWithoutRuntimeBridge(t *testing.T) {
-	merged, err := mergeSubagentMetadata(json.RawMessage(`{"review_required":true}`), "managed-reviewer")
+	merged, err := mergeSubagentMetadata(json.RawMessage(`{"review_required":true}`), "managed-reviewer", "", "")
 	if err != nil {
 		t.Fatalf("mergeSubagentMetadata returned error: %v", err)
 	}
@@ -367,6 +377,32 @@ func TestMergeSubagentMetadataSupportsManagedCapabilityWithoutRuntimeBridge(t *t
 	}
 	if extractSubagentSlug(merged) != "managed-reviewer" {
 		t.Fatalf("expected slug to be injected, got %s", extractSubagentSlug(merged))
+	}
+}
+
+func TestMergeSubagentMetadataCanonicalizesLegacyHostAgentKeyWithoutExplicitOverride(t *testing.T) {
+	merged, err := mergeSubagentMetadata(json.RawMessage(`{"target_agent_definition_id":"agent-reviewer"}`), "managed-reviewer", "", "")
+	if err != nil {
+		t.Fatalf("mergeSubagentMetadata returned error: %v", err)
+	}
+
+	targetAgentDefinitionID, _, err := extractSubagentRuntimeMetadata(merged)
+	if err != nil {
+		t.Fatalf("extractSubagentRuntimeMetadata returned error: %v", err)
+	}
+	if targetAgentDefinitionID != "agent-reviewer" {
+		t.Fatalf("expected legacy target to survive canonicalization, got %s", targetAgentDefinitionID)
+	}
+
+	payload, ok := parseJSONRaw(merged, `{}`).(map[string]any)
+	if !ok {
+		t.Fatalf("expected merged metadata object, got %#v", parseJSONRaw(merged, `{}`))
+	}
+	if payload["host_agent_definition_id"] != "agent-reviewer" {
+		t.Fatalf("expected canonical host_agent_definition_id key, got %#v", payload["host_agent_definition_id"])
+	}
+	if _, exists := payload["target_agent_definition_id"]; exists {
+		t.Fatal("expected legacy target_agent_definition_id key to be removed")
 	}
 }
 

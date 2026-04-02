@@ -2,8 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildInvocationProtocolEntry,
   collectRunTreeInvocations,
   collectRunTreeNodes,
+  getInvocationQuestion,
   getInvocationReviewResult,
   normalizeRunTreeNode,
   reviewDecisionLabel,
@@ -181,4 +183,77 @@ test('getInvocationReviewResult and summarizeInvocationReview normalize reviewer
   assert.equal(reviewResult.mode, 'judge')
   assert.equal(reviewDecisionLabel(reviewResult.decision), '通过但有提示')
   assert.equal(summarizeInvocationReview(invocation), 'Judge 通过但有提示 · 1 条 finding')
+})
+
+test('getInvocationQuestion and buildInvocationProtocolEntry expose waiting-user protocol details', () => {
+  const item = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'completed', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-1',
+          status: 'completed',
+          child_run_id: 'run-child',
+          request_payload: {
+            protocol_version: 'managed-subagent.v1',
+            task: {
+              message: 'Review the rollout plan',
+              reason: 'Need a bounded specialist verification pass.'
+            },
+            constraints: ['focus_paths: db/alembic/versions/example.py']
+          },
+          result_payload: {
+            status: 'waiting_user',
+            partial_result: {
+              question: 'Need the migration rollout window.'
+            }
+          }
+        },
+        child_run: {
+          depth: 1,
+          run: {
+            id: 'run-child',
+            status: 'waiting_user',
+            final_output_text: 'Need the migration rollout window.'
+          },
+          invocations: []
+        }
+      }
+    ]
+  }).invocations[0]
+
+  assert.equal(getInvocationQuestion(item.invocation, item.childRun), 'Need the migration rollout window.')
+  assert.deepEqual(buildInvocationProtocolEntry(item), {
+    id: 'invocation-1',
+    target: '未命名专家能力',
+    status: 'waiting_user',
+    protocolVersion: 'managed-subagent.v1',
+    taskMessage: 'Review the rollout plan',
+    delegateReason: 'Need a bounded specialist verification pass.',
+    constraints: ['focus_paths: db/alembic/versions/example.py'],
+    question: 'Need the migration rollout window.',
+    reviewSummary: '',
+    reviewResult: {
+      protocolVersion: '',
+      required: false,
+      mode: 'none',
+      approved: null,
+      decision: 'not_required',
+      childStatus: '',
+      childRunId: '',
+      summary: '',
+      conclusion: '',
+      findingCount: 0,
+      blockingFindingCount: 0,
+      blockingSeverities: [],
+      findings: [],
+      testGaps: [],
+      explicitDecision: '',
+      error: ''
+    },
+    childRunId: 'run-child',
+    startedAt: null,
+    completedAt: null
+  })
 })

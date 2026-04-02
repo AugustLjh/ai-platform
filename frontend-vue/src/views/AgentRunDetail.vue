@@ -172,6 +172,7 @@
         <AgentPlanPanel :plan="plan" />
       </div>
       <AgentRunTree v-if="currentRunTree" :root="currentRunTree" />
+      <AgentSubagentProtocolPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
       <AgentSubagentInvocationPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
       <AgentTimeline :events="runEvents" />
       <AgentStepList :steps="steps" :tool-calls="toolCalls" />
@@ -187,6 +188,7 @@ import AgentPlanPanel from '@/components/agent/AgentPlanPanel.vue'
 import AgentStepList from '@/components/agent/AgentStepList.vue'
 import AgentTimeline from '@/components/agent/AgentTimeline.vue'
 import AgentRunTree from '@/components/agent/AgentRunTree.vue'
+import AgentSubagentProtocolPanel from '@/components/agent/AgentSubagentProtocolPanel.vue'
 import AgentSubagentInvocationPanel from '@/components/agent/AgentSubagentInvocationPanel.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'

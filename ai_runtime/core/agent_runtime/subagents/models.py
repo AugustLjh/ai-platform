@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 SubagentRunStatus = Literal["queued", "running", "waiting_user", "completed", "failed", "cancelled"]
@@ -32,6 +32,19 @@ class SubagentTarget(BaseModel):
     review_policy: Dict[str, Any] = Field(default_factory=dict)
     runtime_policy: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _hydrate_host_agent_alias(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("agent_definition_id"):
+            return data
+        alias = data.get("host_agent_definition_id") or data.get("target_agent_definition_id")
+        if alias:
+            data = dict(data)
+            data["agent_definition_id"] = alias
+        return data
 
     def uses_managed_capability(self) -> bool:
         return bool(

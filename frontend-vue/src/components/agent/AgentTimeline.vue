@@ -55,6 +55,7 @@ const summariseEvent = (event) => {
   if (event.eventType.startsWith('subagent.')) {
     const target = summarizeInvocationTarget({
       requestPayload: {
+        ...(payload.handoff_envelope || payload.handoffEnvelope || {}),
         policy_snapshot: payload.subagent_target || payload.subagentTarget || {}
       },
       publicationId: payload.subagent_target?.publication_id || payload.subagentTarget?.publicationId || '',
@@ -62,7 +63,8 @@ const summariseEvent = (event) => {
     })
     const reviewResult = payload.review_result || payload.reviewResult || {}
     const childStatus = payload.child_status || payload.childStatus || payload.status || ''
-    const summary = payload.summary || payload.error || payload.final_output_text || ''
+    const task = payload.handoff_envelope?.task || payload.handoffEnvelope?.task || {}
+    const summary = payload.question || task.message || payload.summary || payload.error || payload.final_output_text || ''
     const parts = [target]
     if (reviewResult.mode && reviewResult.mode !== 'none') {
       parts.push(`${reviewModeLabel(reviewResult.mode)} ${reviewDecisionLabel(reviewResult.decision)}`)

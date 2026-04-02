@@ -12,6 +12,14 @@ const parseJSONSafe = (value, fallback) => {
   }
 }
 
+const firstNonEmptyString = (...values) => {
+  for (const value of values) {
+    const text = String(value || '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
 const normalizeReviewFinding = (raw = {}) => ({
   title: raw.title || raw.summary || raw.name || '未命名问题',
   description: raw.description || raw.details || raw.reason || '',
@@ -165,6 +173,59 @@ export const summarizeInvocationTask = (invocation) => {
     task.reason ||
     ''
   )
+}
+
+export const getInvocationProtocolVersion = (invocation) => firstNonEmptyString(
+  invocation?.requestPayload?.protocol_version,
+  invocation?.requestPayload?.protocolVersion,
+  invocation?.resultPayload?.protocol_version,
+  invocation?.resultPayload?.protocolVersion
+)
+
+export const getInvocationQuestion = (invocation, childRun = null) => {
+  const partialResult = invocation?.resultPayload?.partial_result || invocation?.resultPayload?.partialResult || {}
+  return firstNonEmptyString(
+    partialResult.question,
+    childRun?.run?.finalOutputText,
+    childRun?.run?.finalOutput,
+    invocation?.resultPayload?.final_result?.final_output_text,
+    invocation?.resultPayload?.finalResult?.finalOutputText
+  )
+}
+
+export const getInvocationConstraints = (invocation) => {
+  const requestPayload = invocation?.requestPayload || {}
+  return Array.isArray(requestPayload.constraints)
+    ? requestPayload.constraints.map((item) => String(item || '').trim()).filter(Boolean)
+    : []
+}
+
+export const getInvocationTaskPayload = (invocation) => {
+  const requestPayload = invocation?.requestPayload || {}
+  return requestPayload.task || {}
+}
+
+export const buildInvocationProtocolEntry = (item = {}) => {
+  const invocation = item.invocation || {}
+  const childRun = item.childRun || null
+  const task = getInvocationTaskPayload(invocation)
+  const reviewResult = getInvocationReviewResult(invocation)
+  const question = getInvocationQuestion(invocation, childRun)
+  return {
+    id: invocation.id || '',
+    target: summarizeInvocationTarget(invocation),
+    status: childRun?.run?.status || invocation?.resultPayload?.status || invocation.status || 'pending',
+    protocolVersion: getInvocationProtocolVersion(invocation),
+    taskMessage: firstNonEmptyString(task.message, task.delegate_task, task.delegateTask),
+    delegateReason: firstNonEmptyString(task.reason),
+    constraints: getInvocationConstraints(invocation),
+    question,
+    reviewSummary: summarizeInvocationReview(invocation),
+    reviewResult,
+    childRunId: invocation.childRunId || childRun?.run?.id || '',
+    startedAt: invocation.startedAt || null,
+    completedAt: invocation.completedAt || null
+  }
 }
 
 export const getInvocationReviewResult = (invocation) => (

@@ -1161,6 +1161,14 @@ class AgentOrchestrator:
         handoff_envelope = delegation.metadata.get("handoff_envelope") if isinstance(delegation.metadata, dict) else None
         review_result = delegation.metadata.get("review_result") if isinstance(delegation.metadata, dict) else None
         handoff_summary = self._summarize_handoff_envelope(handoff_envelope)
+        partial_result = None
+        child_question = None
+        if delegation.status == "waiting_user":
+            partial_result = {
+                "question": delegation.final_output or delegation.final_output_text,
+                "artifacts": delegation.artifacts,
+            }
+            child_question = delegation.final_output or delegation.final_output_text
         step_output = {
             "delegate_result": delegation.model_dump(mode="json"),
             "delegation_gate": gate,
@@ -1200,6 +1208,9 @@ class AgentOrchestrator:
             invocation_id=delegation.metadata.get("invocation_id") if isinstance(delegation.metadata, dict) else None,
             delegation_gate=gate,
             handoff=handoff_summary,
+            handoff_envelope=handoff_envelope,
+            partial_result=partial_result,
+            question=child_question,
         )
         await self._emit_step_event(
             run.id,

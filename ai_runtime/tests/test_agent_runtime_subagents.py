@@ -209,7 +209,7 @@ async def test_subagent_registry_prefers_database_bindings_over_metadata_fallbac
                     "name": "DB Review Specialist",
                     "description": "Bound from control plane",
                     "system_prompt": "Use a strict review checklist.",
-                    "metadata": {"target_agent_definition_id": "agent-reviewer", "handoff_prompt": "Review carefully."},
+                    "metadata": {"host_agent_definition_id": "agent-reviewer", "handoff_prompt": "Review carefully."},
                 }
             ]
         ),
@@ -528,6 +528,74 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
     assert "subagent.completed" in event_types
     completed_event = next(event for event in tracer.events if event["event_type"] == "subagent.completed")
     assert completed_event["payload"]["review_result"]["mode"] == "reviewer"
+
+
+async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_question():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+    )
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-1",
+        status="waiting_user",
+        target=target,
+        summary="Need the migration rollout window.",
+        final_output="Need the migration rollout window.",
+        final_output_text="Need the migration rollout window.",
+        artifacts=[{"artifact_type": "answer", "title": "Question"}],
+        metadata={
+            "invocation_id": "invocation-1",
+            "review_result": {
+                "protocol_version": "managed-subagent.review-result.v1",
+                "required": False,
+                "mode": "none",
+                "decision": "needs_input",
+            },
+            "handoff_envelope": {
+                "protocol_version": "managed-subagent.v1",
+                "task": {"message": "Review the rollout plan"},
+                "constraints": ["focus_paths: db/alembic/versions/example.py"],
+                "policy_snapshot": {"target": {"slug": "review-specialist"}},
+            },
+        },
+    )
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=FakeRunRepository(),
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=FakeHandoff(delegation),
+    )
+
+    observation = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={"step_history": [{"title": "Collected rollout context"}]},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist",
+                delegate_target="review-specialist",
+                delegate_task="Review the rollout plan",
+            ),
+            reasoning="Need a bounded follow-up review.",
+            iteration=2,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert observation["status"] == "completed"
+    waiting_event = next(event for event in tracer.events if event["event_type"] == "subagent.waiting_user")
+    assert waiting_event["payload"]["question"] == "Need the migration rollout window."
+    assert waiting_event["payload"]["partial_result"]["question"] == "Need the migration rollout window."
+    assert waiting_event["payload"]["handoff_envelope"]["protocol_version"] == "managed-subagent.v1"
 
 
 async def test_orchestrator_rejects_delegate_when_single_agent_gate_is_not_satisfied():

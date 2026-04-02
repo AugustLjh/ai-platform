@@ -42,6 +42,10 @@
           <span class="nav-icon">🔌</span>
           <span>MCP</span>
         </router-link>
+        <router-link v-if="isAdmin" to="/subagents" class="sidebar-nav-item">
+          <span class="nav-icon">🧩</span>
+          <span>专家能力</span>
+        </router-link>
         <router-link to="/settings" class="sidebar-nav-item">
           <span class="nav-icon">⚙️</span>
           <span>设置</span>
@@ -145,6 +149,7 @@ const toastStore = useToastStore()
 const sessions = computed(() => chatStore.sortedSessions)
 const currentSessionId = computed(() => chatStore.currentSessionId)
 const user = computed(() => authStore.user)
+const isAdmin = computed(() => String(user.value?.role || '').toLowerCase() === 'admin')
 
 const searchQuery = ref('')
 const pageSize = 50

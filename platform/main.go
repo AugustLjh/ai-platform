@@ -317,7 +317,20 @@ func main() {
 
 	mux.Handle("/api/v1/subagents/",
 		chain(
-			http.HandlerFunc(subagentHandler.HandleSubagentByID),
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/control-plane"):
+					subagentHandler.HandleSubagentControlPlane(w, r)
+				case strings.HasSuffix(r.URL.Path, "/versions"):
+					subagentHandler.HandleCreateSubagentVersion(w, r)
+				case strings.HasSuffix(r.URL.Path, "/publication"):
+					subagentHandler.HandleUpdateSubagentPublication(w, r)
+				case strings.HasSuffix(r.URL.Path, "/test-runs"):
+					subagentHandler.HandleSubagentTestRuns(w, r)
+				default:
+					subagentHandler.HandleSubagentByID(w, r)
+				}
+			}),
 			authMiddleware.Handler,
 			rateLimiter.Handler,
 			guardMiddleware.Handler,

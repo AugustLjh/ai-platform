@@ -165,6 +165,7 @@ class SubagentRegistry:
             )
             compatibility_target = _string_metadata_value(
                 merged_metadata,
+                "host_agent_definition_id",
                 "target_agent_definition_id",
                 "agent_definition_id",
             )
@@ -233,6 +234,7 @@ class SubagentRegistry:
 
             agent_definition_id = _string_metadata_value(
                 subagent_metadata,
+                "host_agent_definition_id",
                 "target_agent_definition_id",
                 "agent_definition_id",
             )
@@ -273,6 +275,7 @@ class SubagentRegistry:
                 **binding_metadata,
                 "subagent_definition_id": str(row["subagent_definition_id"]),
             }
+            merged_metadata.pop("host_agent_definition_id", None)
             merged_metadata.pop("target_agent_definition_id", None)
             merged_metadata.pop("agent_definition_id", None)
 
@@ -302,7 +305,13 @@ class SubagentRegistry:
             if not isinstance(entry, dict):
                 continue
 
-            definition_id = str(entry.get("agent_definition_id") or entry.get("id") or "").strip()
+            definition_id = str(
+                entry.get("host_agent_definition_id")
+                or entry.get("target_agent_definition_id")
+                or entry.get("agent_definition_id")
+                or entry.get("id")
+                or ""
+            ).strip()
             if not definition_id or definition_id in seen_definition_ids or definition_id == definition.id:
                 continue
 

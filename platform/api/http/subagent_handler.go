@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ai-platform/platform/database"
 	"github.com/ai-platform/platform/middleware"
 	"github.com/ai-platform/platform/service"
 )
@@ -105,6 +106,141 @@ func (h *SubagentHandler) HandleSubagentByID(w http.ResponseWriter, r *http.Requ
 	default:
 		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (h *SubagentHandler) HandleSubagentControlPlane(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	subagentID := extractSuffixID(r.URL.Path, "/api/v1/subagents/", "/control-plane")
+	if subagentID == "" {
+		respondError(w, "Invalid subagent id", http.StatusBadRequest)
+		return
+	}
+	controlPlane, err := h.agentService.GetSubagentControlPlane(user.TenantID, user.Role, subagentID)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		switch {
+		case errors.Is(err, service.ErrAgentUnauthorized):
+			statusCode = http.StatusForbidden
+		case errors.Is(err, database.ErrSubagentDefinitionNotFound):
+			statusCode = http.StatusNotFound
+		}
+		respondError(w, err.Error(), statusCode)
+		return
+	}
+	respondJSON(w, controlPlane, http.StatusOK)
+}
+
+func (h *SubagentHandler) HandleCreateSubagentVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	subagentID := extractSuffixID(r.URL.Path, "/api/v1/subagents/", "/versions")
+	if subagentID == "" {
+		respondError(w, "Invalid subagent id", http.StatusBadRequest)
+		return
+	}
+	var req service.SubagentVersionCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	controlPlane, err := h.agentService.CreateSubagentVersion(user.TenantID, user.ID, user.Role, subagentID, &req)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		switch {
+		case errors.Is(err, service.ErrAgentUnauthorized):
+			statusCode = http.StatusForbidden
+		case errors.Is(err, database.ErrSubagentDefinitionNotFound):
+			statusCode = http.StatusNotFound
+		}
+		respondError(w, err.Error(), statusCode)
+		return
+	}
+	respondJSON(w, controlPlane, http.StatusCreated)
+}
+
+func (h *SubagentHandler) HandleUpdateSubagentPublication(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	subagentID := extractSuffixID(r.URL.Path, "/api/v1/subagents/", "/publication")
+	if subagentID == "" {
+		respondError(w, "Invalid subagent id", http.StatusBadRequest)
+		return
+	}
+	var req service.SubagentPublicationUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	controlPlane, err := h.agentService.UpdateSubagentPublication(user.TenantID, user.ID, user.Role, subagentID, &req)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		switch {
+		case errors.Is(err, service.ErrAgentUnauthorized):
+			statusCode = http.StatusForbidden
+		case errors.Is(err, database.ErrSubagentDefinitionNotFound), errors.Is(err, database.ErrSubagentPublicationNotFound):
+			statusCode = http.StatusNotFound
+		}
+		respondError(w, err.Error(), statusCode)
+		return
+	}
+	respondJSON(w, controlPlane, http.StatusOK)
+}
+
+func (h *SubagentHandler) HandleSubagentTestRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	subagentID := extractSuffixID(r.URL.Path, "/api/v1/subagents/", "/test-runs")
+	if subagentID == "" {
+		respondError(w, "Invalid subagent id", http.StatusBadRequest)
+		return
+	}
+	var req service.SubagentTestRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	run, err := h.agentService.CreateSubagentTestRun(r.Context(), user.TenantID, user.ID, user.Role, subagentID, &req)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		switch {
+		case errors.Is(err, service.ErrAgentUnauthorized):
+			statusCode = http.StatusForbidden
+		case errors.Is(err, database.ErrSubagentDefinitionNotFound), errors.Is(err, database.ErrAgentDefinitionNotFound):
+			statusCode = http.StatusNotFound
+		}
+		respondError(w, err.Error(), statusCode)
+		return
+	}
+	respondJSON(w, run, http.StatusCreated)
 }
 
 func (h *SubagentHandler) HandleUpdateAgentSubagents(w http.ResponseWriter, r *http.Request) {

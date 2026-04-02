@@ -7,6 +7,7 @@ const History = () => import('../views/History.vue')
 const CostStats = () => import('../views/CostStats.vue')
 const ModelsManage = () => import('../views/ModelsManage.vue')
 const MCPManage = () => import('../views/MCPManage.vue')
+const SubagentManage = () => import('../views/SubagentManage.vue')
 const Profile = () => import('../views/Profile.vue')
 const Settings = () => import('../views/Settings.vue')
 const AgentsList = () => import('../views/AgentsList.vue')
@@ -55,6 +56,12 @@ const routes = [
     path: '/mcp',
     name: 'MCPManage',
     component: MCPManage,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/subagents',
+    name: 'SubagentManage',
+    component: SubagentManage,
     meta: { requiresAuth: true }
   },
   {

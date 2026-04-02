@@ -67,6 +67,7 @@ const normalizeSubagent = (raw = {}) => ({
   reviewPolicy: parseJSON(raw.review_policy || raw.reviewPolicy, {}),
   runtimePolicy: parseJSON(raw.runtime_policy || raw.runtimePolicy, {}),
   publicationMetadata: parseJSON(raw.publication_metadata || raw.publicationMetadata, {}),
+  hostAgentDefinitionId: raw.host_agent_definition_id || raw.hostAgentDefinitionId || raw.target_agent_definition_id || raw.targetAgentDefinitionId || '',
   targetAgentDefinitionId: raw.target_agent_definition_id || raw.targetAgentDefinitionId || '',
   handoffPrompt: raw.handoff_prompt || raw.handoffPrompt || '',
   createdAt: raw.created_at || raw.createdAt || null,

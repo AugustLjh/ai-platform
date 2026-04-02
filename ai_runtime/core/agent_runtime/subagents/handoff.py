@@ -212,6 +212,7 @@ class SubagentHandoff:
                     "invocation_id": invocation_id,
                     "parent_run_id": parent_run.id,
                     "parent_agent_definition_id": parent_run.agent_definition_id,
+                    "host_agent_definition_id": target.agent_definition_id,
                     "target_agent_definition_id": target.agent_definition_id,
                     "subagent_definition_id": target.subagent_definition_id,
                     "publication_id": target.publication_id,
@@ -282,6 +283,7 @@ class SubagentHandoff:
                 "review_policy": target.normalized_review_policy(),
                 "runtime_policy": target.runtime_policy,
                 "metadata": target.metadata,
+                "host_agent_definition_id": target.agent_definition_id,
                 "compatibility_target_agent_definition_id": target.agent_definition_id,
             }
         return metadata

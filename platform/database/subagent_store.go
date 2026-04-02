@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,6 +42,7 @@ type SubagentDefinition struct {
 	PublicationMetadata     json.RawMessage `json:"publication_metadata,omitempty"`
 	VersionID               string          `json:"version_id,omitempty"`
 	VersionNumber           int             `json:"version_number,omitempty"`
+	HostAgentDefinitionID   string          `json:"host_agent_definition_id,omitempty"`
 	TargetAgentDefinitionID string          `json:"target_agent_definition_id,omitempty"`
 	HandoffPrompt           string          `json:"handoff_prompt,omitempty"`
 	CreatedBy               *string         `json:"created_by,omitempty"`
@@ -51,24 +53,30 @@ type SubagentDefinition struct {
 }
 
 type SubagentDefinitionVersion struct {
-	ID                 string
-	DefinitionID       string
-	VersionNumber      int
-	LifecycleStatus    string
-	SystemPrompt       string
-	Model              string
-	Config             json.RawMessage
-	Metadata           json.RawMessage
-	OutputSchema       json.RawMessage
-	HandoffInputSchema json.RawMessage
-	ToolAllowlist      json.RawMessage
-	SkillAllowlist     json.RawMessage
-	MCPAllowlist       json.RawMessage
-	KnowledgePolicy    json.RawMessage
-	ReviewPolicy       json.RawMessage
-	RuntimePolicy      json.RawMessage
-	CreatedBy          *string
-	UpdatedBy          *string
+	ID                 string          `json:"id"`
+	DefinitionID       string          `json:"subagent_definition_id"`
+	VersionNumber      int             `json:"version_number"`
+	LifecycleStatus    string          `json:"lifecycle_status"`
+	SystemPrompt       string          `json:"system_prompt"`
+	Model              string          `json:"model,omitempty"`
+	Config             json.RawMessage `json:"config"`
+	Metadata           json.RawMessage `json:"metadata"`
+	OutputSchema       json.RawMessage `json:"output_schema"`
+	HandoffInputSchema json.RawMessage `json:"handoff_input_schema"`
+	ToolAllowlist      json.RawMessage `json:"tool_allowlist"`
+	SkillAllowlist     json.RawMessage `json:"skill_allowlist"`
+	MCPAllowlist       json.RawMessage `json:"mcp_allowlist"`
+	KnowledgePolicy    json.RawMessage `json:"knowledge_policy"`
+	ReviewPolicy       json.RawMessage `json:"review_policy"`
+	RuntimePolicy      json.RawMessage `json:"runtime_policy"`
+	PublicationID      string          `json:"publication_id,omitempty"`
+	PublicationStatus  string          `json:"publication_status,omitempty"`
+	PublicationScope   string          `json:"publication_scope,omitempty"`
+	IsPublished        bool            `json:"is_published"`
+	CreatedBy          *string         `json:"created_by,omitempty"`
+	UpdatedBy          *string         `json:"updated_by,omitempty"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
 type SubagentPublication struct {
@@ -81,6 +89,63 @@ type SubagentPublication struct {
 	Metadata     json.RawMessage
 	CreatedBy    *string
 	UpdatedBy    *string
+}
+
+type SubagentPublicationState struct {
+	ID                 string          `json:"id"`
+	DefinitionID       string          `json:"subagent_definition_id"`
+	VersionID          string          `json:"version_id"`
+	VersionNumber      int             `json:"version_number"`
+	TenantID           string          `json:"tenant_id,omitempty"`
+	PublicationScope   string          `json:"publication_scope"`
+	Status             string          `json:"status"`
+	Metadata           json.RawMessage `json:"metadata"`
+	AuthorizationCount int             `json:"authorization_count"`
+	CreatedBy          *string         `json:"created_by,omitempty"`
+	UpdatedBy          *string         `json:"updated_by,omitempty"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
+	ArchivedAt         *time.Time      `json:"archived_at,omitempty"`
+}
+
+type SubagentAuthorizedAgent struct {
+	AuthorizationID   string          `json:"authorization_id"`
+	PublicationID     string          `json:"publication_id"`
+	Status            string          `json:"status"`
+	Priority          int             `json:"priority"`
+	AgentDefinitionID string          `json:"agent_definition_id"`
+	AgentName         string          `json:"agent_name"`
+	AgentStatus       string          `json:"agent_status"`
+	BudgetPolicy      json.RawMessage `json:"budget_policy"`
+	Metadata          json.RawMessage `json:"metadata"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
+type SubagentControlPlane struct {
+	Definition     *SubagentDefinition          `json:"definition"`
+	Versions       []*SubagentDefinitionVersion `json:"versions"`
+	Publication    *SubagentPublicationState    `json:"publication,omitempty"`
+	Authorizations []*SubagentAuthorizedAgent   `json:"authorizations"`
+	Governance     *SubagentGovernanceSummary   `json:"governance,omitempty"`
+}
+
+type SubagentGovernanceWarning struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+}
+
+type SubagentGovernanceSummary struct {
+	CompatibilityMode          bool                         `json:"compatibility_mode"`
+	HostAgentDefinitionID      string                       `json:"host_agent_definition_id,omitempty"`
+	LatestVersionNumber        int                          `json:"latest_version_number"`
+	PublishedVersionNumber     int                          `json:"published_version_number"`
+	IsPublishedVersionLatest   bool                         `json:"is_published_version_latest"`
+	AuthorizationCount         int                          `json:"authorization_count"`
+	EnabledAuthorizationCount  int                          `json:"enabled_authorization_count"`
+	InactiveAuthorizationCount int                          `json:"inactive_authorization_count"`
+	Warnings                   []*SubagentGovernanceWarning `json:"warnings"`
 }
 
 type SubagentStore struct {
@@ -173,6 +238,82 @@ func scanManagedSubagent(row scanTarget) (*SubagentDefinition, error) {
 	return item, nil
 }
 
+func scanSubagentVersion(row scanTarget) (*SubagentDefinitionVersion, error) {
+	item := &SubagentDefinitionVersion{}
+	if err := row.Scan(
+		&item.ID,
+		&item.DefinitionID,
+		&item.VersionNumber,
+		&item.LifecycleStatus,
+		&item.SystemPrompt,
+		&item.Model,
+		&item.Config,
+		&item.Metadata,
+		&item.OutputSchema,
+		&item.HandoffInputSchema,
+		&item.ToolAllowlist,
+		&item.SkillAllowlist,
+		&item.MCPAllowlist,
+		&item.KnowledgePolicy,
+		&item.ReviewPolicy,
+		&item.RuntimePolicy,
+		&item.PublicationID,
+		&item.PublicationStatus,
+		&item.PublicationScope,
+		&item.IsPublished,
+		&item.CreatedBy,
+		&item.UpdatedBy,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func scanSubagentPublicationState(row scanTarget) (*SubagentPublicationState, error) {
+	item := &SubagentPublicationState{}
+	if err := row.Scan(
+		&item.ID,
+		&item.DefinitionID,
+		&item.VersionID,
+		&item.VersionNumber,
+		&item.TenantID,
+		&item.PublicationScope,
+		&item.Status,
+		&item.Metadata,
+		&item.AuthorizationCount,
+		&item.CreatedBy,
+		&item.UpdatedBy,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+		&item.ArchivedAt,
+	); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func scanSubagentAuthorizedAgent(row scanTarget) (*SubagentAuthorizedAgent, error) {
+	item := &SubagentAuthorizedAgent{}
+	if err := row.Scan(
+		&item.AuthorizationID,
+		&item.PublicationID,
+		&item.Status,
+		&item.Priority,
+		&item.AgentDefinitionID,
+		&item.AgentName,
+		&item.AgentStatus,
+		&item.BudgetPolicy,
+		&item.Metadata,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
 func defaultSubagentDefinitionStatus(value string) string {
 	if value == "" {
 		return "active"
@@ -208,6 +349,51 @@ func publicationTenantValue(tenantID, scope string) any {
 	return tenantID
 }
 
+func parseJSONComparable(raw json.RawMessage, fallback string) any {
+	if len(raw) == 0 {
+		raw = json.RawMessage(fallback)
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		_ = json.Unmarshal([]byte(fallback), &value)
+	}
+	return value
+}
+
+func jsonRawEqual(left, right json.RawMessage, fallback string) bool {
+	return reflect.DeepEqual(parseJSONComparable(left, fallback), parseJSONComparable(right, fallback))
+}
+
+func versionEquivalent(left *SubagentDefinitionVersion, right *SubagentDefinition) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	return left.SystemPrompt == right.SystemPrompt &&
+		left.Model == right.Model &&
+		jsonRawEqual(left.Config, right.Config, `{}`) &&
+		jsonRawEqual(left.Metadata, right.Metadata, `{}`) &&
+		jsonRawEqual(left.OutputSchema, right.OutputSchema, `{}`) &&
+		jsonRawEqual(left.HandoffInputSchema, right.HandoffInputSchema, `{}`) &&
+		jsonRawEqual(left.ToolAllowlist, right.ToolAllowlist, `[]`) &&
+		jsonRawEqual(left.SkillAllowlist, right.SkillAllowlist, `[]`) &&
+		jsonRawEqual(left.MCPAllowlist, right.MCPAllowlist, `[]`) &&
+		jsonRawEqual(left.KnowledgePolicy, right.KnowledgePolicy, `{}`) &&
+		jsonRawEqual(left.ReviewPolicy, right.ReviewPolicy, `{}`) &&
+		jsonRawEqual(left.RuntimePolicy, right.RuntimePolicy, `{}`)
+}
+
+func publicationEquivalent(left *SubagentPublicationState, right *SubagentDefinition, versionID string) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	return left.VersionID == versionID &&
+		left.Status == defaultSubagentPublicationStatus(right.Status) &&
+		left.PublicationScope == defaultSubagentPublicationScope(right.PublicationScope) &&
+		((left.TenantID == "" && publicationTenantValue(right.PublicationTenantID, right.PublicationScope) == nil) ||
+			left.TenantID == right.createdPublicationTenantValue()) &&
+		jsonRawEqual(left.Metadata, right.PublicationMetadata, `{}`)
+}
+
 func (s *SubagentStore) nextVersionNumberTx(ctx context.Context, tx pgx.Tx, definitionID string) (int, error) {
 	var latest int
 	err := tx.QueryRow(ctx, `
@@ -237,7 +423,8 @@ func (s *SubagentStore) insertVersionTx(
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
 		RETURNING id, subagent_definition_id, version_number, lifecycle_status, system_prompt, model,
 		          config, metadata, output_schema, handoff_input_schema, tool_allowlist, skill_allowlist,
-		          mcp_allowlist, knowledge_policy, review_policy, runtime_policy, created_by, updated_by
+		          mcp_allowlist, knowledge_policy, review_policy, runtime_policy, created_by, updated_by,
+		          created_at, updated_at
 	`,
 		version.DefinitionID,
 		version.VersionNumber,
@@ -274,6 +461,8 @@ func (s *SubagentStore) insertVersionTx(
 		&row.RuntimePolicy,
 		&row.CreatedBy,
 		&row.UpdatedBy,
+		&row.CreatedAt,
+		&row.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert subagent definition version: %w", err)
@@ -370,6 +559,136 @@ func (s *SubagentStore) upsertPublicationTx(
 		return nil, fmt.Errorf("failed to update subagent publication: %w", err)
 	}
 	return row, nil
+}
+
+func (s *SubagentStore) assertSubagentDefinitionExistsTx(ctx context.Context, tx pgx.Tx, definitionID, tenantID string) error {
+	var existingID string
+	err := tx.QueryRow(ctx, `
+		SELECT id
+		FROM subagent_definitions
+		WHERE id = $1 AND tenant_id = $2 AND status <> 'archived'
+	`, definitionID, tenantID).Scan(&existingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSubagentDefinitionNotFound
+		}
+		return fmt.Errorf("failed to lookup subagent definition: %w", err)
+	}
+	return nil
+}
+
+func (s *SubagentStore) getCurrentVersionTx(ctx context.Context, tx pgx.Tx, definitionID, tenantID string) (*SubagentDefinitionVersion, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT
+			v.id,
+			v.subagent_definition_id,
+			v.version_number,
+			v.lifecycle_status,
+			v.system_prompt,
+			COALESCE(v.model, '') AS model,
+			v.config,
+			v.metadata,
+			v.output_schema,
+			v.handoff_input_schema,
+			v.tool_allowlist,
+			v.skill_allowlist,
+			v.mcp_allowlist,
+			v.knowledge_policy,
+			v.review_policy,
+			v.runtime_policy,
+			COALESCE(p.id::text, '') AS publication_id,
+			COALESCE(p.status, '') AS publication_status,
+			COALESCE(p.visibility, '') AS publication_scope,
+			CASE WHEN p.version_id = v.id THEN true ELSE false END AS is_published,
+			v.created_by,
+			v.updated_by,
+			v.created_at,
+			v.updated_at
+		FROM subagent_definitions d
+		INNER JOIN subagent_publications p
+			ON p.subagent_definition_id = d.id
+		INNER JOIN subagent_definition_versions v
+			ON v.id = p.version_id
+		WHERE d.id = $1
+		  AND d.tenant_id = $2
+		ORDER BY p.updated_at DESC
+		LIMIT 1
+	`, definitionID, tenantID)
+	item, err := scanSubagentVersion(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get current subagent version: %w", err)
+	}
+	return item, nil
+}
+
+func (s *SubagentStore) getPublicationStateTx(ctx context.Context, tx pgx.Tx, definitionID, tenantID string) (*SubagentPublicationState, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT
+			p.id,
+			p.subagent_definition_id,
+			p.version_id,
+			COALESCE(v.version_number, 0) AS version_number,
+			COALESCE(p.tenant_id::text, '') AS tenant_id,
+			p.visibility,
+			p.status,
+			p.metadata,
+			(
+				SELECT COUNT(*)
+				FROM agent_subagent_authorizations a
+				WHERE a.publication_id = p.id
+				  AND a.status = 'enabled'
+			) AS authorization_count,
+			p.created_by,
+			p.updated_by,
+			p.created_at,
+			p.updated_at,
+			p.archived_at
+		FROM subagent_publications p
+		INNER JOIN subagent_definitions d
+			ON d.id = p.subagent_definition_id
+		LEFT JOIN subagent_definition_versions v
+			ON v.id = p.version_id
+		WHERE p.subagent_definition_id = $1
+		  AND d.tenant_id = $2
+		ORDER BY p.updated_at DESC
+		LIMIT 1
+	`, definitionID, tenantID)
+	item, err := scanSubagentPublicationState(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get subagent publication state: %w", err)
+	}
+	return item, nil
+}
+
+func (s *SubagentStore) disableSubagentBindingsTx(ctx context.Context, tx pgx.Tx, definitionID string) error {
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM agent_subagent_bindings
+		WHERE subagent_definition_id = $1
+	`, definitionID); err != nil {
+		return fmt.Errorf("failed to clear subagent bindings: %w", err)
+	}
+	return nil
+}
+
+func (s *SubagentStore) disableSubagentAuthorizationsTx(ctx context.Context, tx pgx.Tx, definitionID string) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE agent_subagent_authorizations
+		SET status = 'disabled'
+		WHERE publication_id IN (
+			SELECT id
+			FROM subagent_publications
+			WHERE subagent_definition_id = $1
+		)
+	`, definitionID); err != nil {
+		return fmt.Errorf("failed to disable subagent authorizations: %w", err)
+	}
+	return nil
 }
 
 func (s *SubagentStore) CreateSubagentDefinition(def *SubagentDefinition) (*SubagentDefinition, error) {
@@ -476,6 +795,14 @@ func (def *SubagentDefinition) createdPublicationTenant() *string {
 	return &def.TenantID
 }
 
+func (def *SubagentDefinition) createdPublicationTenantValue() string {
+	tenantID := def.createdPublicationTenant()
+	if tenantID == nil {
+		return ""
+	}
+	return *tenantID
+}
+
 func (s *SubagentStore) UpdateSubagentDefinition(def *SubagentDefinition) (*SubagentDefinition, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -485,6 +812,19 @@ func (s *SubagentStore) UpdateSubagentDefinition(def *SubagentDefinition) (*Suba
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	if err := s.assertSubagentDefinitionExistsTx(ctx, tx, def.ID, def.TenantID); err != nil {
+		return nil, err
+	}
+
+	currentVersion, err := s.getCurrentVersionTx(ctx, tx, def.ID, def.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	currentPublication, err := s.getPublicationStateTx(ctx, tx, def.ID, def.TenantID)
+	if err != nil {
+		return nil, err
+	}
 
 	err = tx.QueryRow(ctx, `
 		UPDATE subagent_definitions
@@ -519,42 +859,63 @@ func (s *SubagentStore) UpdateSubagentDefinition(def *SubagentDefinition) (*Suba
 		return nil, fmt.Errorf("failed to update subagent definition: %w", err)
 	}
 
-	nextVersion, err := s.nextVersionNumberTx(ctx, tx, def.ID)
-	if err != nil {
-		return nil, err
+	publishVersionID := ""
+	if currentVersion != nil {
+		publishVersionID = currentVersion.ID
 	}
-	version, err := s.insertVersionTx(ctx, tx, &SubagentDefinitionVersion{
-		DefinitionID:       def.ID,
-		VersionNumber:      nextVersion,
-		LifecycleStatus:    def.LifecycleStatus,
-		SystemPrompt:       def.SystemPrompt,
-		Model:              def.Model,
-		Config:             def.Config,
-		Metadata:           def.Metadata,
-		OutputSchema:       def.OutputSchema,
-		HandoffInputSchema: def.HandoffInputSchema,
-		ToolAllowlist:      def.ToolAllowlist,
-		SkillAllowlist:     def.SkillAllowlist,
-		MCPAllowlist:       def.MCPAllowlist,
-		KnowledgePolicy:    def.KnowledgePolicy,
-		ReviewPolicy:       def.ReviewPolicy,
-		RuntimePolicy:      def.RuntimePolicy,
-		CreatedBy:          def.UpdatedBy,
-	})
-	if err != nil {
-		return nil, err
+	if !versionEquivalent(currentVersion, def) {
+		nextVersion, err := s.nextVersionNumberTx(ctx, tx, def.ID)
+		if err != nil {
+			return nil, err
+		}
+		version, err := s.insertVersionTx(ctx, tx, &SubagentDefinitionVersion{
+			DefinitionID:       def.ID,
+			VersionNumber:      nextVersion,
+			LifecycleStatus:    def.LifecycleStatus,
+			SystemPrompt:       def.SystemPrompt,
+			Model:              def.Model,
+			Config:             def.Config,
+			Metadata:           def.Metadata,
+			OutputSchema:       def.OutputSchema,
+			HandoffInputSchema: def.HandoffInputSchema,
+			ToolAllowlist:      def.ToolAllowlist,
+			SkillAllowlist:     def.SkillAllowlist,
+			MCPAllowlist:       def.MCPAllowlist,
+			KnowledgePolicy:    def.KnowledgePolicy,
+			ReviewPolicy:       def.ReviewPolicy,
+			RuntimePolicy:      def.RuntimePolicy,
+			CreatedBy:          def.UpdatedBy,
+		})
+		if err != nil {
+			return nil, err
+		}
+		publishVersionID = version.ID
+	}
+	if publishVersionID == "" {
+		return nil, fmt.Errorf("failed to resolve publication version for subagent %s", def.ID)
 	}
 
-	if _, err := s.upsertPublicationTx(ctx, tx, &SubagentPublication{
-		DefinitionID: def.ID,
-		VersionID:    version.ID,
-		TenantID:     def.createdPublicationTenant(),
-		Visibility:   def.PublicationScope,
-		Status:       def.Status,
-		Metadata:     def.PublicationMetadata,
-		UpdatedBy:    def.UpdatedBy,
-	}); err != nil {
-		return nil, err
+	if currentPublication == nil || !publicationEquivalent(currentPublication, def, publishVersionID) {
+		if _, err := s.upsertPublicationTx(ctx, tx, &SubagentPublication{
+			DefinitionID: def.ID,
+			VersionID:    publishVersionID,
+			TenantID:     def.createdPublicationTenant(),
+			Visibility:   def.PublicationScope,
+			Status:       def.Status,
+			Metadata:     def.PublicationMetadata,
+			UpdatedBy:    def.UpdatedBy,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	if defaultSubagentPublicationStatus(def.Status) == "archived" {
+		if err := s.disableSubagentAuthorizationsTx(ctx, tx, def.ID); err != nil {
+			return nil, err
+		}
+		if err := s.disableSubagentBindingsTx(ctx, tx, def.ID); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -638,6 +999,307 @@ func (s *SubagentStore) ListPublishedSubagentsByPublicationIDs(tenantID string, 
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *SubagentStore) ListSubagentVersions(definitionID, tenantID string) ([]*SubagentDefinitionVersion, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			v.id,
+			v.subagent_definition_id,
+			v.version_number,
+			v.lifecycle_status,
+			v.system_prompt,
+			COALESCE(v.model, '') AS model,
+			v.config,
+			v.metadata,
+			v.output_schema,
+			v.handoff_input_schema,
+			v.tool_allowlist,
+			v.skill_allowlist,
+			v.mcp_allowlist,
+			v.knowledge_policy,
+			v.review_policy,
+			v.runtime_policy,
+			COALESCE(p.id::text, '') AS publication_id,
+			COALESCE(p.status, '') AS publication_status,
+			COALESCE(p.visibility, '') AS publication_scope,
+			CASE WHEN p.version_id = v.id THEN true ELSE false END AS is_published,
+			v.created_by,
+			v.updated_by,
+			v.created_at,
+			v.updated_at
+		FROM subagent_definition_versions v
+		INNER JOIN subagent_definitions d
+			ON d.id = v.subagent_definition_id
+		LEFT JOIN subagent_publications p
+			ON p.subagent_definition_id = v.subagent_definition_id
+		   AND p.version_id = v.id
+		WHERE v.subagent_definition_id = $1
+		  AND d.tenant_id = $2
+		ORDER BY v.version_number DESC, v.created_at DESC
+	`, definitionID, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list subagent versions: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*SubagentDefinitionVersion
+	for rows.Next() {
+		item, err := scanSubagentVersion(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan subagent version: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *SubagentStore) ListSubagentAuthorizedAgents(definitionID, tenantID string) ([]*SubagentAuthorizedAgent, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			a.id,
+			a.publication_id,
+			a.status,
+			a.priority,
+			d.id,
+			d.name,
+			d.status,
+			a.budget_policy,
+			a.metadata,
+			a.created_at,
+			a.updated_at
+		FROM agent_subagent_authorizations a
+		INNER JOIN subagent_publications p
+			ON p.id = a.publication_id
+		INNER JOIN subagent_definitions s
+			ON s.id = p.subagent_definition_id
+		INNER JOIN agent_definitions d
+			ON d.id = a.agent_definition_id
+		WHERE p.subagent_definition_id = $1
+		  AND s.tenant_id = $2
+		ORDER BY
+			CASE WHEN a.status = 'enabled' THEN 0 ELSE 1 END,
+			a.priority ASC,
+			d.name ASC
+	`, definitionID, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list subagent authorizations: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*SubagentAuthorizedAgent
+	for rows.Next() {
+		item, err := scanSubagentAuthorizedAgent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan subagent authorization: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *SubagentStore) GetSubagentPublicationState(definitionID, tenantID string) (*SubagentPublicationState, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	item, err := scanSubagentPublicationState(s.pool.QueryRow(ctx, `
+		SELECT
+			p.id,
+			p.subagent_definition_id,
+			p.version_id,
+			COALESCE(v.version_number, 0) AS version_number,
+			COALESCE(p.tenant_id::text, '') AS tenant_id,
+			p.visibility,
+			p.status,
+			p.metadata,
+			(
+				SELECT COUNT(*)
+				FROM agent_subagent_authorizations a
+				WHERE a.publication_id = p.id
+				  AND a.status = 'enabled'
+			) AS authorization_count,
+			p.created_by,
+			p.updated_by,
+			p.created_at,
+			p.updated_at,
+			p.archived_at
+		FROM subagent_publications p
+		INNER JOIN subagent_definitions d
+			ON d.id = p.subagent_definition_id
+		LEFT JOIN subagent_definition_versions v
+			ON v.id = p.version_id
+		WHERE p.subagent_definition_id = $1
+		  AND d.tenant_id = $2
+		ORDER BY p.updated_at DESC
+		LIMIT 1
+	`, definitionID, tenantID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrSubagentPublicationNotFound
+		}
+		return nil, fmt.Errorf("failed to get subagent publication state: %w", err)
+	}
+	return item, nil
+}
+
+func (s *SubagentStore) GetSubagentControlPlane(definitionID, tenantID string) (*SubagentControlPlane, error) {
+	definition, err := s.GetSubagentDefinition(definitionID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	versions, err := s.ListSubagentVersions(definitionID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	publication, err := s.GetSubagentPublicationState(definitionID, tenantID)
+	if err != nil && !errors.Is(err, ErrSubagentPublicationNotFound) {
+		return nil, err
+	}
+	authorizations, err := s.ListSubagentAuthorizedAgents(definitionID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &SubagentControlPlane{
+		Definition:     definition,
+		Versions:       versions,
+		Publication:    publication,
+		Authorizations: authorizations,
+	}, nil
+}
+
+func (s *SubagentStore) CreateSubagentVersion(
+	definitionID,
+	tenantID string,
+	version *SubagentDefinitionVersion,
+	publication *SubagentPublication,
+	publish bool,
+) (*SubagentDefinitionVersion, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.assertSubagentDefinitionExistsTx(ctx, tx, definitionID, tenantID); err != nil {
+		return nil, err
+	}
+	nextVersion, err := s.nextVersionNumberTx(ctx, tx, definitionID)
+	if err != nil {
+		return nil, err
+	}
+	created, err := s.insertVersionTx(ctx, tx, &SubagentDefinitionVersion{
+		DefinitionID:       definitionID,
+		VersionNumber:      nextVersion,
+		LifecycleStatus:    version.LifecycleStatus,
+		SystemPrompt:       version.SystemPrompt,
+		Model:              version.Model,
+		Config:             version.Config,
+		Metadata:           version.Metadata,
+		OutputSchema:       version.OutputSchema,
+		HandoffInputSchema: version.HandoffInputSchema,
+		ToolAllowlist:      version.ToolAllowlist,
+		SkillAllowlist:     version.SkillAllowlist,
+		MCPAllowlist:       version.MCPAllowlist,
+		KnowledgePolicy:    version.KnowledgePolicy,
+		ReviewPolicy:       version.ReviewPolicy,
+		RuntimePolicy:      version.RuntimePolicy,
+		CreatedBy:          version.CreatedBy,
+		UpdatedBy:          version.UpdatedBy,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if publish {
+		if _, err := s.upsertPublicationTx(ctx, tx, &SubagentPublication{
+			DefinitionID: definitionID,
+			VersionID:    created.ID,
+			TenantID:     publication.TenantID,
+			Visibility:   publication.Visibility,
+			Status:       publication.Status,
+			Metadata:     publication.Metadata,
+			CreatedBy:    version.CreatedBy,
+			UpdatedBy:    version.UpdatedBy,
+		}); err != nil {
+			return nil, err
+		}
+		created.IsPublished = true
+		created.PublicationStatus = defaultSubagentPublicationStatus(publication.Status)
+		created.PublicationScope = defaultSubagentPublicationScope(publication.Visibility)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to commit subagent version creation: %w", err)
+	}
+
+	return created, nil
+}
+
+func (s *SubagentStore) UpdateSubagentPublication(
+	definitionID,
+	tenantID string,
+	publication *SubagentPublication,
+) (*SubagentPublicationState, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.assertSubagentDefinitionExistsTx(ctx, tx, definitionID, tenantID); err != nil {
+		return nil, err
+	}
+
+	var versionExists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM subagent_definition_versions
+			WHERE id = $1
+			  AND subagent_definition_id = $2
+		)
+	`, publication.VersionID, definitionID).Scan(&versionExists); err != nil {
+		return nil, fmt.Errorf("failed to validate subagent publication version: %w", err)
+	}
+	if !versionExists {
+		return nil, ErrSubagentPublicationNotFound
+	}
+
+	if _, err := s.upsertPublicationTx(ctx, tx, publication); err != nil {
+		return nil, err
+	}
+
+	if defaultSubagentPublicationStatus(publication.Status) == "archived" {
+		if err := s.disableSubagentAuthorizationsTx(ctx, tx, definitionID); err != nil {
+			return nil, err
+		}
+		if err := s.disableSubagentBindingsTx(ctx, tx, definitionID); err != nil {
+			return nil, err
+		}
+	}
+
+	item, err := s.getPublicationStateTx(ctx, tx, definitionID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to commit subagent publication update: %w", err)
+	}
+
+	return item, nil
 }
 
 func (s *SubagentStore) DeleteSubagentDefinition(id, tenantID string) error {

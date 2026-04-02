@@ -61,15 +61,38 @@ type UpdateAgentKnowledgeBasesRequest struct {
 }
 
 type SubagentDefinitionUpsertRequest struct {
-	Name                string          `json:"name"`
-	Slug                string          `json:"slug"`
-	Description         string          `json:"description"`
+	Name                  string          `json:"name"`
+	Slug                  string          `json:"slug"`
+	Description           string          `json:"description"`
+	SystemPrompt          string          `json:"system_prompt"`
+	Model                 string          `json:"model"`
+	HostAgentDefinitionID string          `json:"host_agent_definition_id"`
+	HandoffPrompt         string          `json:"handoff_prompt"`
+	Status                string          `json:"status"`
+	DefinitionStatus      string          `json:"definition_status"`
+	LifecycleStatus       string          `json:"lifecycle_status"`
+	PublicationScope      string          `json:"publication_scope"`
+	Config                json.RawMessage `json:"config"`
+	Metadata              json.RawMessage `json:"metadata"`
+	OutputSchema          json.RawMessage `json:"output_schema"`
+	HandoffInputSchema    json.RawMessage `json:"handoff_input_schema"`
+	ToolAllowlist         json.RawMessage `json:"tool_allowlist"`
+	SkillAllowlist        json.RawMessage `json:"skill_allowlist"`
+	MCPAllowlist          json.RawMessage `json:"mcp_allowlist"`
+	KnowledgePolicy       json.RawMessage `json:"knowledge_policy"`
+	ReviewPolicy          json.RawMessage `json:"review_policy"`
+	RuntimePolicy         json.RawMessage `json:"runtime_policy"`
+	PublicationMetadata   json.RawMessage `json:"publication_metadata"`
+}
+
+type UpdateAgentSubagentsRequest struct {
+	SubagentIDs []string `json:"subagent_ids"`
+}
+
+type SubagentVersionCreateRequest struct {
+	LifecycleStatus     string          `json:"lifecycle_status"`
 	SystemPrompt        string          `json:"system_prompt"`
 	Model               string          `json:"model"`
-	Status              string          `json:"status"`
-	DefinitionStatus    string          `json:"definition_status"`
-	LifecycleStatus     string          `json:"lifecycle_status"`
-	PublicationScope    string          `json:"publication_scope"`
 	Config              json.RawMessage `json:"config"`
 	Metadata            json.RawMessage `json:"metadata"`
 	OutputSchema        json.RawMessage `json:"output_schema"`
@@ -80,11 +103,26 @@ type SubagentDefinitionUpsertRequest struct {
 	KnowledgePolicy     json.RawMessage `json:"knowledge_policy"`
 	ReviewPolicy        json.RawMessage `json:"review_policy"`
 	RuntimePolicy       json.RawMessage `json:"runtime_policy"`
+	Publish             bool            `json:"publish"`
+	PublicationScope    string          `json:"publication_scope"`
+	PublicationStatus   string          `json:"publication_status"`
 	PublicationMetadata json.RawMessage `json:"publication_metadata"`
 }
 
-type UpdateAgentSubagentsRequest struct {
-	SubagentIDs []string `json:"subagent_ids"`
+type SubagentPublicationUpdateRequest struct {
+	VersionID           string          `json:"version_id"`
+	PublicationScope    string          `json:"publication_scope"`
+	Status              string          `json:"status"`
+	PublicationMetadata json.RawMessage `json:"publication_metadata"`
+}
+
+type SubagentTestRunRequest struct {
+	VersionID         string          `json:"version_id"`
+	AgentDefinitionID string          `json:"agent_definition_id"`
+	Input             json.RawMessage `json:"input"`
+	SessionID         string          `json:"session_id"`
+	Metadata          map[string]any  `json:"metadata"`
+	AutoStart         *bool           `json:"auto_start,omitempty"`
 }
 
 type ClearAgentContextRequest struct {
@@ -703,6 +741,21 @@ func (s *AgentService) GetSubagentDefinition(tenantID, subagentID string) (*data
 	return s.hydrateSubagentDefinition(item)
 }
 
+func (s *AgentService) GetSubagentControlPlane(tenantID, userRole, subagentID string) (*database.SubagentControlPlane, error) {
+	if err := ensureSubagentAdminRole(userRole); err != nil {
+		return nil, err
+	}
+	controlPlane, err := s.subagentStore.GetSubagentControlPlane(subagentID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.hydrateSubagentDefinition(controlPlane.Definition); err != nil {
+		return nil, err
+	}
+	controlPlane.Governance = buildSubagentGovernanceSummary(controlPlane)
+	return controlPlane, nil
+}
+
 func (s *AgentService) CreateSubagentDefinition(tenantID, userID, userRole string, req *SubagentDefinitionUpsertRequest) (*database.SubagentDefinition, error) {
 	def, err := s.buildSubagentDefinitionForWrite(tenantID, userID, userRole, "", req)
 	if err != nil {
@@ -732,6 +785,226 @@ func (s *AgentService) DeleteSubagentDefinition(tenantID, userRole, subagentID s
 		return err
 	}
 	return s.subagentStore.DeleteSubagentDefinition(subagentID, tenantID)
+}
+
+func (s *AgentService) CreateSubagentVersion(
+	tenantID,
+	userID,
+	userRole,
+	subagentID string,
+	req *SubagentVersionCreateRequest,
+) (*database.SubagentControlPlane, error) {
+	if err := ensureSubagentAdminRole(userRole); err != nil {
+		return nil, err
+	}
+	definition, err := s.GetSubagentDefinition(tenantID, subagentID)
+	if err != nil {
+		return nil, err
+	}
+
+	publicationState, err := s.subagentStore.GetSubagentPublicationState(subagentID, tenantID)
+	if err != nil && !errors.Is(err, database.ErrSubagentPublicationNotFound) {
+		return nil, err
+	}
+	publication := &database.SubagentPublication{
+		DefinitionID: subagentID,
+		TenantID:     subagentPublicationTenant(definition),
+		Visibility:   defaultString(strings.TrimSpace(req.PublicationScope), definition.PublicationScope),
+		Status:       defaultString(strings.TrimSpace(req.PublicationStatus), definition.Status),
+		Metadata:     database.NormalizeJSONRawForExport(req.PublicationMetadata, `{}`),
+		UpdatedBy:    stringPtr(userID),
+	}
+	if publicationState != nil {
+		if strings.TrimSpace(req.PublicationScope) == "" {
+			publication.Visibility = publicationState.PublicationScope
+		}
+		if strings.TrimSpace(req.PublicationStatus) == "" {
+			publication.Status = publicationState.Status
+		}
+		if len(req.PublicationMetadata) == 0 {
+			publication.Metadata = publicationState.Metadata
+		}
+	}
+
+	version, err := s.subagentStore.CreateSubagentVersion(subagentID, tenantID, &database.SubagentDefinitionVersion{
+		LifecycleStatus:    defaultString(strings.TrimSpace(req.LifecycleStatus), "draft"),
+		SystemPrompt:       req.SystemPrompt,
+		Model:              strings.TrimSpace(req.Model),
+		Config:             database.NormalizeJSONRawForExport(req.Config, `{}`),
+		Metadata:           database.NormalizeJSONRawForExport(req.Metadata, `{}`),
+		OutputSchema:       database.NormalizeJSONRawForExport(req.OutputSchema, `{}`),
+		HandoffInputSchema: database.NormalizeJSONRawForExport(req.HandoffInputSchema, `{}`),
+		ToolAllowlist:      database.NormalizeJSONRawForExport(req.ToolAllowlist, `[]`),
+		SkillAllowlist:     database.NormalizeJSONRawForExport(req.SkillAllowlist, `[]`),
+		MCPAllowlist:       database.NormalizeJSONRawForExport(req.MCPAllowlist, `[]`),
+		KnowledgePolicy:    database.NormalizeJSONRawForExport(req.KnowledgePolicy, `{}`),
+		ReviewPolicy:       database.NormalizeJSONRawForExport(req.ReviewPolicy, `{}`),
+		RuntimePolicy:      database.NormalizeJSONRawForExport(req.RuntimePolicy, `{}`),
+		CreatedBy:          stringPtr(userID),
+		UpdatedBy:          stringPtr(userID),
+	}, publication, req.Publish)
+	if err != nil {
+		return nil, err
+	}
+	if req.Publish && version != nil {
+		definition.VersionID = version.ID
+		definition.VersionNumber = version.VersionNumber
+	}
+	return s.GetSubagentControlPlane(tenantID, userRole, subagentID)
+}
+
+func (s *AgentService) UpdateSubagentPublication(
+	tenantID,
+	userID,
+	userRole,
+	subagentID string,
+	req *SubagentPublicationUpdateRequest,
+) (*database.SubagentControlPlane, error) {
+	if err := ensureSubagentAdminRole(userRole); err != nil {
+		return nil, err
+	}
+	definition, err := s.GetSubagentDefinition(tenantID, subagentID)
+	if err != nil {
+		return nil, err
+	}
+	currentPublication, err := s.subagentStore.GetSubagentPublicationState(subagentID, tenantID)
+	if err != nil && !errors.Is(err, database.ErrSubagentPublicationNotFound) {
+		return nil, err
+	}
+	versionID := strings.TrimSpace(req.VersionID)
+	if versionID == "" && currentPublication != nil {
+		versionID = currentPublication.VersionID
+	}
+	if versionID == "" {
+		return nil, errors.New("version_id is required")
+	}
+
+	publication := &database.SubagentPublication{
+		DefinitionID: subagentID,
+		VersionID:    versionID,
+		TenantID:     subagentPublicationTenant(definition),
+		Visibility:   defaultString(strings.TrimSpace(req.PublicationScope), definition.PublicationScope),
+		Status:       defaultString(strings.TrimSpace(req.Status), definition.Status),
+		Metadata:     database.NormalizeJSONRawForExport(req.PublicationMetadata, `{}`),
+		UpdatedBy:    stringPtr(userID),
+	}
+	if currentPublication != nil {
+		if strings.TrimSpace(req.PublicationScope) == "" {
+			publication.Visibility = currentPublication.PublicationScope
+		}
+		if strings.TrimSpace(req.Status) == "" {
+			publication.Status = currentPublication.Status
+		}
+		if len(req.PublicationMetadata) == 0 {
+			publication.Metadata = currentPublication.Metadata
+		}
+	}
+
+	if _, err := s.subagentStore.UpdateSubagentPublication(subagentID, tenantID, publication); err != nil {
+		return nil, err
+	}
+	return s.GetSubagentControlPlane(tenantID, userRole, subagentID)
+}
+
+func (s *AgentService) CreateSubagentTestRun(
+	ctx context.Context,
+	tenantID,
+	userID,
+	userRole,
+	subagentID string,
+	req *SubagentTestRunRequest,
+) (*database.AgentRun, error) {
+	if err := ensureSubagentAdminRole(userRole); err != nil {
+		return nil, err
+	}
+	controlPlane, err := s.GetSubagentControlPlane(tenantID, userRole, subagentID)
+	if err != nil {
+		return nil, err
+	}
+	if controlPlane.Definition == nil {
+		return nil, database.ErrSubagentDefinitionNotFound
+	}
+
+	requestedVersionID := strings.TrimSpace(req.VersionID)
+	var selectedVersion *database.SubagentDefinitionVersion
+	if requestedVersionID != "" {
+		for _, version := range controlPlane.Versions {
+			if version != nil && version.ID == requestedVersionID {
+				selectedVersion = version
+				break
+			}
+		}
+		if selectedVersion == nil {
+			return nil, fmt.Errorf("subagent version %s not found", requestedVersionID)
+		}
+	} else if controlPlane.Publication != nil {
+		for _, version := range controlPlane.Versions {
+			if version != nil && version.ID == controlPlane.Publication.VersionID {
+				selectedVersion = version
+				break
+			}
+		}
+	}
+	if selectedVersion == nil && len(controlPlane.Versions) > 0 {
+		selectedVersion = controlPlane.Versions[0]
+	}
+	if selectedVersion == nil {
+		return nil, errors.New("subagent has no version to test")
+	}
+
+	hostAgentID := strings.TrimSpace(req.AgentDefinitionID)
+	if hostAgentID == "" {
+		hostAgentID = strings.TrimSpace(controlPlane.Definition.HostAgentDefinitionID)
+	}
+	if hostAgentID == "" {
+		hostAgentID = strings.TrimSpace(controlPlane.Definition.TargetAgentDefinitionID)
+	}
+	if hostAgentID == "" {
+		return nil, errors.New("agent_definition_id is required for test run")
+	}
+	hostAgent, err := s.agentStore.GetAgentDefinition(hostAgentID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if hostAgent.Status != "active" {
+		return nil, fmt.Errorf("host agent definition %s is not active", hostAgentID)
+	}
+
+	sessionID := strings.TrimSpace(req.SessionID)
+	if err := s.ensureRunSession(tenantID, userID, sessionID); err != nil {
+		return nil, err
+	}
+
+	publicationState := controlPlane.Publication
+	if publicationState != nil && publicationState.VersionID != selectedVersion.ID {
+		publicationState = nil
+	}
+	managedSubagentPayload := s.buildManagedSubagentRunMetadata(controlPlane.Definition, selectedVersion, publicationState)
+	metadata := map[string]any{}
+	for key, value := range req.Metadata {
+		metadata[key] = value
+	}
+	metadata["managed_subagent"] = managedSubagentPayload
+	metadata["managed_subagent_test"] = map[string]any{
+		"subagent_definition_id": controlPlane.Definition.ID,
+		"version_id":             selectedVersion.ID,
+		"publication_id":         managedSubagentPayload["publication_id"],
+		"triggered_by":           "admin_console",
+	}
+
+	autoStart := true
+	if req.AutoStart != nil {
+		autoStart = *req.AutoStart
+	}
+	return s.aiClient.CreateAgentRun(ctx, &grpc.AgentRunCreateRequest{
+		AgentDefinitionID: hostAgentID,
+		TenantID:          tenantID,
+		UserID:            userID,
+		SessionID:         sessionID,
+		Input:             req.Input,
+		Metadata:          metadata,
+		AutoStart:         autoStart,
+	})
 }
 
 func (s *AgentService) UpdateAgentSubagents(tenantID, userID, agentID string, req *UpdateAgentSubagentsRequest) error {
@@ -887,6 +1160,121 @@ func stringPtr(value string) *string {
 	return &value
 }
 
+func subagentPublicationTenant(definition *database.SubagentDefinition) *string {
+	if definition == nil {
+		return nil
+	}
+	if strings.TrimSpace(definition.PublicationScope) == "system_global" {
+		return nil
+	}
+	if tenantID := strings.TrimSpace(definition.PublicationTenantID); tenantID != "" {
+		return stringPtr(tenantID)
+	}
+	if tenantID := strings.TrimSpace(definition.TenantID); tenantID != "" {
+		return stringPtr(tenantID)
+	}
+	return nil
+}
+
+func appendSubagentGovernanceWarning(
+	warnings []*database.SubagentGovernanceWarning,
+	code, severity, message string,
+) []*database.SubagentGovernanceWarning {
+	return append(warnings, &database.SubagentGovernanceWarning{
+		Code:     code,
+		Severity: severity,
+		Message:  message,
+	})
+}
+
+func buildSubagentGovernanceSummary(controlPlane *database.SubagentControlPlane) *database.SubagentGovernanceSummary {
+	if controlPlane == nil {
+		return nil
+	}
+
+	summary := &database.SubagentGovernanceSummary{
+		Warnings: []*database.SubagentGovernanceWarning{},
+	}
+	if controlPlane.Definition != nil {
+		summary.HostAgentDefinitionID = strings.TrimSpace(controlPlane.Definition.HostAgentDefinitionID)
+		summary.CompatibilityMode = summary.HostAgentDefinitionID != ""
+	}
+	if len(controlPlane.Versions) > 0 && controlPlane.Versions[0] != nil {
+		summary.LatestVersionNumber = controlPlane.Versions[0].VersionNumber
+	}
+	if controlPlane.Publication != nil {
+		summary.PublishedVersionNumber = controlPlane.Publication.VersionNumber
+		summary.AuthorizationCount = controlPlane.Publication.AuthorizationCount
+	}
+	if summary.PublishedVersionNumber == 0 || summary.PublishedVersionNumber == summary.LatestVersionNumber {
+		summary.IsPublishedVersionLatest = true
+	}
+
+	for _, authorization := range controlPlane.Authorizations {
+		if authorization == nil {
+			continue
+		}
+		if strings.EqualFold(authorization.Status, "enabled") {
+			summary.EnabledAuthorizationCount++
+		}
+		if !strings.EqualFold(authorization.AgentStatus, "active") {
+			summary.InactiveAuthorizationCount++
+		}
+	}
+
+	if summary.CompatibilityMode {
+		summary.Warnings = appendSubagentGovernanceWarning(
+			summary.Warnings,
+			"compatibility-host-override",
+			"warning",
+			"当前 capability 仍显式绑定宿主 agent，属于兼容模式；后续应优先收口到 publication/version/authorization 语义。",
+		)
+	}
+	if controlPlane.Publication == nil {
+		summary.IsPublishedVersionLatest = false
+		summary.Warnings = appendSubagentGovernanceWarning(
+			summary.Warnings,
+			"publication-missing",
+			"warning",
+			"当前 definition 还没有 publication，运行时无法被授权给主 agent 使用。",
+		)
+	}
+	if controlPlane.Publication != nil && summary.LatestVersionNumber > 0 && controlPlane.Publication.VersionNumber != summary.LatestVersionNumber {
+		summary.IsPublishedVersionLatest = false
+		summary.Warnings = appendSubagentGovernanceWarning(
+			summary.Warnings,
+			"publication-not-latest",
+			"info",
+			fmt.Sprintf("当前发布停留在 v%d，最新 definition 版本已经到 v%d。", controlPlane.Publication.VersionNumber, summary.LatestVersionNumber),
+		)
+	}
+	if summary.EnabledAuthorizationCount == 0 && controlPlane.Publication != nil && strings.EqualFold(controlPlane.Publication.Status, "active") {
+		summary.Warnings = appendSubagentGovernanceWarning(
+			summary.Warnings,
+			"authorization-empty",
+			"info",
+			"当前 publication 已激活，但还没有任何 host agent 授权使用它。",
+		)
+	}
+	if summary.InactiveAuthorizationCount > 0 {
+		summary.Warnings = appendSubagentGovernanceWarning(
+			summary.Warnings,
+			"inactive-authorizations",
+			"warning",
+			fmt.Sprintf("存在 %d 个已授权 host agent 不是 active 状态，建议清理无效授权。", summary.InactiveAuthorizationCount),
+		)
+	}
+	if controlPlane.Publication != nil && strings.EqualFold(controlPlane.Publication.Status, "archived") && summary.AuthorizationCount > 0 {
+		summary.Warnings = appendSubagentGovernanceWarning(
+			summary.Warnings,
+			"archived-publication-with-authorizations",
+			"warning",
+			"当前 publication 已归档，但仍保留授权记录；请确认是否已经完成影响面收口。",
+		)
+	}
+	return summary
+}
+
 func (s *AgentService) buildSubagentDefinitionForWrite(tenantID, userID, userRole, subagentID string, req *SubagentDefinitionUpsertRequest) (*database.SubagentDefinition, error) {
 	if err := ensureSubagentAdminRole(userRole); err != nil {
 		return nil, err
@@ -899,21 +1287,23 @@ func (s *AgentService) buildSubagentDefinitionForWrite(tenantID, userID, userRol
 	metadata, err := mergeSubagentMetadata(
 		database.NormalizeJSONRawForExport(req.Metadata, `{}`),
 		strings.TrimSpace(req.Slug),
+		strings.TrimSpace(req.HostAgentDefinitionID),
+		strings.TrimSpace(req.HandoffPrompt),
 	)
 	if err != nil {
 		return nil, err
 	}
-	targetAgentDefinitionID, handoffPrompt, err := extractSubagentRuntimeMetadata(metadata)
+	hostAgentDefinitionID, handoffPrompt, err := extractSubagentRuntimeMetadata(metadata)
 	if err != nil {
 		return nil, err
 	}
-	if targetAgentDefinitionID != "" {
-		targetAgent, err := s.agentStore.GetAgentDefinition(targetAgentDefinitionID, tenantID)
+	if hostAgentDefinitionID != "" {
+		targetAgent, err := s.agentStore.GetAgentDefinition(hostAgentDefinitionID, tenantID)
 		if err != nil {
-			return nil, fmt.Errorf("target agent definition %s not found", targetAgentDefinitionID)
+			return nil, fmt.Errorf("host agent definition %s not found", hostAgentDefinitionID)
 		}
 		if targetAgent.Status != "active" {
-			return nil, fmt.Errorf("target agent definition %s is not active", targetAgentDefinitionID)
+			return nil, fmt.Errorf("host agent definition %s is not active", hostAgentDefinitionID)
 		}
 	}
 
@@ -949,7 +1339,8 @@ func (s *AgentService) buildSubagentDefinitionForWrite(tenantID, userID, userRol
 		def.UpdatedBy = stringPtr(userID)
 	}
 	def.PublicationTenantID = tenantID
-	def.TargetAgentDefinitionID = targetAgentDefinitionID
+	def.HostAgentDefinitionID = hostAgentDefinitionID
+	def.TargetAgentDefinitionID = hostAgentDefinitionID
 	def.HandoffPrompt = handoffPrompt
 	return def, nil
 }
@@ -958,17 +1349,108 @@ func (s *AgentService) hydrateSubagentDefinition(definition *database.SubagentDe
 	if definition == nil {
 		return nil, nil
 	}
-	targetAgentDefinitionID, handoffPrompt, err := extractSubagentRuntimeMetadata(definition.Metadata)
+	hostAgentDefinitionID, handoffPrompt, err := extractSubagentRuntimeMetadata(definition.Metadata)
 	if err != nil {
 		return nil, err
 	}
-	definition.TargetAgentDefinitionID = targetAgentDefinitionID
+	definition.HostAgentDefinitionID = hostAgentDefinitionID
+	definition.TargetAgentDefinitionID = hostAgentDefinitionID
 	definition.HandoffPrompt = handoffPrompt
 	definition.Slug = extractSubagentSlug(definition.Metadata)
 	if strings.TrimSpace(definition.PublicationScope) == "" {
 		definition.PublicationScope = "tenant"
 	}
 	return definition, nil
+}
+
+func normalizeJSONObject(raw json.RawMessage) map[string]any {
+	value, ok := parseJSONRaw(raw, `{}`).(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return value
+}
+
+func normalizeJSONStringList(raw json.RawMessage) []string {
+	values, ok := parseJSONRaw(raw, `[]`).([]any)
+	if !ok {
+		return []string{}
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		text := strings.TrimSpace(fmt.Sprintf("%v", value))
+		if text == "" {
+			continue
+		}
+		if _, exists := seen[text]; exists {
+			continue
+		}
+		seen[text] = struct{}{}
+		result = append(result, text)
+	}
+	return result
+}
+
+func (s *AgentService) buildManagedSubagentRunMetadata(
+	definition *database.SubagentDefinition,
+	version *database.SubagentDefinitionVersion,
+	publication *database.SubagentPublicationState,
+) map[string]any {
+	definitionMetadata := normalizeJSONObject(definition.Metadata)
+	versionMetadata := normalizeJSONObject(version.Metadata)
+	publicationMetadata := map[string]any{}
+	publicationID := ""
+	if publication != nil {
+		publicationMetadata = normalizeJSONObject(publication.Metadata)
+		publicationID = publication.ID
+	}
+
+	mergedMetadata := make(map[string]any, len(definitionMetadata)+len(versionMetadata)+len(publicationMetadata)+4)
+	for key, value := range definitionMetadata {
+		mergedMetadata[key] = value
+	}
+	for key, value := range versionMetadata {
+		mergedMetadata[key] = value
+	}
+	for key, value := range publicationMetadata {
+		mergedMetadata[key] = value
+	}
+	mergedMetadata["version_number"] = version.VersionNumber
+	if publication != nil {
+		mergedMetadata["publication_status"] = publication.Status
+		mergedMetadata["publication_scope"] = publication.PublicationScope
+	}
+
+	payload := map[string]any{
+		"slug":                   definition.Slug,
+		"name":                   definition.Name,
+		"description":            definition.Description,
+		"subagent_definition_id": definition.ID,
+		"version_id":             version.ID,
+		"system_prompt":          version.SystemPrompt,
+		"model":                  version.Model,
+		"config":                 normalizeJSONObject(version.Config),
+		"output_schema":          normalizeJSONObject(version.OutputSchema),
+		"handoff_input_schema":   normalizeJSONObject(version.HandoffInputSchema),
+		"tool_allowlist":         normalizeJSONStringList(version.ToolAllowlist),
+		"skill_allowlist":        normalizeJSONStringList(version.SkillAllowlist),
+		"mcp_allowlist":          normalizeJSONStringList(version.MCPAllowlist),
+		"knowledge_policy":       normalizeJSONObject(version.KnowledgePolicy),
+		"review_policy":          normalizeJSONObject(version.ReviewPolicy),
+		"runtime_policy":         normalizeJSONObject(version.RuntimePolicy),
+		"metadata":               mergedMetadata,
+	}
+	if publicationID != "" {
+		payload["publication_id"] = publicationID
+	}
+	if definition.HandoffPrompt != "" {
+		payload["handoff_prompt"] = definition.HandoffPrompt
+	}
+	if definition.HostAgentDefinitionID != "" {
+		payload["host_agent_definition_id"] = definition.HostAgentDefinitionID
+	}
+	return payload
 }
 
 func extractSubagentRuntimeMetadata(raw json.RawMessage) (string, string, error) {
@@ -978,12 +1460,15 @@ func extractSubagentRuntimeMetadata(raw json.RawMessage) (string, string, error)
 			return "", "", fmt.Errorf("invalid subagent metadata: %w", err)
 		}
 	}
-	targetAgentDefinitionID := strings.TrimSpace(stringValueFromMap(payload, "target_agent_definition_id"))
-	if targetAgentDefinitionID == "" {
-		targetAgentDefinitionID = strings.TrimSpace(stringValueFromMap(payload, "agent_definition_id"))
+	hostAgentDefinitionID := strings.TrimSpace(stringValueFromMap(payload, "host_agent_definition_id"))
+	if hostAgentDefinitionID == "" {
+		hostAgentDefinitionID = strings.TrimSpace(stringValueFromMap(payload, "target_agent_definition_id"))
+	}
+	if hostAgentDefinitionID == "" {
+		hostAgentDefinitionID = strings.TrimSpace(stringValueFromMap(payload, "agent_definition_id"))
 	}
 	handoffPrompt := strings.TrimSpace(stringValueFromMap(payload, "handoff_prompt"))
-	return targetAgentDefinitionID, handoffPrompt, nil
+	return hostAgentDefinitionID, handoffPrompt, nil
 }
 
 func stringValueFromMap(payload map[string]any, key string) string {
@@ -998,15 +1483,39 @@ func stringValueFromMap(payload map[string]any, key string) string {
 	return text
 }
 
-func mergeSubagentMetadata(raw json.RawMessage, slug string) (json.RawMessage, error) {
+func mergeSubagentMetadata(raw json.RawMessage, slug, hostAgentDefinitionID, handoffPrompt string) (json.RawMessage, error) {
 	payload := map[string]any{}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return nil, fmt.Errorf("invalid subagent metadata: %w", err)
 		}
 	}
+	canonicalHostAgentDefinitionID := strings.TrimSpace(hostAgentDefinitionID)
+	if canonicalHostAgentDefinitionID == "" {
+		canonicalHostAgentDefinitionID = strings.TrimSpace(stringValueFromMap(payload, "host_agent_definition_id"))
+	}
+	if canonicalHostAgentDefinitionID == "" {
+		canonicalHostAgentDefinitionID = strings.TrimSpace(stringValueFromMap(payload, "target_agent_definition_id"))
+	}
+	if canonicalHostAgentDefinitionID == "" {
+		canonicalHostAgentDefinitionID = strings.TrimSpace(stringValueFromMap(payload, "agent_definition_id"))
+	}
+	canonicalHandoffPrompt := strings.TrimSpace(handoffPrompt)
+	if canonicalHandoffPrompt == "" {
+		canonicalHandoffPrompt = strings.TrimSpace(stringValueFromMap(payload, "handoff_prompt"))
+	}
+	delete(payload, "target_agent_definition_id")
+	delete(payload, "agent_definition_id")
+	delete(payload, "host_agent_definition_id")
+	delete(payload, "handoff_prompt")
 	if slug != "" {
 		payload["slug"] = slug
+	}
+	if canonicalHostAgentDefinitionID != "" {
+		payload["host_agent_definition_id"] = canonicalHostAgentDefinitionID
+	}
+	if canonicalHandoffPrompt != "" {
+		payload["handoff_prompt"] = canonicalHandoffPrompt
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
