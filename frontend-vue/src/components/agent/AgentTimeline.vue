@@ -29,7 +29,13 @@
 </template>
 
 <script setup>
-import { reviewDecisionLabel, reviewModeLabel, summarizeInvocationTarget } from '@/utils/agentRunTree'
+import {
+  getInvocationClarification,
+  getInvocationProgress,
+  reviewDecisionLabel,
+  reviewModeLabel,
+  summarizeInvocationTarget
+} from '@/utils/agentRunTree'
 
 const props = defineProps({
   events: {
@@ -53,6 +59,16 @@ const formatTime = (value) => {
 const summariseEvent = (event) => {
   const payload = event.payload || {}
   if (event.eventType.startsWith('subagent.')) {
+    const protocolInvocation = {
+      requestPayload: payload.handoff_envelope || payload.handoffEnvelope || {},
+      resultPayload: {
+        partial_result: payload.partial_result || payload.partialResult || {},
+        final_result: {
+          progress: payload.progress || {},
+          clarification: payload.clarification || {}
+        }
+      }
+    }
     const target = summarizeInvocationTarget({
       requestPayload: {
         ...(payload.handoff_envelope || payload.handoffEnvelope || {}),
@@ -61,16 +77,21 @@ const summariseEvent = (event) => {
       publicationId: payload.subagent_target?.publication_id || payload.subagentTarget?.publicationId || '',
       subagentDefinitionId: payload.subagent_target?.subagent_definition_id || payload.subagentTarget?.subagentDefinitionId || ''
     })
+    const progress = getInvocationProgress(protocolInvocation)
+    const clarification = getInvocationClarification(protocolInvocation)
     const reviewResult = payload.review_result || payload.reviewResult || {}
     const childStatus = payload.child_status || payload.childStatus || payload.status || ''
     const task = payload.handoff_envelope?.task || payload.handoffEnvelope?.task || {}
-    const summary = payload.question || task.message || payload.summary || payload.error || payload.final_output_text || ''
+    const summary = clarification.question || progress.summary || payload.question || task.message || payload.summary || payload.error || payload.final_output_text || ''
     const parts = [target]
     if (reviewResult.mode && reviewResult.mode !== 'none') {
       parts.push(`${reviewModeLabel(reviewResult.mode)} ${reviewDecisionLabel(reviewResult.decision)}`)
     }
     if (childStatus) {
       parts.push(`状态 ${childStatus}`)
+    }
+    if (progress.state && progress.state !== 'unknown') {
+      parts.push(`进度 ${progress.state}`)
     }
     if (payload.child_run_id || payload.childRunId) {
       parts.push(`child ${(payload.child_run_id || payload.childRunId).slice(0, 8)}`)

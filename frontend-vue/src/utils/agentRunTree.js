@@ -29,6 +29,17 @@ const normalizeReviewFinding = (raw = {}) => ({
   code: raw.code || ''
 })
 
+const normalizeStringList = (value) => {
+  if (typeof value === 'string') {
+    return value
+      .split('\n')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item || '').trim()).filter(Boolean)
+}
+
 export const normalizeReviewResult = (raw = {}) => ({
   protocolVersion: raw.protocol_version || raw.protocolVersion || '',
   required: Boolean(raw.required),
@@ -69,6 +80,60 @@ export const reviewModeLabel = (mode) => ({
   judge: 'Judge',
   none: '委派'
 }[mode] || '委派')
+
+export const normalizeSubagentProgress = (raw = {}) => {
+  const state = String(raw.state || raw.status || '').trim().toLowerCase() || 'unknown'
+  const completedItems = normalizeStringList(raw.completed_items || raw.completedItems)
+  const pendingItems = normalizeStringList(raw.pending_items || raw.pendingItems)
+  const summary = raw.summary || raw.message || ''
+  const nextAction = raw.next_action || raw.nextAction || ''
+  return {
+    protocolVersion: raw.protocol_version || raw.protocolVersion || '',
+    state,
+    summary,
+    completedItems,
+    pendingItems,
+    nextAction,
+    artifactCount: Number(raw.artifact_count || raw.artifactCount || 0),
+    source: raw.source || '',
+    hasData: Boolean(summary || completedItems.length || pendingItems.length || nextAction || state !== 'unknown')
+  }
+}
+
+export const progressStateLabel = (state) => ({
+  requested: '已发起',
+  in_progress: '进行中',
+  blocked: '阻塞中',
+  completed: '已完成',
+  failed: '已失败',
+  cancelled: '已取消',
+  unknown: '未知'
+}[state] || state || '未知')
+
+export const normalizeSubagentClarification = (raw = {}) => {
+  const question = raw.question || raw.prompt || ''
+  const reason = raw.reason || ''
+  const requiredFields = normalizeStringList(raw.required_fields || raw.requiredFields)
+  const responseHint = raw.response_hint || raw.responseHint || ''
+  const state = String(raw.state || raw.status || '').trim().toLowerCase() || 'not_required'
+  return {
+    protocolVersion: raw.protocol_version || raw.protocolVersion || '',
+    state,
+    question,
+    reason,
+    requiredFields,
+    responseHint,
+    blocking: Boolean(raw.blocking),
+    source: raw.source || '',
+    hasData: Boolean(question || reason || requiredFields.length || responseHint || state === 'required')
+  }
+}
+
+export const clarificationStateLabel = (state) => ({
+  required: '待澄清',
+  resolved: '已澄清',
+  not_required: '无需澄清'
+}[state] || state || '无需澄清')
 
 export const normalizeRunTreeInvocation = (raw = {}) => {
   const requestPayload = parseJSONSafe(raw.request_payload || raw.requestPayload, {})
@@ -184,7 +249,14 @@ export const getInvocationProtocolVersion = (invocation) => firstNonEmptyString(
 
 export const getInvocationQuestion = (invocation, childRun = null) => {
   const partialResult = invocation?.resultPayload?.partial_result || invocation?.resultPayload?.partialResult || {}
+  const clarification = normalizeSubagentClarification(
+    partialResult.clarification ||
+    invocation?.resultPayload?.final_result?.clarification ||
+    invocation?.resultPayload?.finalResult?.clarification ||
+    {}
+  )
   return firstNonEmptyString(
+    clarification.question,
     partialResult.question,
     childRun?.run?.finalOutputText,
     childRun?.run?.finalOutput,
@@ -192,6 +264,24 @@ export const getInvocationQuestion = (invocation, childRun = null) => {
     invocation?.resultPayload?.finalResult?.finalOutputText
   )
 }
+
+export const getInvocationProgress = (invocation) => normalizeSubagentProgress(
+  invocation?.resultPayload?.partial_result?.progress ||
+  invocation?.resultPayload?.partialResult?.progress ||
+  invocation?.resultPayload?.final_result?.progress ||
+  invocation?.resultPayload?.finalResult?.progress ||
+  invocation?.requestPayload?.progress ||
+  {}
+)
+
+export const getInvocationClarification = (invocation) => normalizeSubagentClarification(
+  invocation?.resultPayload?.partial_result?.clarification ||
+  invocation?.resultPayload?.partialResult?.clarification ||
+  invocation?.resultPayload?.final_result?.clarification ||
+  invocation?.resultPayload?.finalResult?.clarification ||
+  invocation?.requestPayload?.clarification ||
+  {}
+)
 
 export const getInvocationConstraints = (invocation) => {
   const requestPayload = invocation?.requestPayload || {}
@@ -210,6 +300,8 @@ export const buildInvocationProtocolEntry = (item = {}) => {
   const childRun = item.childRun || null
   const task = getInvocationTaskPayload(invocation)
   const reviewResult = getInvocationReviewResult(invocation)
+  const progress = getInvocationProgress(invocation)
+  const clarification = getInvocationClarification(invocation)
   const question = getInvocationQuestion(invocation, childRun)
   return {
     id: invocation.id || '',
@@ -220,6 +312,8 @@ export const buildInvocationProtocolEntry = (item = {}) => {
     delegateReason: firstNonEmptyString(task.reason),
     constraints: getInvocationConstraints(invocation),
     question,
+    progress,
+    clarification,
     reviewSummary: summarizeInvocationReview(invocation),
     reviewResult,
     childRunId: invocation.childRunId || childRun?.run?.id || '',

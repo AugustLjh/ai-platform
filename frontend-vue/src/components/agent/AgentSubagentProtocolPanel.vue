@@ -35,9 +35,45 @@
           <p>{{ entry.delegateReason }}</p>
         </div>
 
-        <div v-if="entry.question" class="protocol-block question-block">
-          <span class="block-label">Child Waiting User</span>
-          <p>{{ entry.question }}</p>
+        <div v-if="entry.progress.hasData" class="protocol-block progress-block">
+          <div class="protocol-inline-head">
+            <span class="block-label">Progress</span>
+            <span :class="['mini-pill', `state-${entry.progress.state}`]">
+              {{ progressStateLabel(entry.progress.state) }}
+            </span>
+          </div>
+          <p v-if="entry.progress.summary">{{ entry.progress.summary }}</p>
+          <div v-if="entry.progress.completedItems.length > 0" class="list-block">
+            <span class="list-label">Completed</span>
+            <ul>
+              <li v-for="item in entry.progress.completedItems" :key="`done-${item}`">{{ item }}</li>
+            </ul>
+          </div>
+          <div v-if="entry.progress.pendingItems.length > 0" class="list-block">
+            <span class="list-label">Pending</span>
+            <ul>
+              <li v-for="item in entry.progress.pendingItems" :key="`pending-${item}`">{{ item }}</li>
+            </ul>
+          </div>
+          <p v-if="entry.progress.nextAction" class="next-action">Next: {{ entry.progress.nextAction }}</p>
+        </div>
+
+        <div v-if="entry.clarification.hasData || entry.question" class="protocol-block question-block">
+          <div class="protocol-inline-head">
+            <span class="block-label">Clarification</span>
+            <span :class="['mini-pill', `clarification-${entry.clarification.state || 'required'}`]">
+              {{ clarificationStateLabel(entry.clarification.state || 'required') }}
+            </span>
+          </div>
+          <p>{{ entry.clarification.question || entry.question }}</p>
+          <p v-if="entry.clarification.reason" class="secondary-copy">{{ entry.clarification.reason }}</p>
+          <div v-if="entry.clarification.requiredFields.length > 0" class="list-block">
+            <span class="list-label">Required Fields</span>
+            <ul>
+              <li v-for="field in entry.clarification.requiredFields" :key="field">{{ field }}</li>
+            </ul>
+          </div>
+          <p v-if="entry.clarification.responseHint" class="next-action">Hint: {{ entry.clarification.responseHint }}</p>
         </div>
 
         <div v-if="entry.constraints.length > 0" class="constraint-list">
@@ -59,7 +95,11 @@
 
 <script setup>
 import { computed } from 'vue'
-import { buildInvocationProtocolEntry } from '@/utils/agentRunTree'
+import {
+  buildInvocationProtocolEntry,
+  clarificationStateLabel,
+  progressStateLabel
+} from '@/utils/agentRunTree'
 
 const props = defineProps({
   items: {
@@ -183,6 +223,11 @@ const formatTime = (value) => {
   border: 1px solid rgba(245, 158, 11, 0.18);
 }
 
+.progress-block {
+  background: rgba(236, 253, 245, 0.85);
+  border: 1px solid rgba(16, 185, 129, 0.16);
+}
+
 .block-label {
   display: block;
   margin-bottom: 6px;
@@ -197,6 +242,79 @@ const formatTime = (value) => {
   margin: 0;
   color: #334155;
   line-height: 1.6;
+}
+
+.protocol-inline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.mini-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mini-pill.state-requested,
+.mini-pill.state-in_progress {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.mini-pill.state-blocked,
+.mini-pill.clarification-required {
+  background: rgba(245, 158, 11, 0.14);
+  color: #92400e;
+}
+
+.mini-pill.state-completed,
+.mini-pill.clarification-resolved {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+}
+
+.mini-pill.state-failed,
+.mini-pill.state-cancelled {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.list-block {
+  margin-top: 10px;
+}
+
+.list-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.list-block ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #475569;
+  display: grid;
+  gap: 6px;
+}
+
+.secondary-copy {
+  margin-top: 8px;
+  color: #475569;
+}
+
+.next-action {
+  margin-top: 10px !important;
+  color: #0f172a !important;
+  font-weight: 600;
 }
 
 .constraint-list {

@@ -564,6 +564,8 @@ class AgentOrchestrator:
             "invocation_id": envelope.get("invocation_id"),
             "task": envelope.get("task"),
             "constraints": envelope.get("constraints") or [],
+            "progress": envelope.get("progress") or {},
+            "clarification": envelope.get("clarification"),
             "context_slice": {
                 "delegation_depth": context_slice.get("delegation_depth"),
                 "recent_observation_count": len(context_slice.get("recent_observations") or []),
@@ -1097,6 +1099,7 @@ class AgentOrchestrator:
             delegate_input=action.delegate_input,
             reason=action.content,
             delegation_gate=gate,
+            progress={"state": "in_progress"},
         )
 
         try:
@@ -1167,6 +1170,8 @@ class AgentOrchestrator:
             partial_result = {
                 "question": delegation.final_output or delegation.final_output_text,
                 "artifacts": delegation.artifacts,
+                "progress": delegation.progress,
+                "clarification": delegation.clarification or None,
             }
             child_question = delegation.final_output or delegation.final_output_text
         step_output = {
@@ -1174,6 +1179,8 @@ class AgentOrchestrator:
             "delegation_gate": gate,
             "handoff": handoff_summary,
             "review_result": review_result,
+            "progress": delegation.progress,
+            "clarification": delegation.clarification or None,
         }
         await self.run_repository.update_step(
             step["id"],
@@ -1210,6 +1217,8 @@ class AgentOrchestrator:
             handoff=handoff_summary,
             handoff_envelope=handoff_envelope,
             partial_result=partial_result,
+            progress=delegation.progress,
+            clarification=delegation.clarification or None,
             question=child_question,
         )
         await self._emit_step_event(

@@ -7,6 +7,12 @@ from core.agent_runtime.models import PlannerAction
 from core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
 from core.agent_runtime.result_contract import hydrate_legacy_result
 from core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
+from core.agent_runtime.subagents.protocol import (
+    build_partial_result_payload,
+    build_progress_payload,
+    build_requested_progress_payload,
+    build_clarification_payload,
+)
 from core.agent_runtime.subagents.review import build_review_result
 
 
@@ -182,6 +188,12 @@ class SubagentHandoff:
                 runtime_context=runtime_context,
                 target=target,
             ),
+            "progress": build_requested_progress_payload(
+                summary=f"{target.name} is taking over the delegated task.",
+                delegate_task=str(planner_action.delegate_task or "").strip(),
+                delegate_input=planner_action.delegate_input or {},
+            ),
+            "clarification": None,
             "policy_snapshot": self._build_policy_snapshot(target=target),
             "status": "requested",
             "partial_result": None,
@@ -340,24 +352,40 @@ class SubagentHandoff:
         error_message: str | None = None,
     ) -> dict[str, Any]:
         result_status = str(status or "").strip().lower()
+        question = hydrated.get("final_output") if result_status == "waiting_user" else None
+        progress = build_progress_payload(
+            status=result_status,
+            hydrated=hydrated,
+            summary=summary,
+        )
+        clarification = build_clarification_payload(
+            status=result_status,
+            hydrated=hydrated,
+            question=question,
+        )
+        partial_result = (
+            build_partial_result_payload(
+                status=result_status,
+                hydrated=hydrated,
+                summary=summary,
+                question=question,
+            )
+            if result_status == "waiting_user"
+            else None
+        )
         return {
             "protocol_version": "managed-subagent.v1",
             "status": result_status,
             "review_result": review_result,
-            "partial_result": (
-                {
-                    "question": hydrated.get("final_output"),
-                    "artifacts": hydrated.get("artifacts") or [],
-                }
-                if result_status == "waiting_user"
-                else None
-            ),
+            "partial_result": partial_result,
             "final_result": {
                 "summary": summary,
                 "final_output": hydrated.get("final_output"),
                 "final_output_text": hydrated.get("final_output_text"),
                 "final_output_json": hydrated.get("final_output_json"),
                 "artifacts": hydrated.get("artifacts") or [],
+                "progress": progress,
+                "clarification": clarification,
             },
             "error": error_message,
         }
@@ -479,6 +507,16 @@ class SubagentHandoff:
                 error_message=completed.get("error_message"),
                 child_run_id=child_run["id"],
             )
+            progress = build_progress_payload(
+                status=completed["status"],
+                hydrated=hydrated,
+                summary=summary,
+            )
+            clarification = build_clarification_payload(
+                status=completed["status"],
+                hydrated=hydrated,
+                question=hydrated.get("final_output") if completed["status"] == "waiting_user" else None,
+            )
 
             invocation_status = completed["status"]
             if invocation_status == "waiting_user":
@@ -507,6 +545,8 @@ class SubagentHandoff:
                 final_output_text=hydrated.get("final_output_text"),
                 final_output_json=hydrated.get("final_output_json"),
                 artifacts=hydrated.get("artifacts") or [],
+                progress=progress,
+                clarification=clarification or {},
                 metadata={
                     "parent_step_id": parent_step_id,
                     "invocation_id": invocation_id,

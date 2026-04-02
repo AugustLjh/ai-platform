@@ -356,6 +356,8 @@ async def test_subagent_handoff_creates_child_run_and_returns_completed_result()
     assert result.final_output_text == "Child review complete."
     assert result.input["message"].startswith("Perform a bounded review pass.")
     assert result.input["delegation"]["parent_run_id"] == "run-parent"
+    assert result.input["handoff_envelope"]["progress"]["protocol_version"] == "managed-subagent.progress.v1"
+    assert result.input["handoff_envelope"]["progress"]["state"] == "in_progress"
     assert tracer.events[0]["event_type"] == "run.created"
 
 
@@ -370,6 +372,10 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
         run_repository.rows[run_id]["final_output_text"] = "Managed review complete."
         run_repository.rows[run_id]["final_output_json"] = {
             "answer": "Managed review complete.",
+            "progress": {
+                "summary": "Reviewed the delegated migration patch.",
+                "completed_items": ["Inspected migration plan", "Validated review findings"],
+            },
             "review_findings": [
                 {
                     "title": "Missing migration",
@@ -430,9 +436,15 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
     assert invocation_repository.updates[0]["status"] == "running"
     assert invocation_repository.updates[-1]["status"] == "completed"
     assert invocation_repository.updates[-1]["result_payload"]["final_result"]["final_output_text"] == "Managed review complete."
+    assert invocation_repository.updates[-1]["result_payload"]["final_result"]["progress"]["state"] == "completed"
+    assert invocation_repository.updates[-1]["result_payload"]["final_result"]["progress"]["completed_items"] == [
+        "Inspected migration plan",
+        "Validated review findings",
+    ]
     assert invocation_repository.updates[-1]["result_payload"]["review_result"]["mode"] == "reviewer"
     assert invocation_repository.updates[-1]["result_payload"]["review_result"]["decision"] == "changes_requested"
     assert invocation_repository.updates[-1]["result_payload"]["review_result"]["blocking_finding_count"] == 1
+    assert result.progress["state"] == "completed"
     assert result.metadata["review_result"]["decision"] == "changes_requested"
 
 
@@ -450,6 +462,16 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
         final_output="Child review complete.",
         final_output_text="Child review complete.",
         artifacts=[],
+        progress={
+            "protocol_version": "managed-subagent.progress.v1",
+            "state": "completed",
+            "summary": "Child review complete.",
+            "completed_items": ["Reviewed the patch"],
+            "pending_items": [],
+            "next_action": None,
+            "artifact_count": 0,
+        },
+        clarification={},
         metadata={
             "invocation_id": "invocation-1",
             "review_result": {
@@ -523,11 +545,13 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
     assert run_repository.updated_steps[0]["output_payload"]["delegate_result"]["summary"] == "Child review complete."
     assert run_repository.updated_steps[0]["output_payload"]["handoff"]["protocol_version"] == "managed-subagent.v1"
     assert run_repository.updated_steps[0]["output_payload"]["review_result"]["decision"] == "approved_with_findings"
+    assert run_repository.updated_steps[0]["output_payload"]["progress"]["state"] == "completed"
     event_types = [event["event_type"] for event in tracer.events]
     assert "subagent.started" in event_types
     assert "subagent.completed" in event_types
     completed_event = next(event for event in tracer.events if event["event_type"] == "subagent.completed")
     assert completed_event["payload"]["review_result"]["mode"] == "reviewer"
+    assert completed_event["payload"]["progress"]["completed_items"] == ["Reviewed the patch"]
 
 
 async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_question():
@@ -544,6 +568,24 @@ async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_questio
         final_output="Need the migration rollout window.",
         final_output_text="Need the migration rollout window.",
         artifacts=[{"artifact_type": "answer", "title": "Question"}],
+        progress={
+            "protocol_version": "managed-subagent.progress.v1",
+            "state": "blocked",
+            "summary": "Review is blocked pending rollout details.",
+            "completed_items": ["Checked the current rollout plan"],
+            "pending_items": ["Need the migration rollout window."],
+            "next_action": "Answer the clarification so the child run can continue.",
+            "artifact_count": 1,
+        },
+        clarification={
+            "protocol_version": "managed-subagent.clarification.v1",
+            "state": "required",
+            "question": "Need the migration rollout window.",
+            "reason": "The rollout plan cannot be approved without a concrete window.",
+            "required_fields": ["migration rollout window"],
+            "response_hint": "Provide the approved rollout window and any blackout constraints.",
+            "blocking": True,
+        },
         metadata={
             "invocation_id": "invocation-1",
             "review_result": {
@@ -595,6 +637,9 @@ async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_questio
     waiting_event = next(event for event in tracer.events if event["event_type"] == "subagent.waiting_user")
     assert waiting_event["payload"]["question"] == "Need the migration rollout window."
     assert waiting_event["payload"]["partial_result"]["question"] == "Need the migration rollout window."
+    assert waiting_event["payload"]["partial_result"]["progress"]["state"] == "blocked"
+    assert waiting_event["payload"]["partial_result"]["clarification"]["required_fields"] == ["migration rollout window"]
+    assert waiting_event["payload"]["clarification"]["response_hint"] == "Provide the approved rollout window and any blackout constraints."
     assert waiting_event["payload"]["handoff_envelope"]["protocol_version"] == "managed-subagent.v1"
 
 

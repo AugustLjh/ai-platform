@@ -3,9 +3,13 @@ import assert from 'node:assert/strict'
 
 import {
   buildInvocationProtocolEntry,
+  clarificationStateLabel,
   collectRunTreeInvocations,
   collectRunTreeNodes,
+  getInvocationClarification,
+  getInvocationProgress,
   getInvocationQuestion,
+  progressStateLabel,
   getInvocationReviewResult,
   normalizeRunTreeNode,
   reviewDecisionLabel,
@@ -197,6 +201,11 @@ test('getInvocationQuestion and buildInvocationProtocolEntry expose waiting-user
           child_run_id: 'run-child',
           request_payload: {
             protocol_version: 'managed-subagent.v1',
+            progress: {
+              protocol_version: 'managed-subagent.progress.v1',
+              state: 'in_progress',
+              summary: 'The review has started.'
+            },
             task: {
               message: 'Review the rollout plan',
               reason: 'Need a bounded specialist verification pass.'
@@ -206,7 +215,25 @@ test('getInvocationQuestion and buildInvocationProtocolEntry expose waiting-user
           result_payload: {
             status: 'waiting_user',
             partial_result: {
-              question: 'Need the migration rollout window.'
+              question: 'Need the migration rollout window.',
+              progress: {
+                protocol_version: 'managed-subagent.progress.v1',
+                state: 'blocked',
+                summary: 'Review is blocked pending rollout details.',
+                completed_items: ['Checked the current rollout plan'],
+                pending_items: ['Need the migration rollout window.'],
+                next_action: 'Answer the clarification so the child run can continue.',
+                artifact_count: 1
+              },
+              clarification: {
+                protocol_version: 'managed-subagent.clarification.v1',
+                state: 'required',
+                question: 'Need the migration rollout window.',
+                reason: 'The rollout plan cannot be approved without a concrete window.',
+                required_fields: ['migration rollout window'],
+                response_hint: 'Provide the approved rollout window and any blackout constraints.',
+                blocking: true
+              }
             }
           }
         },
@@ -223,7 +250,31 @@ test('getInvocationQuestion and buildInvocationProtocolEntry expose waiting-user
     ]
   }).invocations[0]
 
+  assert.equal(progressStateLabel('blocked'), '阻塞中')
+  assert.equal(clarificationStateLabel('required'), '待澄清')
   assert.equal(getInvocationQuestion(item.invocation, item.childRun), 'Need the migration rollout window.')
+  assert.deepEqual(getInvocationProgress(item.invocation), {
+    protocolVersion: 'managed-subagent.progress.v1',
+    state: 'blocked',
+    summary: 'Review is blocked pending rollout details.',
+    completedItems: ['Checked the current rollout plan'],
+    pendingItems: ['Need the migration rollout window.'],
+    nextAction: 'Answer the clarification so the child run can continue.',
+    artifactCount: 1,
+    source: '',
+    hasData: true
+  })
+  assert.deepEqual(getInvocationClarification(item.invocation), {
+    protocolVersion: 'managed-subagent.clarification.v1',
+    state: 'required',
+    question: 'Need the migration rollout window.',
+    reason: 'The rollout plan cannot be approved without a concrete window.',
+    requiredFields: ['migration rollout window'],
+    responseHint: 'Provide the approved rollout window and any blackout constraints.',
+    blocking: true,
+    source: '',
+    hasData: true
+  })
   assert.deepEqual(buildInvocationProtocolEntry(item), {
     id: 'invocation-1',
     target: '未命名专家能力',
@@ -233,6 +284,28 @@ test('getInvocationQuestion and buildInvocationProtocolEntry expose waiting-user
     delegateReason: 'Need a bounded specialist verification pass.',
     constraints: ['focus_paths: db/alembic/versions/example.py'],
     question: 'Need the migration rollout window.',
+    progress: {
+      protocolVersion: 'managed-subagent.progress.v1',
+      state: 'blocked',
+      summary: 'Review is blocked pending rollout details.',
+      completedItems: ['Checked the current rollout plan'],
+      pendingItems: ['Need the migration rollout window.'],
+      nextAction: 'Answer the clarification so the child run can continue.',
+      artifactCount: 1,
+      source: '',
+      hasData: true
+    },
+    clarification: {
+      protocolVersion: 'managed-subagent.clarification.v1',
+      state: 'required',
+      question: 'Need the migration rollout window.',
+      reason: 'The rollout plan cannot be approved without a concrete window.',
+      requiredFields: ['migration rollout window'],
+      responseHint: 'Provide the approved rollout window and any blackout constraints.',
+      blocking: true,
+      source: '',
+      hasData: true
+    },
     reviewSummary: '',
     reviewResult: {
       protocolVersion: '',

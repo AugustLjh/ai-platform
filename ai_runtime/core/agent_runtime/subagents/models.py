@@ -162,4 +162,6 @@ class SubagentDelegationResult(BaseModel):
     final_output_text: str | None = None
     final_output_json: Any = None
     artifacts: list[Dict[str, Any]] = Field(default_factory=list)
+    progress: Dict[str, Any] = Field(default_factory=dict)
+    clarification: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
