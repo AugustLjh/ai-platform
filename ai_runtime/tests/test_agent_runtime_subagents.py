@@ -368,6 +368,19 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
     async def start_run(run_id):
         run_repository.rows[run_id]["status"] = "completed"
         run_repository.rows[run_id]["final_output_text"] = "Managed review complete."
+        run_repository.rows[run_id]["final_output_json"] = {
+            "answer": "Managed review complete.",
+            "review_findings": [
+                {
+                    "title": "Missing migration",
+                    "severity": "high",
+                    "description": "Add the missing schema migration.",
+                    "path": "db/alembic/versions/example.py",
+                    "line": 12,
+                }
+            ],
+            "test_gaps": ["No end-to-end verification covered this path."],
+        }
 
     handoff = SubagentHandoff(
         run_repository,
@@ -411,11 +424,16 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
     assert child_run["input"]["delegation"]["subagent_definition_id"] == "subagent-reviewer"
     assert child_run["input"]["handoff_envelope"]["protocol_version"] == "managed-subagent.v1"
     assert child_run["input"]["handoff_envelope"]["policy_snapshot"]["target"]["publication_id"] == "pub-reviewer"
+    assert child_run["input"]["handoff_envelope"]["policy_snapshot"]["review_policy"]["mode"] == "reviewer"
     assert child_run["metadata"]["delegation"]["invocation_id"] == "invocation-1"
     assert invocation_repository.creates[0]["request_payload"]["status"] == "requested"
     assert invocation_repository.updates[0]["status"] == "running"
     assert invocation_repository.updates[-1]["status"] == "completed"
     assert invocation_repository.updates[-1]["result_payload"]["final_result"]["final_output_text"] == "Managed review complete."
+    assert invocation_repository.updates[-1]["result_payload"]["review_result"]["mode"] == "reviewer"
+    assert invocation_repository.updates[-1]["result_payload"]["review_result"]["decision"] == "changes_requested"
+    assert invocation_repository.updates[-1]["result_payload"]["review_result"]["blocking_finding_count"] == 1
+    assert result.metadata["review_result"]["decision"] == "changes_requested"
 
 
 async def test_orchestrator_execute_delegate_action_records_step_and_subagent_events():
@@ -434,6 +452,24 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
         artifacts=[],
         metadata={
             "invocation_id": "invocation-1",
+            "review_result": {
+                "protocol_version": "managed-subagent.review-result.v1",
+                "required": True,
+                "mode": "reviewer",
+                "decision": "approved_with_findings",
+                "approved": True,
+                "summary": "Reviewer 通过但有提示 · 1 条 finding",
+                "finding_count": 1,
+                "blocking_finding_count": 0,
+                "findings": [
+                    {
+                        "title": "Missing regression test",
+                        "severity": "medium",
+                        "description": "Add a regression test for the fallback path.",
+                    }
+                ],
+                "test_gaps": ["No automated regression test was run."],
+            },
             "handoff_envelope": {
                 "protocol_version": "managed-subagent.v1",
                 "task": {"message": "Review the patch"},
@@ -486,9 +522,12 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
     assert observation["result"]["child_run_id"] == "child-run-1"
     assert run_repository.updated_steps[0]["output_payload"]["delegate_result"]["summary"] == "Child review complete."
     assert run_repository.updated_steps[0]["output_payload"]["handoff"]["protocol_version"] == "managed-subagent.v1"
+    assert run_repository.updated_steps[0]["output_payload"]["review_result"]["decision"] == "approved_with_findings"
     event_types = [event["event_type"] for event in tracer.events]
     assert "subagent.started" in event_types
     assert "subagent.completed" in event_types
+    completed_event = next(event for event in tracer.events if event["event_type"] == "subagent.completed")
+    assert completed_event["payload"]["review_result"]["mode"] == "reviewer"
 
 
 async def test_orchestrator_rejects_delegate_when_single_agent_gate_is_not_satisfied():

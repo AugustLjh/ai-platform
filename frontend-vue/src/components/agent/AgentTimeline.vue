@@ -29,6 +29,8 @@
 </template>
 
 <script setup>
+import { reviewDecisionLabel, reviewModeLabel, summarizeInvocationTarget } from '@/utils/agentRunTree'
+
 const props = defineProps({
   events: {
     type: Array,
@@ -50,6 +52,32 @@ const formatTime = (value) => {
 
 const summariseEvent = (event) => {
   const payload = event.payload || {}
+  if (event.eventType.startsWith('subagent.')) {
+    const target = summarizeInvocationTarget({
+      requestPayload: {
+        policy_snapshot: payload.subagent_target || payload.subagentTarget || {}
+      },
+      publicationId: payload.subagent_target?.publication_id || payload.subagentTarget?.publicationId || '',
+      subagentDefinitionId: payload.subagent_target?.subagent_definition_id || payload.subagentTarget?.subagentDefinitionId || ''
+    })
+    const reviewResult = payload.review_result || payload.reviewResult || {}
+    const childStatus = payload.child_status || payload.childStatus || payload.status || ''
+    const summary = payload.summary || payload.error || payload.final_output_text || ''
+    const parts = [target]
+    if (reviewResult.mode && reviewResult.mode !== 'none') {
+      parts.push(`${reviewModeLabel(reviewResult.mode)} ${reviewDecisionLabel(reviewResult.decision)}`)
+    }
+    if (childStatus) {
+      parts.push(`状态 ${childStatus}`)
+    }
+    if (payload.child_run_id || payload.childRunId) {
+      parts.push(`child ${(payload.child_run_id || payload.childRunId).slice(0, 8)}`)
+    }
+    if (summary) {
+      parts.push(summary)
+    }
+    return parts.join(' · ')
+  }
   if (event.eventType === 'run.resumed') {
     return '恢复执行，当前 workspace 状态已切换到新一轮运行'
   }
@@ -101,6 +129,10 @@ const summariseEvent = (event) => {
   border-radius: 24px;
   padding: 22px;
   box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  max-height: min(72vh, 840px);
+  overflow: hidden;
 }
 
 .panel-head {
@@ -145,6 +177,9 @@ const summariseEvent = (event) => {
   list-style: none;
   display: grid;
   gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .timeline-item {
@@ -167,6 +202,8 @@ const summariseEvent = (event) => {
   border-radius: 18px;
   padding: 16px;
   background: linear-gradient(180deg, #ffffff 0%, #f9fcfb 100%);
+  max-height: 240px;
+  overflow: auto;
 }
 
 .timeline-card-head {

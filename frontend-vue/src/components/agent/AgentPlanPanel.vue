@@ -12,7 +12,7 @@
       planner 尚未生成计划。
     </div>
 
-    <template v-else>
+    <div v-else class="plan-content">
       <div class="plan-card">
         <div class="plan-label">Action</div>
         <div class="plan-action">
@@ -51,7 +51,7 @@
         <p>{{ plan.action.tool_name }}</p>
         <pre>{{ JSON.stringify(plan.action.tool_arguments || {}, null, 2) }}</pre>
       </div>
-    </template>
+    </div>
   </section>
 </template>
 
@@ -75,6 +75,10 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
   border-radius: 24px;
   padding: 22px;
   box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  max-height: min(72vh, 840px);
+  overflow: hidden;
 }
 
 .panel-head {
@@ -114,15 +118,21 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
   text-align: center;
 }
 
+.plan-content {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .plan-card {
   border: 1px solid var(--gray-200);
   border-radius: 18px;
   padding: 16px;
   background: linear-gradient(180deg, #ffffff 0%, #f9fcfb 100%);
-}
-
-.plan-card + .plan-card {
-  margin-top: 12px;
+  max-height: 320px;
+  overflow: auto;
 }
 
 .plan-label {
@@ -175,6 +185,7 @@ pre {
   font-size: 12px;
   line-height: 1.5;
   overflow: auto;
+  max-height: 220px;
   font-family: var(--font-mono);
 }
 </style>

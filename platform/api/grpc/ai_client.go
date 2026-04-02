@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ai-platform/platform/database"
 	pb "github.com/ai-platform/platform/proto/chat"
@@ -224,6 +225,65 @@ type runtimeAgentRunSummaryResponse struct {
 	Run database.AgentRun `json:"run"`
 }
 
+type AgentSubagentInvocation struct {
+	ID                 string          `json:"id"`
+	ParentRunID        string          `json:"parent_run_id"`
+	ParentStepID       *string         `json:"parent_step_id,omitempty"`
+	SubagentDefinition string          `json:"subagent_definition_id"`
+	PublicationID      *string         `json:"publication_id,omitempty"`
+	VersionID          *string         `json:"version_id,omitempty"`
+	AuthorizationID    *string         `json:"authorization_id,omitempty"`
+	ChildRunID         *string         `json:"child_run_id,omitempty"`
+	Status             string          `json:"status"`
+	RequestPayload     json.RawMessage `json:"request_payload"`
+	ResultPayload      json.RawMessage `json:"result_payload"`
+	ErrorMessage       *string         `json:"error_message,omitempty"`
+	StartedAt          *time.Time      `json:"started_at,omitempty"`
+	CompletedAt        *time.Time      `json:"completed_at,omitempty"`
+	CreatedAt          *time.Time      `json:"created_at,omitempty"`
+	UpdatedAt          *time.Time      `json:"updated_at,omitempty"`
+}
+
+type runtimeAgentInvocationListResponse struct {
+	Invocations []*AgentSubagentInvocation `json:"invocations"`
+	Total       int                        `json:"total"`
+}
+
+type AgentRunTreeRunSummary struct {
+	ID                string          `json:"id"`
+	AgentDefinitionID string          `json:"agent_definition_id"`
+	TenantID          string          `json:"tenant_id"`
+	UserID            *string         `json:"user_id,omitempty"`
+	SessionID         *string         `json:"session_id,omitempty"`
+	Status            string          `json:"status"`
+	Input             json.RawMessage `json:"input"`
+	Metadata          json.RawMessage `json:"metadata"`
+	FinalOutput       *string         `json:"final_output,omitempty"`
+	FinalOutputText   *string         `json:"final_output_text,omitempty"`
+	FinalOutputJSON   json.RawMessage `json:"final_output_json,omitempty"`
+	ErrorMessage      *string         `json:"error_message,omitempty"`
+	StartedAt         *time.Time      `json:"started_at,omitempty"`
+	FinishedAt        *time.Time      `json:"finished_at,omitempty"`
+	CancelledAt       *time.Time      `json:"cancelled_at,omitempty"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
+type AgentRunTreeNode struct {
+	Run         *AgentRunTreeRunSummary     `json:"run"`
+	Depth       int                         `json:"depth"`
+	Invocations []*AgentRunTreeInvocation   `json:"invocations"`
+}
+
+type AgentRunTreeInvocation struct {
+	Invocation *AgentSubagentInvocation `json:"invocation"`
+	ChildRun   *AgentRunTreeNode        `json:"child_run,omitempty"`
+}
+
+type AgentRunTreeResponse struct {
+	Root *AgentRunTreeNode `json:"root"`
+}
+
 type runtimeAgentResumeRequest struct {
 	InputPatch json.RawMessage `json:"input_patch"`
 }
@@ -412,6 +472,38 @@ func (c *AIClient) ResumeAgentRun(ctx context.Context, runID, tenantID string, i
 		return nil, err
 	}
 	return &response.Run, nil
+}
+
+func (c *AIClient) ListAgentRunInvocations(ctx context.Context, runID, tenantID string) ([]*AgentSubagentInvocation, error) {
+	var response runtimeAgentInvocationListResponse
+	if err := c.doJSON(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("/api/v1/agents/runs/%s/invocations", url.PathEscape(runID)),
+		nil,
+		tenantID,
+		"",
+		&response,
+	); err != nil {
+		return nil, err
+	}
+	return response.Invocations, nil
+}
+
+func (c *AIClient) GetAgentRunTree(ctx context.Context, runID, tenantID string, maxDepth int) (*AgentRunTreeResponse, error) {
+	var response AgentRunTreeResponse
+	if err := c.doJSON(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("/api/v1/agents/runs/%s/tree?max_depth=%d", url.PathEscape(runID), maxDepth),
+		nil,
+		tenantID,
+		"",
+		&response,
+	); err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 func (c *AIClient) ListAgentTools(ctx context.Context, tenantID, agentDefinitionID string) ([]AgentToolSpec, error) {

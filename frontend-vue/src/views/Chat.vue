@@ -134,6 +134,15 @@
                     :data-multiline="message.content && message.content.includes('\n')"
                   >
                     <div class="user-content">{{ message.content }}</div>
+                    <div v-if="message.uploadedFiles && message.uploadedFiles.length > 0" class="uploaded-file-list">
+                      <div
+                        v-for="file in message.uploadedFiles"
+                        :key="`${message.id || index}-${file.id || file.path || file.name}`"
+                        class="uploaded-file-chip"
+                      >
+                        <span class="uploaded-file-name">{{ file.path || file.name }}</span>
+                      </div>
+                    </div>
                   </div>
                 </template>
                 <span v-if="message.streaming" class="stream-cursor">▍</span>
@@ -236,41 +245,121 @@
 
       <div class="input-container">
         <div class="input-inner">
+          <input
+            ref="fileInputRef"
+            type="file"
+            multiple
+            class="upload-input"
+            @change="handleFileChange"
+          />
+          <input
+            ref="folderInputRef"
+            type="file"
+            multiple
+            webkitdirectory
+            directory
+            class="upload-input"
+            @change="handleFolderChange"
+          />
+
           <div v-if="error" class="error-message">
             <span class="error-icon">⚠️</span>
             <span>{{ error }}</span>
             <button @click="error = ''" class="error-close">×</button>
           </div>
 
-          <form @submit.prevent="handleSendMessage" class="input-form">
-            <div class="input-wrapper">
-              <textarea
-                v-model="inputMessage"
-                @compositionstart="isComposing = true"
-                @compositionend="isComposing = false"
-                @keydown.enter.exact.prevent="handleEnterSend"
-                @input="autoResize"
-                :placeholder="canChat ? '输入消息... (Enter 发送，Shift+Enter 换行)' : '请先配置聊天模型'"
-                rows="1"
-                ref="textareaRef"
-                :disabled="isLoading || !canChat"
-                class="message-input"
-              ></textarea>
+          <div v-if="uploadError" class="error-message upload-error">
+            <span class="error-icon">⚠️</span>
+            <span>{{ uploadError }}</span>
+            <button @click="clearUploadError" class="error-close">×</button>
+          </div>
+
+          <div v-if="bundles.length > 0" class="composer-upload-list">
+            <div
+              v-for="bundle in bundles"
+              :key="bundle.bundle_id"
+              class="composer-upload-card"
+            >
+              <div class="composer-upload-main">
+                <strong>{{ bundle.summary?.file_count || bundle.files?.length || 0 }} 个文件</strong>
+                <span>{{ formatUploadBundle(bundle) }}</span>
+              </div>
               <button
-                type="submit"
-                :disabled="!inputMessage.trim() || isLoading || !canChat"
-                class="btn-send"
+                type="button"
+                class="composer-upload-remove"
+                @click="removeBundle(bundle.bundle_id)"
               >
-                <span v-if="!isLoading" class="send-icon">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                    <path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </span>
-                <span v-else class="spinner"></span>
+                移除
               </button>
             </div>
+          </div>
+
+          <form @submit.prevent="handleSendMessage" class="input-form">
+            <div class="input-shell">
+              <div class="composer-tools">
+                <button
+                  type="button"
+                  class="composer-tool-btn"
+                  :disabled="uploading"
+                  aria-label="上传文件"
+                  title="上传文件"
+                  @click="openFilePicker"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M14 3v5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M12 11v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    <path d="M9.5 13.5 12 11l2.5 2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="composer-tool-btn"
+                  :disabled="uploading"
+                  aria-label="上传文件夹"
+                  title="上传文件夹"
+                  @click="openFolderPicker"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M12 11v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    <path d="M9.5 13.5 12 11l2.5 2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="input-wrapper">
+                <textarea
+                  v-model="inputMessage"
+                  @compositionstart="isComposing = true"
+                  @compositionend="isComposing = false"
+                  @keydown.enter.exact.prevent="handleEnterSend"
+                  @input="autoResize"
+                  :placeholder="canChat ? '输入消息... (Enter 发送，Shift+Enter 换行)' : '请先配置聊天模型'"
+                  rows="1"
+                  ref="textareaRef"
+                  :disabled="isLoading || !canChat"
+                  class="message-input"
+                ></textarea>
+                <button
+                  type="submit"
+                  :disabled="!inputMessage.trim() || isLoading || !canChat"
+                  class="btn-send"
+                >
+                  <span v-if="!isLoading" class="send-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </span>
+                  <span v-else class="spinner"></span>
+                </button>
+              </div>
+            </div>
           </form>
+
+          <div v-if="hasUploads" class="composer-tool-meta">已附加 {{ totalFiles }} 个文件</div>
+          <div v-else-if="uploading" class="composer-tool-meta">正在解析文件...</div>
         </div>
       </div>
     </div>
@@ -285,6 +374,7 @@ import { useChatStore } from '@/store/chat'
 import { useModelsStore } from '@/store/models'
 import { useKnowledgeStore } from '@/store/knowledge'
 import MessageMarkdownBlocks from '@/components/MessageMarkdownBlocks.vue'
+import { useUploadBundles } from '@/composables/useUploadBundles'
 
 const router = useRouter()
 const route = useRoute()
@@ -299,6 +389,22 @@ const error = ref('')
 const messagesContainer = ref(null)
 const textareaRef = ref(null)
 const openCitationKeys = ref({})
+const {
+  bundles,
+  bundleIds,
+  totalFiles,
+  hasUploads,
+  uploading,
+  uploadError,
+  fileInputRef,
+  folderInputRef,
+  openFilePicker,
+  openFolderPicker,
+  handleFileChange,
+  handleFolderChange,
+  removeBundle,
+  clearBundles
+} = useUploadBundles()
 
 const messages = computed(() => chatStore.currentSession?.messages || [])
 const latestMessageSignature = computed(() => {
@@ -403,9 +509,25 @@ const handleSendMessage = async () => {
   isLoading.value = true
 
   try {
+    const optimisticUploadedFiles = bundleIds.value.length > 0
+      ? bundles.value.flatMap((bundle) => (bundle.files || []).map((file) => ({
+          id: file.id,
+          name: file.name,
+          path: file.path,
+          bundle_id: bundle.bundle_id
+        })))
+      : []
     await chatStore.sendMessage(userMessage, {
-      model: selectedModel.value?.id
+      model: selectedModel.value?.id,
+      metadata: bundleIds.value.length > 0
+        ? {
+            upload_bundle_ids: JSON.stringify(bundleIds.value),
+            uploaded_files: JSON.stringify(optimisticUploadedFiles)
+          }
+        : {},
+      optimisticUploadedFiles
     })
+    clearBundles()
     scrollToBottom()
   } catch (err) {
     error.value = err.response?.data?.error || '发送消息失败，请重试'
@@ -535,6 +657,19 @@ const toggleCitations = (message, index) => {
     ...openCitationKeys.value,
     [key]: !openCitationKeys.value[key]
   }
+}
+
+const clearUploadError = () => {
+  uploadError.value = ''
+}
+
+const formatUploadBundle = (bundle) => {
+  const files = Array.isArray(bundle?.files) ? bundle.files : []
+  const names = files.slice(0, 2).map((file) => file.path || file.name).filter(Boolean)
+  const rest = files.length - names.length
+  return [names.join('，'), rest > 0 ? `等 ${files.length} 个` : '', bundle?.skipped?.length ? `跳过 ${bundle.skipped.length} 个` : '']
+    .filter(Boolean)
+    .join(' · ')
 }
 
 </script>
@@ -1350,6 +1485,31 @@ const toggleCitations = (message, index) => {
   line-height: 1.6;
 }
 
+.uploaded-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.uploaded-file-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.uploaded-file-name {
+  max-width: min(420px, 68vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #334155;
+}
+
 .message-footer {
   display: flex;
   align-items: center;
@@ -1444,10 +1604,14 @@ const toggleCitations = (message, index) => {
 
 /* 输入区域 */
 .input-container {
-  padding: 12px 0 18px;
-  background: var(--gpt-bg);
+  padding: 14px 0 18px;
+  background: linear-gradient(180deg, rgba(244, 247, 250, 0.84) 0%, rgba(255, 255, 255, 0.96) 18%, rgba(255, 255, 255, 0.98) 100%);
   border-top: 1px solid var(--gpt-border);
-  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 -10px 24px rgba(15, 23, 42, 0.05);
+  backdrop-filter: blur(14px);
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
 }
 
 .input-inner {
@@ -1455,6 +1619,12 @@ const toggleCitations = (message, index) => {
   max-width: var(--thread-content-max-width);
   margin: 0 auto;
   padding: 0 var(--thread-content-margin);
+  display: grid;
+  gap: 8px;
+}
+
+.upload-input {
+  display: none;
 }
 
 .error-message {
@@ -1490,6 +1660,97 @@ const toggleCitations = (message, index) => {
   transition: background var(--transition-base);
 }
 
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-bottom: 4px;
+}
+
+.composer-tool-btn {
+  width: 46px;
+  height: 46px;
+  border: 1px solid #d9e1ea;
+  background: rgba(255, 255, 255, 0.92);
+  color: #334155;
+  border-radius: 16px;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.composer-tool-btn:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+}
+
+.composer-tool-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.composer-tool-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.composer-tool-meta {
+  color: #64748b;
+  font-size: 12px;
+  padding-left: 58px;
+}
+
+.composer-upload-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.composer-upload-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid #dbe4ee;
+  background: #ffffff;
+}
+
+.composer-upload-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.composer-upload-main strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.composer-upload-main span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.composer-upload-remove {
+  border: none;
+  background: transparent;
+  color: #c2410c;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .error-close:hover {
   background: rgba(0, 0, 0, 0.1);
 }
@@ -1498,16 +1759,23 @@ const toggleCitations = (message, index) => {
   width: 100%;
 }
 
+.input-shell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: end;
+  gap: 12px;
+}
+
 .input-wrapper {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   align-items: flex-end;
-  padding: 8px 10px;
+  padding: 12px 12px 12px 18px;
   background: var(--gpt-input-bg);
   border: 1px solid var(--gray-300);
-  border-radius: 12px;
+  border-radius: 24px;
   transition: all var(--transition-base);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
 }
 
 .input-wrapper:focus-within {
@@ -1517,7 +1785,8 @@ const toggleCitations = (message, index) => {
 
 .message-input {
   flex: 1;
-  padding: 6px 2px;
+  min-height: 46px;
+  padding: 10px 0 8px;
   border: none;
   background: transparent;
   font-size: 14px;
@@ -1538,23 +1807,24 @@ const toggleCitations = (message, index) => {
 }
 
 .btn-send {
-  width: 32px;
-  height: 32px;
+  width: 46px;
+  height: 46px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--primary-500);
   color: white;
   border: none;
-  border-radius: 6px;
+  border-radius: 16px;
   cursor: pointer;
   transition: all var(--transition-base);
   flex-shrink: 0;
-  box-shadow: none;
+  box-shadow: 0 12px 24px rgba(16, 163, 127, 0.22);
 }
 
 .btn-send:hover:not(:disabled) {
   background: var(--primary-600);
+  transform: translateY(-1px);
 }
 
 .btn-send:active:not(:disabled) {
@@ -1564,6 +1834,7 @@ const toggleCitations = (message, index) => {
 .btn-send:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .send-icon {
@@ -1586,6 +1857,19 @@ const toggleCitations = (message, index) => {
 
   .input-container {
     padding: 12px 0 18px;
+  }
+
+  .input-shell {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .composer-tools {
+    padding-bottom: 0;
+  }
+
+  .composer-tool-meta {
+    padding-left: 0;
   }
 
   .message {

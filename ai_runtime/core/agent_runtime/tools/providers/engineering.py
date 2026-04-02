@@ -12,6 +12,7 @@ from core.agent_runtime.tools.providers.knowledge import _resolve_accessible_kno
 from core.database import get_db_manager
 from core.dependencies import get_container
 from core.models.knowledge_base import SourceType
+from core.uploads.bundle_store import get_attachment_bundle_store, normalize_bundle_ids
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,9 @@ DEFAULT_ENGINEERING_TOOL_NAMES = (
     "project_list_context",
     "project_search_context",
     "project_read_context_item",
+    "project_list_uploaded_files",
+    "project_search_uploaded_files",
+    "project_read_uploaded_file",
 )
 
 
@@ -65,6 +69,14 @@ class ProjectContextTool(BaseTool):
         if not session_id:
             raise ValueError("current run is not linked to a conversation session")
         return session_id
+
+    async def _resolve_upload_bundle_ids(self, context: ToolContext) -> list[str]:
+        run = await self._resolve_run(context)
+        run_input = run.get("input") if isinstance(run.get("input"), dict) else {}
+        bundle_ids = normalize_bundle_ids(run_input.get("upload_bundle_ids"))
+        if not bundle_ids:
+            raise ValueError("current run has no uploaded files")
+        return bundle_ids
 
     async def _list_session_messages(
         self,
@@ -437,10 +449,97 @@ class ProjectReadContextItemTool(ProjectContextTool):
         }
 
 
+class ProjectListUploadedFilesTool(ProjectContextTool):
+    spec = ToolSpec(
+        name="project_list_uploaded_files",
+        description="List files uploaded in the current run, including folder structure and previews.",
+        input_schema={"type": "object", "properties": {}},
+        kind="engineering",
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        bundle_ids = await self._resolve_upload_bundle_ids(context)
+        return get_attachment_bundle_store().list_bundle_files(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            bundle_ids=bundle_ids,
+        )
+
+
+class ProjectSearchUploadedFilesTool(ProjectContextTool):
+    spec = ToolSpec(
+        name="project_search_uploaded_files",
+        description="Search uploaded files in the current run and return the most relevant excerpts.",
+        input_schema={
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+        },
+        kind="engineering",
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        limit = _clamp_int(arguments.get("limit"), default=8, minimum=1, maximum=20)
+        bundle_ids = await self._resolve_upload_bundle_ids(context)
+        results = get_attachment_bundle_store().search_bundle_files(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            bundle_ids=bundle_ids,
+            query=query,
+            limit=limit,
+        )
+        return {
+            "query": query,
+            "results": results,
+            "total": len(results),
+        }
+
+
+class ProjectReadUploadedFileTool(ProjectContextTool):
+    spec = ToolSpec(
+        name="project_read_uploaded_file",
+        description="Read the content of a specific uploaded file from the current run.",
+        input_schema={
+            "type": "object",
+            "required": ["file_id"],
+            "properties": {
+                "file_id": {"type": "string"},
+                "max_chars": {"type": "integer", "minimum": 200, "maximum": 20000},
+            },
+        },
+        kind="engineering",
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        file_id = str(arguments.get("file_id") or "").strip()
+        if not file_id:
+            raise ValueError("file_id is required")
+        max_chars = _clamp_int(arguments.get("max_chars"), default=8000, minimum=200, maximum=20000)
+        bundle_ids = await self._resolve_upload_bundle_ids(context)
+        return {
+            "file": get_attachment_bundle_store().read_bundle_file(
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+                bundle_ids=bundle_ids,
+                attachment_id=file_id,
+                max_chars=max_chars,
+            )
+        }
+
+
 ENGINEERING_TOOL_TYPES = {
     "project_list_context": ProjectListContextTool,
     "project_search_context": ProjectSearchContextTool,
     "project_read_context_item": ProjectReadContextItemTool,
+    "project_list_uploaded_files": ProjectListUploadedFilesTool,
+    "project_search_uploaded_files": ProjectSearchUploadedFilesTool,
+    "project_read_uploaded_file": ProjectReadUploadedFileTool,
 }
 
 
@@ -449,7 +548,7 @@ class EngineeringToolProvider:
         self.enabled_tool_names = [name for name in enabled_tool_names if name in ENGINEERING_TOOL_TYPES]
         self._metadata = {
             "provider": "engineering",
-            "source": "conversation_history_and_uploaded_documents",
+            "source": "conversation_history_uploaded_context_and_agent_mounted_documents",
         }
 
     @classmethod

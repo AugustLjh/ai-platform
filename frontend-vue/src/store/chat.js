@@ -55,6 +55,17 @@ const parseFeedback = (metadata = {}) => {
   return { label, rating, comment, at }
 }
 
+const parseUploadedFiles = (metadata = {}) => {
+  const rawFiles = metadata?.uploaded_files
+  if (!rawFiles) return []
+  try {
+    const parsed = typeof rawFiles === 'string' ? JSON.parse(rawFiles) : rawFiles
+    return Array.isArray(parsed) ? parsed : []
+  } catch (error) {
+    return []
+  }
+}
+
 const buildMessageHtml = (role, content, shouldRenderMarkdown = true) => {
   if (role !== 'assistant' || shouldRenderMarkdown === false) {
     return ''
@@ -134,7 +145,8 @@ const normalizeMessage = (raw) => {
     routeScene: metadata?.route_scene || null,
     fallbackUsed: parseBoolean(metadata?.fallback_used),
     totalTokens: parseNumber(metadata?.total_tokens),
-    costUsd: parseNumber(metadata?.cost_usd)
+    costUsd: parseNumber(metadata?.cost_usd),
+    uploadedFiles: parseUploadedFiles(metadata)
   }
 }
 
@@ -495,7 +507,9 @@ export const useChatStore = defineStore('chat', {
       // Add user message
       this.addMessage({
         role: 'user',
-        content: message
+        content: message,
+        metadata: configOverride.metadata || {},
+        uploadedFiles: Array.isArray(configOverride.optimisticUploadedFiles) ? configOverride.optimisticUploadedFiles : []
       })
 
       // Add assistant placeholder
@@ -528,7 +542,8 @@ export const useChatStore = defineStore('chat', {
             use_rag: configOverride.use_rag ?? (effectiveKnowledgeBaseId ? true : this.config.useRAG),
             temperature: configOverride.temperature ?? this.config.temperature,
             max_tokens: configOverride.max_tokens ?? this.config.maxTokens,
-            knowledge_base_id: effectiveKnowledgeBaseId || undefined
+            knowledge_base_id: effectiveKnowledgeBaseId || undefined,
+            metadata: configOverride.metadata || {}
           },
           (chunk) => {
             const list = this.messagesBySession[sessionId] || []

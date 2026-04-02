@@ -39,6 +39,7 @@ var (
 
 const (
 	chatHistoryMetadataKey = "chat_history"
+	chatUploadBundleIDsKey = "upload_bundle_ids"
 	maxPromptHistoryItems  = 40
 )
 
@@ -77,6 +78,10 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 	session := s.sessions.GetOrCreate(req.SessionID, req.UserID)
 	history := s.loadPromptHistory(req, session)
 	runtimeMetadata := s.attachPromptHistoryMetadata(req.Metadata, history)
+	runtimeMetadata[chatUploadBundleIDsKey] = encodeStringList(mergeStringLists(
+		decodeStringList(runtimeMetadata[chatUploadBundleIDsKey]),
+		s.loadSessionUploadBundleIDs(req),
+	))
 
 	if s.sessionStore != nil {
 		if err := s.persistMessage(req.SessionID, "user", req.Message, modelName, req.Metadata); err != nil {
@@ -310,6 +315,66 @@ func (s *ChatService) attachPromptHistoryMetadata(metadata map[string]string, hi
 	}
 
 	merged[chatHistoryMetadataKey] = string(encoded)
+	return merged
+}
+
+func (s *ChatService) loadSessionUploadBundleIDs(req *ChatRequest) []string {
+	if s.sessionStore == nil {
+		return decodeStringList(req.Metadata[chatUploadBundleIDsKey])
+	}
+
+	messages, err := s.sessionStore.GetSessionMessages(req.SessionID, 200, 0)
+	if err != nil {
+		return decodeStringList(req.Metadata[chatUploadBundleIDsKey])
+	}
+
+	bundleIDs := decodeStringList(req.Metadata[chatUploadBundleIDsKey])
+	for _, message := range messages {
+		bundleIDs = mergeStringLists(bundleIDs, decodeStringList(message.Metadata[chatUploadBundleIDsKey]))
+	}
+	return bundleIDs
+}
+
+func decodeStringList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	var items []string
+	if err := json.Unmarshal([]byte(value), &items); err == nil {
+		return mergeStringLists(items)
+	}
+
+	return mergeStringLists(strings.Split(value, ","))
+}
+
+func encodeStringList(values []string) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	payload, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(payload)
+}
+
+func mergeStringLists(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	merged := make([]string, 0)
+	for _, group := range groups {
+		for _, item := range group {
+			trimmed := strings.TrimSpace(item)
+			if trimmed == "" {
+				continue
+			}
+			if _, ok := seen[trimmed]; ok {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+			merged = append(merged, trimmed)
+		}
+	}
 	return merged
 }
 

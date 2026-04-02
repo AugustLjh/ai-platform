@@ -94,6 +94,37 @@ class RunRepository:
         )
         return [_record_to_dict(row) for row in rows]
 
+    async def list_runs_by_ids(
+        self,
+        run_ids: List[str],
+        *,
+        tenant_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        normalized_ids = []
+        for value in run_ids:
+            if not value:
+                continue
+            serialized = _serialize_uuid(value)
+            if serialized is None:
+                continue
+            normalized_ids.append(serialized)
+
+        if not normalized_ids:
+            return []
+
+        rows = await self.db_pool.fetch(
+            """
+            SELECT *
+            FROM agent_runs
+            WHERE id = ANY($1::uuid[])
+              AND ($2::uuid IS NULL OR tenant_id = $2)
+            ORDER BY created_at ASC
+            """,
+            normalized_ids,
+            _serialize_uuid(tenant_id),
+        )
+        return [_record_to_dict(row) for row in rows]
+
     async def update_run_status(
         self,
         run_id: str,

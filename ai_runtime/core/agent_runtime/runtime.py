@@ -14,6 +14,12 @@ from core.agent_runtime.models import (
     AgentRunEventListResponse,
     AgentRunListResponse,
     AgentRunSummaryResponse,
+    AgentRunTreeEdge,
+    AgentRunTreeNode,
+    AgentRunTreeResponse,
+    AgentRunTreeRunSummary,
+    AgentSubagentInvocation,
+    AgentSubagentInvocationListResponse,
     RuntimeCreateRunRequest,
 )
 from core.agent_runtime.orchestrator import AgentOrchestrator
@@ -32,6 +38,7 @@ from core.agent_runtime.tools.base import ToolLookupContext
 from core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
 from core.agent_runtime.tools.registry import ToolRegistry
 from core.agent_runtime.tracing import AgentTracer
+from core.uploads.bundle_store import get_attachment_bundle_store, normalize_bundle_ids
 
 
 class AgentRuntime:
@@ -75,6 +82,53 @@ class AgentRuntime:
             subagent_router=SubagentRouter(),
             subagent_handoff=self.subagent_handoff,
         )
+
+    def _hydrate_upload_context(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str | None,
+        run_input: dict | None,
+    ) -> dict:
+        payload = dict(run_input or {})
+        bundle_ids = normalize_bundle_ids(payload.get("upload_bundle_ids"))
+        if not bundle_ids:
+            payload.pop("uploaded_attachments", None)
+            payload.pop("uploaded_attachments_manifest", None)
+            return payload
+
+        query = str(payload.get("message") or payload.get("prompt") or payload.get("original_message") or "").strip()
+        store = get_attachment_bundle_store()
+        summary = store.summarize_bundles(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            bundle_ids=bundle_ids,
+            query=query,
+        )
+        payload["upload_bundle_ids"] = bundle_ids
+        payload["uploaded_attachments_manifest"] = {
+            "bundle_ids": summary["bundle_ids"],
+            "file_count": summary["file_count"],
+            "directory_tree": summary["directory_tree"],
+            "files": [
+                {
+                    "id": item.get("id"),
+                    "bundle_id": item.get("bundle_id"),
+                    "name": item.get("name"),
+                    "path": item.get("path"),
+                    "score": item.get("score", 0),
+                    "char_count": item.get("char_count"),
+                }
+                for item in summary["files"]
+            ],
+        }
+        payload["uploaded_attachments"] = {
+            "bundle_ids": summary["bundle_ids"],
+            "directory_tree": summary["directory_tree"],
+            "files": summary["files"],
+            "context_text": summary["context_text"],
+        }
+        return payload
 
     def _build_resume_context(self, run_row: dict) -> dict:
         context = dict(run_row.get("context") or {})
@@ -131,6 +185,74 @@ class AgentRuntime:
             }
         )
 
+    def _hydrate_subagent_invocation_row(self, row: dict) -> AgentSubagentInvocation:
+        return AgentSubagentInvocation.model_validate(
+            {
+                **row,
+                "request_payload": row.get("request_payload") if isinstance(row.get("request_payload"), dict) else {},
+                "result_payload": row.get("result_payload") if isinstance(row.get("result_payload"), dict) else {},
+            }
+        )
+
+    def _hydrate_tree_run_summary(self, run_row: dict) -> AgentRunTreeRunSummary:
+        legacy = hydrate_legacy_result(
+            final_output=run_row.get("final_output"),
+            final_output_text=run_row.get("final_output_text"),
+            final_output_json=run_row.get("final_output_json"),
+            artifacts=[],
+        )
+        return AgentRunTreeRunSummary.model_validate(
+            {
+                **run_row,
+                "final_output": legacy.get("final_output"),
+                "final_output_text": legacy.get("final_output_text"),
+                "final_output_json": legacy.get("final_output_json"),
+            }
+        )
+
+    async def _build_run_tree_node(
+        self,
+        run_row: dict,
+        *,
+        tenant_id: str | None,
+        depth: int,
+        remaining_depth: int,
+    ) -> AgentRunTreeNode:
+        invocations = await self.subagent_invocation_repository.list_invocations_for_parent_run(run_row["id"])
+        invocation_models = [self._hydrate_subagent_invocation_row(item) for item in invocations]
+
+        child_nodes_by_run_id: dict[str, AgentRunTreeNode] = {}
+        child_run_ids = [
+            invocation.child_run_id
+            for invocation in invocation_models
+            if invocation.child_run_id
+        ]
+        if remaining_depth > 0 and child_run_ids:
+            child_rows = await self.run_repository.list_runs_by_ids(child_run_ids, tenant_id=tenant_id)
+            child_rows_by_id = {str(item.get("id")): item for item in child_rows if item.get("id")}
+            for child_run_id in child_run_ids:
+                child_row = child_rows_by_id.get(child_run_id)
+                if child_row is None:
+                    continue
+                child_nodes_by_run_id[child_run_id] = await self._build_run_tree_node(
+                    child_row,
+                    tenant_id=tenant_id,
+                    depth=depth + 1,
+                    remaining_depth=remaining_depth - 1,
+                )
+
+        return AgentRunTreeNode(
+            run=self._hydrate_tree_run_summary(run_row),
+            depth=depth,
+            invocations=[
+                AgentRunTreeEdge(
+                    invocation=invocation,
+                    child_run=child_nodes_by_run_id.get(invocation.child_run_id or ""),
+                )
+                for invocation in invocation_models
+            ],
+        )
+
     async def _load_terminal_run_surface(self, run_row: dict | None) -> dict:
         if not run_row:
             return {
@@ -173,13 +295,18 @@ class AgentRuntime:
         return [item.model_dump(mode="json") for item in items]
 
     async def create_run(self, request: RuntimeCreateRunRequest) -> AgentRunSummaryResponse:
+        hydrated_input = self._hydrate_upload_context(
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            run_input=request.input,
+        )
         run_row = await self.run_repository.create_run(
             {
                 "agent_definition_id": request.agent_definition_id,
                 "tenant_id": request.tenant_id,
                 "user_id": request.user_id,
                 "session_id": request.session_id,
-                "input": request.input,
+                "input": hydrated_input,
                 "metadata": request.metadata,
             }
         )
@@ -210,6 +337,37 @@ class AgentRuntime:
         steps = await self.run_repository.list_steps(run_id)
         tool_calls = await self.tool_call_repository.list_tool_calls(run_id)
         return AgentRunSummaryResponse(run=self._hydrate_run_row(run, artifacts=artifacts, steps=steps, tool_calls=tool_calls))
+
+    async def list_subagent_invocations(
+        self,
+        run_id: str,
+        tenant_id: Optional[str],
+    ) -> AgentSubagentInvocationListResponse:
+        run = await self.run_repository.get_run(run_id, tenant_id)
+        if run is None:
+            raise ValueError("run not found")
+        rows = await self.subagent_invocation_repository.list_invocations_for_parent_run(run_id)
+        invocations = [self._hydrate_subagent_invocation_row(row) for row in rows]
+        return AgentSubagentInvocationListResponse(invocations=invocations, total=len(invocations))
+
+    async def get_run_tree(
+        self,
+        run_id: str,
+        tenant_id: Optional[str],
+        *,
+        max_depth: int = 4,
+    ) -> AgentRunTreeResponse:
+        run = await self.run_repository.get_run(run_id, tenant_id)
+        if run is None:
+            raise ValueError("run not found")
+        bounded_depth = max(1, min(int(max_depth), 8))
+        root = await self._build_run_tree_node(
+            run,
+            tenant_id=tenant_id,
+            depth=0,
+            remaining_depth=bounded_depth - 1,
+        )
+        return AgentRunTreeResponse(root=root)
 
     async def list_runs(
         self,
@@ -308,7 +466,16 @@ class AgentRuntime:
         if run is None:
             raise ValueError("run not found")
         if input_patch:
-            run = await self.run_repository.patch_run_input(run_id, input_patch)
+            merged_input = {
+                **(run.get("input") if isinstance(run.get("input"), dict) else {}),
+                **input_patch,
+            }
+            hydrated_input = self._hydrate_upload_context(
+                tenant_id=str(run.get("tenant_id") or tenant_id or ""),
+                user_id=run.get("user_id"),
+                run_input=merged_input,
+            )
+            run = await self.run_repository.patch_run_input(run_id, hydrated_input)
             await self.tracer.emit_event(run_id, "run.input_patched", input_patch=input_patch)
         updated = await self.run_repository.reset_run_execution(
             run_id,

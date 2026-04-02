@@ -29,6 +29,49 @@ class SubagentInvocationRepository:
     def __init__(self, db_pool) -> None:
         self.db_pool = db_pool
 
+    async def list_invocations_for_parent_run(self, parent_run_id: str) -> list[Dict[str, Any]]:
+        rows = await self.db_pool.fetch(
+            """
+            SELECT *
+            FROM agent_subagent_invocations
+            WHERE parent_run_id = $1
+            ORDER BY created_at ASC, id ASC
+            """,
+            _serialize_uuid(parent_run_id),
+        )
+        return [_record_to_dict(row) for row in rows]
+
+    async def list_invocations_for_parent_runs(self, parent_run_ids: list[str]) -> Dict[str, list[Dict[str, Any]]]:
+        normalized_ids = []
+        for value in parent_run_ids:
+            if not value:
+                continue
+            serialized = _serialize_uuid(value)
+            if serialized is None:
+                continue
+            normalized_ids.append(serialized)
+
+        if not normalized_ids:
+            return {}
+
+        rows = await self.db_pool.fetch(
+            """
+            SELECT *
+            FROM agent_subagent_invocations
+            WHERE parent_run_id = ANY($1::uuid[])
+            ORDER BY created_at ASC, id ASC
+            """,
+            normalized_ids,
+        )
+        grouped: Dict[str, list[Dict[str, Any]]] = {}
+        for row in rows:
+            item = _record_to_dict(row)
+            parent_run_id = str(item.get("parent_run_id") or "").strip()
+            if not parent_run_id:
+                continue
+            grouped.setdefault(parent_run_id, []).append(item)
+        return grouped
+
     async def create_invocation(
         self,
         *,

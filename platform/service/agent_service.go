@@ -368,6 +368,14 @@ func (s *AgentService) ListRunEvents(tenantID, runID string, afterSequence int64
 	return s.agentStore.ListAgentRunEvents(runID, tenantID, afterSequence, limit)
 }
 
+func (s *AgentService) ListRunInvocations(ctx context.Context, tenantID, runID string) ([]*grpc.AgentSubagentInvocation, error) {
+	return s.aiClient.ListAgentRunInvocations(ctx, runID, tenantID)
+}
+
+func (s *AgentService) GetRunTree(ctx context.Context, tenantID, runID string, maxDepth int) (*grpc.AgentRunTreeResponse, error) {
+	return s.aiClient.GetAgentRunTree(ctx, runID, tenantID, maxDepth)
+}
+
 func (s *AgentService) StreamRunEvents(ctx context.Context, runID, tenantID string, afterSequence int64) (<-chan *database.AgentRunEvent, error) {
 	return s.aiClient.StreamAgentRunEvents(ctx, runID, tenantID, afterSequence)
 }

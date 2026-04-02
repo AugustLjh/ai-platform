@@ -104,6 +104,7 @@ export const chatAPI = {
       body: JSON.stringify({
         session_id: sessionId,
         message,
+        metadata: config.metadata || {},
         config
       })
     })
@@ -173,6 +174,24 @@ export const chatAPI = {
     } finally {
       reader.releaseLock()
     }
+  }
+}
+
+export const uploadAPI = {
+  createBundle(files = [], paths = []) {
+    const formData = new FormData()
+    files.forEach((file) => {
+      formData.append('files', file)
+    })
+    paths.forEach((path) => {
+      formData.append('paths', path)
+    })
+    return api.post('/api/v1/uploads/bundles', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      },
+      timeout: 120000
+    })
   }
 }
 

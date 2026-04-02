@@ -56,11 +56,25 @@ class SubagentTarget(BaseModel):
             value = self.runtime_policy.get("allow_nested_delegation")
         return bool(value) if value is not None else not self.uses_managed_capability()
 
+    def review_role(self) -> str:
+        if self.review_policy.get("requires_judge") or self.review_policy.get("judge_required"):
+            return "judge"
+        if (
+            self.review_policy.get("requires_reviewer")
+            or self.review_policy.get("required")
+            or self.review_policy.get("review_required")
+        ):
+            return "reviewer"
+
+        mode = self.delegation_mode()
+        if mode == "judge":
+            return "judge"
+        if mode in {"reviewer", "requires_review", "high_risk"}:
+            return "reviewer"
+        return "none"
+
     def requires_review(self) -> bool:
-        value = self.review_policy.get("required")
-        if value is None:
-            value = self.review_policy.get("review_required")
-        return bool(value)
+        return self.review_role() != "none"
 
     def delegation_mode(self) -> str:
         value = (
@@ -96,6 +110,31 @@ class SubagentTarget(BaseModel):
             return max(1, min(int(value), 12))
         except (TypeError, ValueError):
             return 4
+
+    def normalized_review_policy(self) -> Dict[str, Any]:
+        role = self.review_role()
+        required = bool(
+            self.review_policy.get("required")
+            or self.review_policy.get("review_required")
+            or self.review_policy.get("requires_reviewer")
+            or self.review_policy.get("requires_judge")
+            or role in {"reviewer", "judge"}
+        )
+
+        blocking_severities = self.review_policy.get("blocking_severities")
+        if not isinstance(blocking_severities, list):
+            blocking_severities = self.review_policy.get("reject_on_severities")
+        if not isinstance(blocking_severities, list):
+            blocking_severities = ["high", "critical"] if role in {"reviewer", "judge"} else []
+
+        return {
+            **dict(self.review_policy or {}),
+            "mode": role,
+            "required": required,
+            "requires_reviewer": role == "reviewer",
+            "requires_judge": role == "judge",
+            "blocking_severities": list(blocking_severities or []),
+        }
 
 
 class SubagentDelegationResult(BaseModel):

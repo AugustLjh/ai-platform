@@ -7,6 +7,7 @@ from core.agent_runtime.models import PlannerAction
 from core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
 from core.agent_runtime.result_contract import hydrate_legacy_result
 from core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
+from core.agent_runtime.subagents.review import build_review_result
 
 
 class SubagentHandoff:
@@ -146,7 +147,7 @@ class SubagentHandoff:
             "skill_allowlist": list(target.skill_allowlist or []),
             "mcp_allowlist": list(target.mcp_allowlist or []),
             "knowledge_policy": dict(target.knowledge_policy or {}),
-            "review_policy": dict(target.review_policy or {}),
+            "review_policy": target.normalized_review_policy(),
             "runtime_policy": dict(target.runtime_policy or {}),
             "delegation_mode": target.delegation_mode(),
             "allows_nested_delegation": target.allows_nested_delegation(),
@@ -278,7 +279,7 @@ class SubagentHandoff:
                 "skill_allowlist": target.skill_allowlist,
                 "mcp_allowlist": target.mcp_allowlist,
                 "knowledge_policy": target.knowledge_policy,
-                "review_policy": target.review_policy,
+                "review_policy": target.normalized_review_policy(),
                 "runtime_policy": target.runtime_policy,
                 "metadata": target.metadata,
                 "compatibility_target_agent_definition_id": target.agent_definition_id,
@@ -333,12 +334,14 @@ class SubagentHandoff:
         status: str,
         summary: str,
         hydrated: dict[str, Any],
+        review_result: dict[str, Any],
         error_message: str | None = None,
     ) -> dict[str, Any]:
         result_status = str(status or "").strip().lower()
         return {
             "protocol_version": "managed-subagent.v1",
             "status": result_status,
+            "review_result": review_result,
             "partial_result": (
                 {
                     "question": hydrated.get("final_output"),
@@ -467,6 +470,13 @@ class SubagentHandoff:
             summary = str(hydrated.get("final_output_text") or hydrated.get("final_output") or "").strip()
             if not summary:
                 summary = f"{target.name} finished with status {completed['status']}."
+            review_result = build_review_result(
+                target=target,
+                status=completed["status"],
+                hydrated=hydrated,
+                error_message=completed.get("error_message"),
+                child_run_id=child_run["id"],
+            )
 
             invocation_status = completed["status"]
             if invocation_status == "waiting_user":
@@ -479,6 +489,7 @@ class SubagentHandoff:
                     status=completed["status"],
                     summary=summary,
                     hydrated=hydrated,
+                    review_result=review_result,
                     error_message=completed.get("error_message"),
                 ),
                 error_message=completed.get("error_message"),
@@ -499,16 +510,37 @@ class SubagentHandoff:
                     "invocation_id": invocation_id,
                     "protocol_version": handoff_envelope.get("protocol_version"),
                     "handoff_envelope": handoff_envelope,
+                    "review_result": review_result,
                 },
             )
         except asyncio.CancelledError:
+            review_result = build_review_result(
+                target=target,
+                status="cancelled",
+                hydrated={},
+                error_message="Run cancelled",
+            )
             await self._update_invocation(
                 invocation_id,
                 status="cancelled",
                 error_message="Run cancelled",
+                result_payload={
+                    "protocol_version": "managed-subagent.v1",
+                    "status": "cancelled",
+                    "review_result": review_result,
+                    "partial_result": None,
+                    "final_result": None,
+                    "error": "Run cancelled",
+                },
             )
             raise
         except Exception as exc:
+            review_result = build_review_result(
+                target=target,
+                status="failed",
+                hydrated={},
+                error_message=str(exc),
+            )
             await self._update_invocation(
                 invocation_id,
                 status="failed",
@@ -516,6 +548,7 @@ class SubagentHandoff:
                 result_payload={
                     "protocol_version": "managed-subagent.v1",
                     "status": "failed",
+                    "review_result": review_result,
                     "partial_result": None,
                     "final_result": None,
                     "error": str(exc),

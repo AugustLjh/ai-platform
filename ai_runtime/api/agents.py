@@ -11,6 +11,8 @@ from core.agent_runtime.models import (
     AgentRunEventListResponse,
     AgentRunListResponse,
     AgentRunSummaryResponse,
+    AgentRunTreeResponse,
+    AgentSubagentInvocationListResponse,
     RuntimeCreateRunRequest,
     RuntimeResumeRunRequest,
 )
@@ -74,6 +76,28 @@ async def get_run(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
     runtime = get_agent_runtime()
     try:
         return await runtime.get_run(run_id, tenant_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/invocations", response_model=AgentSubagentInvocationListResponse)
+async def get_run_invocations(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
+    runtime = get_agent_runtime()
+    try:
+        return await runtime.list_subagent_invocations(run_id, tenant_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/tree", response_model=AgentRunTreeResponse)
+async def get_run_tree(
+    run_id: str,
+    max_depth: int = Query(default=4, ge=1, le=8),
+    tenant_id: str = Depends(get_current_tenant_id),
+):
+    runtime = get_agent_runtime()
+    try:
+        return await runtime.get_run_tree(run_id, tenant_id, max_depth=max_depth)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -212,6 +212,10 @@ const displayCell = (value) => {
   border-radius: 24px;
   padding: 22px;
   box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  max-height: min(72vh, 840px);
+  overflow: hidden;
 }
 
 .panel-head {
@@ -260,6 +264,9 @@ const displayCell = (value) => {
 .artifact-list {
   display: grid;
   gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .artifact-card {
@@ -267,6 +274,8 @@ const displayCell = (value) => {
   border-radius: 20px;
   padding: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
+  max-height: min(52vh, 520px);
+  overflow: auto;
 }
 
 .artifact-head {
@@ -321,6 +330,9 @@ th {
   display: grid;
   gap: 12px;
   margin-top: 14px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .excerpt-card {
@@ -399,6 +411,7 @@ pre {
   border-radius: 14px;
   background: rgba(15, 23, 42, 0.04);
   overflow: auto;
+  max-height: 320px;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono);

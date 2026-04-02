@@ -14,6 +14,7 @@ from core.dependencies import DEV_DEFAULT_TENANT_ID, get_container
 from core.llm import DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
 from core.rag import RAGPipeline, Retriever, SimpleVectorStore
 from core.rag.retriever import DatabaseVectorStore
+from core.uploads.bundle_store import UPLOAD_BUNDLE_IDS_METADATA_KEY, get_attachment_bundle_store, normalize_bundle_ids
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +582,12 @@ class ChatRuntimeService:
             history=history,
         )
 
+    def _build_combined_context(self, *parts: Optional[str]) -> Optional[str]:
+        sections = [str(part).strip() for part in parts if str(part or "").strip()]
+        if not sections:
+            return None
+        return "\n\n".join(sections)
+
     def parse_request(self, request) -> Dict[str, Any]:
         config = self._get_field(request, "config")
         knowledge_base_id = self._get_config_field(config, "knowledge_base_id", None)
@@ -595,6 +602,7 @@ class ChatRuntimeService:
         if not history:
             session = self.sessions.get(session_id, {"history": []})
             history = list(session.get("history", []))
+        upload_bundle_ids = normalize_bundle_ids(metadata.get(UPLOAD_BUNDLE_IDS_METADATA_KEY)) if isinstance(metadata, dict) else []
 
         return {
             "session_id": session_id,
@@ -608,6 +616,7 @@ class ChatRuntimeService:
             "tenant_id": self._get_field(request, "tenant_id", DEV_DEFAULT_TENANT_ID) or DEV_DEFAULT_TENANT_ID,
             "user_id": self._get_field(request, "user_id", None) or None,
             "history": history,
+            "upload_bundle_ids": upload_bundle_ids,
         }
 
     def get_or_create_session(self, session_id: str) -> Dict[str, Any]:
@@ -657,6 +666,7 @@ class ChatRuntimeService:
             context = None
             citations: List[Dict[str, Any]] = []
             kb_name: Optional[str] = None
+            upload_context: Optional[dict[str, Any]] = None
             governance_resolution = await self.resolve_llm_candidates(
                 tenant_id=request_context["tenant_id"],
                 user_id=request_context["user_id"],
@@ -708,12 +718,24 @@ class ChatRuntimeService:
                     )
                     return
 
+            if request_context["upload_bundle_ids"]:
+                upload_context = get_attachment_bundle_store().build_prompt_context(
+                    tenant_id=request_context["tenant_id"],
+                    user_id=request_context["user_id"],
+                    bundle_ids=request_context["upload_bundle_ids"],
+                    query=request_context["user_message"],
+                )
+                context = self._build_combined_context(context, upload_context.get("context_text"))
+
             base_completion_metadata = self.build_response_metadata(
                 retrieval_status="hit" if citations else "not_used",
                 use_rag=request_context["use_rag"],
                 knowledge_base_id=request_context["knowledge_base_id"],
                 knowledge_base_name=kb_name,
                 citations=citations,
+                upload_bundle_ids=request_context["upload_bundle_ids"],
+                uploaded_files=(upload_context or {}).get("files", []),
+                uploaded_file_directory_tree=(upload_context or {}).get("directory_tree", []),
             )
 
             messages = self.build_messages(

@@ -412,6 +412,9 @@ const itemKey = (item, index) => String(
 .rich-card {
   display: grid;
   gap: 14px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: min(56vh, 620px);
+  overflow: hidden;
 }
 
 .artifact-head {
@@ -465,6 +468,7 @@ const itemKey = (item, index) => String(
   display: grid;
   gap: 14px;
   grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  min-height: 0;
 }
 
 .rich-list {
@@ -517,6 +521,7 @@ const itemKey = (item, index) => String(
 
 .rich-detail {
   min-height: 240px;
+  max-height: 440px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #f9fcfb 100%);
@@ -582,17 +587,25 @@ const itemKey = (item, index) => String(
 .media-shell {
   display: grid;
   gap: 14px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .media-feature {
   display: grid;
   gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .thumb-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .thumb-card {

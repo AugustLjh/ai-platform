@@ -255,6 +255,53 @@ func (h *AgentHandler) HandleRunByID(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, run, http.StatusOK)
 }
 
+func (h *AgentHandler) HandleRunInvocations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	runID := extractSuffixID(r.URL.Path, "/api/v1/agents/runs/", "/invocations")
+	if runID == "" {
+		respondError(w, "Invalid run id", http.StatusBadRequest)
+		return
+	}
+	items, err := h.agentService.ListRunInvocations(r.Context(), user.TenantID, runID)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, map[string]any{"invocations": items, "total": len(items)}, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleRunTree(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	runID := extractSuffixID(r.URL.Path, "/api/v1/agents/runs/", "/tree")
+	if runID == "" {
+		respondError(w, "Invalid run id", http.StatusBadRequest)
+		return
+	}
+	maxDepth := parseQueryInt(r, "max_depth", 4)
+	tree, err := h.agentService.GetRunTree(r.Context(), user.TenantID, runID, maxDepth)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, tree, http.StatusOK)
+}
+
 func (h *AgentHandler) HandleRunEvents(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.GetUser(r.Context())
 	if !ok {

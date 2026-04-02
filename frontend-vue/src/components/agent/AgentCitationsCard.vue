@@ -43,6 +43,8 @@ const items = computed(() => Array.isArray(props.artifact?.payload?.items) ? pro
   border-radius: 20px;
   padding: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
+  max-height: min(52vh, 520px);
+  overflow: auto;
 }
 
 .artifact-head {
@@ -88,6 +90,9 @@ const items = computed(() => Array.isArray(props.artifact?.payload?.items) ? pro
   gap: 12px;
   margin-top: 14px;
   padding-left: 18px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .citation-item {

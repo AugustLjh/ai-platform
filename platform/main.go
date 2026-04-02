@@ -247,6 +247,10 @@ func main() {
 		chain(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
+				case strings.HasSuffix(r.URL.Path, "/tree"):
+					agentHandler.HandleRunTree(w, r)
+				case strings.HasSuffix(r.URL.Path, "/invocations"):
+					agentHandler.HandleRunInvocations(w, r)
 				case strings.HasSuffix(r.URL.Path, "/events"):
 					agentHandler.HandleRunEvents(w, r)
 				case strings.HasSuffix(r.URL.Path, "/cancel"):
@@ -412,6 +416,8 @@ func main() {
 	mux.Handle("/api/v1/knowledge-bases", kbHandler)
 	mux.Handle("/api/v1/knowledge/", kbHandler)
 	mux.Handle("/api/v1/knowledge", kbHandler)
+	mux.Handle("/api/v1/uploads/", kbHandler)
+	mux.Handle("/api/v1/uploads", kbHandler)
 
 	// Models endpoints - proxy to AI Runtime HTTP server
 	modelsProxy := httputil.NewSingleHostReverseProxy(aiRuntimeUrl)

@@ -108,6 +108,15 @@
 
             <div v-else class="user-bubble">
               <div class="plain-text">{{ message.content }}</div>
+              <div v-if="message.attachments && message.attachments.length > 0" class="uploaded-file-list">
+                <div
+                  v-for="file in message.attachments"
+                  :key="`${message.key}-${file.id || file.path || file.name}`"
+                  class="uploaded-file-chip"
+                >
+                  <span class="uploaded-file-name">{{ file.path || file.name }}</span>
+                </div>
+              </div>
             </div>
           </article>
         </div>
@@ -119,11 +128,22 @@
             @click="detailsOpen = !detailsOpen"
           >
             <span>执行细节</span>
-            <span>{{ steps.length }} 步 · {{ toolCalls.length }} 次工具 · {{ runEvents.length }} 个事件</span>
+            <span>{{ steps.length }} 步 · {{ toolCalls.length }} 次工具 · {{ runTreeInvocations.length }} 次委派 · {{ runEvents.length }} 个事件</span>
           </button>
         </div>
 
-        <div v-if="showStructuredSurface" class="result-surface">
+        <div v-if="showStructuredSurface" class="message-row assistant detail-row">
+          <button
+            type="button"
+            class="detail-toggle surface-toggle"
+            @click="surfaceOpen = !surfaceOpen"
+          >
+            <span>结构化结果</span>
+            <span>{{ surfaceOpen ? '点击收起结果面板' : `默认收起 · ${structuredResultCount} 个结果面板` }}</span>
+          </button>
+        </div>
+
+        <div v-if="showStructuredSurface && surfaceOpen" class="result-surface">
           <AgentArtifactPanel
             :artifacts="surfaceArtifacts"
             :final-output-json="surfaceOutputJson"
@@ -133,13 +153,81 @@
       </div>
 
       <footer class="composer-shell">
-        <div class="composer-copy">
-          <strong>{{ composerTitle }}</strong>
-          <span>{{ composerDescription }}</span>
+        <input
+          ref="fileInputRef"
+          type="file"
+          multiple
+          class="upload-input"
+          @change="handleFileChange"
+        />
+        <input
+          ref="folderInputRef"
+          type="file"
+          multiple
+          webkitdirectory
+          directory
+          class="upload-input"
+          @change="handleFolderChange"
+        />
+
+        <div v-if="uploadError" class="error-banner upload-error">
+          {{ uploadError }}
+        </div>
+
+        <div v-if="bundles.length > 0" class="composer-upload-list">
+          <div
+            v-for="bundle in bundles"
+            :key="bundle.bundle_id"
+            class="composer-upload-card"
+          >
+            <div class="composer-upload-main">
+              <strong>{{ bundle.summary?.file_count || bundle.files?.length || 0 }} 个文件</strong>
+              <span>{{ formatUploadBundle(bundle) }}</span>
+            </div>
+            <button
+              type="button"
+              class="composer-upload-remove"
+              @click="removeBundle(bundle.bundle_id)"
+            >
+              移除
+            </button>
+          </div>
         </div>
 
         <div class="input-container">
           <div class="input-inner">
+            <div class="composer-tools">
+              <button
+                type="button"
+                class="composer-tool-btn"
+                :disabled="uploading"
+                aria-label="上传文件"
+                title="上传文件"
+                @click="openFilePicker"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M14 3v5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M12 11v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  <path d="M9.5 13.5 12 11l2.5 2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="composer-tool-btn"
+                :disabled="uploading"
+                aria-label="上传文件夹"
+                title="上传文件夹"
+                @click="openFolderPicker"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M12 11v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  <path d="M9.5 13.5 12 11l2.5 2.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            </div>
+
             <form class="input-form" @submit.prevent="submitMessage">
               <div class="input-wrapper">
                 <textarea
@@ -173,6 +261,9 @@
               </div>
             </form>
           </div>
+
+          <div v-if="hasUploads" class="composer-tool-meta">已附加 {{ totalFiles }} 个文件</div>
+          <div v-else-if="uploading" class="composer-tool-meta">正在解析文件...</div>
         </div>
       </footer>
     </section>
@@ -204,6 +295,8 @@
         />
         <AgentPlanPanel :plan="plan" />
       </div>
+      <AgentRunTree v-if="currentRunTree" :root="currentRunTree" />
+      <AgentSubagentInvocationPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
       <AgentTimeline :events="runEvents" />
       <AgentStepList :steps="steps" :tool-calls="toolCalls" />
     </section>
@@ -217,10 +310,13 @@ import AgentArtifactPanel from '@/components/agent/AgentArtifactPanel.vue'
 import AgentPlanPanel from '@/components/agent/AgentPlanPanel.vue'
 import AgentStepList from '@/components/agent/AgentStepList.vue'
 import AgentTimeline from '@/components/agent/AgentTimeline.vue'
+import AgentRunTree from '@/components/agent/AgentRunTree.vue'
+import AgentSubagentInvocationPanel from '@/components/agent/AgentSubagentInvocationPanel.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
 import { getRunAnswerText } from '@/utils/agentArtifacts'
 import { renderMarkdown } from '@/utils/markdown'
+import { useUploadBundles } from '@/composables/useUploadBundles'
 
 const route = useRoute()
 const router = useRouter()
@@ -231,9 +327,26 @@ const composerMessage = ref('')
 const isComposing = ref(false)
 const submitLoading = ref(false)
 const detailsOpen = ref(false)
+const surfaceOpen = ref(false)
 const threadRef = ref(null)
 const textareaRef = ref(null)
 const draftSessionId = ref('')
+const {
+  bundles,
+  bundleIds,
+  totalFiles,
+  hasUploads,
+  uploading,
+  uploadError,
+  fileInputRef,
+  folderInputRef,
+  openFilePicker,
+  openFolderPicker,
+  handleFileChange,
+  handleFolderChange,
+  removeBundle,
+  clearBundles
+} = useUploadBundles()
 
 const starterPrompts = [
   '请介绍一下你能帮我做什么',
@@ -257,6 +370,8 @@ const toolCalls = computed(() => agentsStore.toolCalls)
 const plan = computed(() => agentsStore.plan)
 const artifacts = computed(() => agentsStore.artifacts)
 const executionSurface = computed(() => agentsStore.executionSurface)
+const currentRunTree = computed(() => agentsStore.currentRunTree)
+const runTreeInvocations = computed(() => agentsStore.currentRunInvocations)
 const errorMessage = computed(() => agentsStore.error || '')
 
 const statusMap = {
@@ -283,12 +398,14 @@ const showDetailHint = computed(() => (
   runEvents.value.length > 0 ||
   Boolean(plan.value) ||
   artifacts.value.length > 0 ||
-  Boolean(currentRun.value?.finalOutputJson)
+  Boolean(currentRun.value?.finalOutputJson) ||
+  Boolean(currentRunTree.value?.invocations?.length)
 ))
 const composerDisabled = computed(() => ['queued', 'running'].includes(currentRun.value?.status))
 const surfaceArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType !== 'answer'))
 const surfaceOutputJson = computed(() => surfaceArtifacts.value.length > 0 ? null : currentRun.value?.finalOutputJson || null)
 const showStructuredSurface = computed(() => surfaceArtifacts.value.length > 0 || Boolean(surfaceOutputJson.value))
+const structuredResultCount = computed(() => surfaceArtifacts.value.length + (surfaceOutputJson.value ? 1 : 0))
 const requestedSessionId = computed(() => {
   const value = String(route.query.session || '').trim()
   return value || ''
@@ -454,6 +571,9 @@ const buildThreadMessages = () => {
   const existingConversation = Array.isArray(currentRun.value?.context?.conversation)
     ? currentRun.value.context.conversation
     : []
+  const currentManifestFiles = Array.isArray(currentRun.value?.input?.uploaded_attachments_manifest?.files)
+    ? currentRun.value.input.uploaded_attachments_manifest.files
+    : []
 
   for (const [index, entry] of existingConversation.entries()) {
     const role = entry?.role === 'assistant' ? 'assistant' : 'user'
@@ -512,6 +632,7 @@ const buildThreadMessages = () => {
       role: 'user',
       title: '你',
       content: liveUserMessage,
+      attachments: currentManifestFiles,
       renderMarkdown: false,
       html: '',
       toneClass: '',
@@ -580,6 +701,7 @@ const loadConversation = async () => {
   agentsStore.stopRunStream()
   agentsStore.resetRunState()
   detailsOpen.value = false
+  surfaceOpen.value = false
 
   await Promise.all([
     agentsStore.fetchAgent(agentId),
@@ -644,6 +766,7 @@ const startNewConversation = async () => {
   draftSessionId.value = nextSessionId
   composerMessage.value = ''
   detailsOpen.value = false
+  surfaceOpen.value = false
   agentsStore.stopRunStream()
   agentsStore.resetRunState()
   agentsStore.error = null
@@ -680,6 +803,7 @@ const clearContext = async () => {
     await agentsStore.clearAgentContext(agent.value.id, currentSessionId.value)
     composerMessage.value = ''
     detailsOpen.value = false
+    surfaceOpen.value = false
     await loadConversation()
     toastStore.showToast({ type: 'success', message: '上下文已清理' })
     await autoResize()
@@ -702,14 +826,25 @@ const submitMessage = async () => {
 
   submitLoading.value = true
   try {
+    const mergedBundleIds = bundleIds.value.length > 0
+      ? Array.from(new Set([
+          ...(Array.isArray(currentRun.value?.input?.upload_bundle_ids) ? currentRun.value.input.upload_bundle_ids : []),
+          ...bundleIds.value
+        ]))
+      : []
     if (currentRun.value?.id) {
-      await agentsStore.resumeRun(currentRun.value.id, { message })
+      const inputPatch = { message }
+      if (mergedBundleIds.length > 0) {
+        inputPatch.upload_bundle_ids = mergedBundleIds
+      }
+      await agentsStore.resumeRun(currentRun.value.id, inputPatch)
       toastStore.showToast({ type: 'success', message: '已继续执行' })
     } else {
       const nextSessionId = requestedSessionId.value || draftSessionId.value || createSessionId()
       const createdRun = await agentsStore.createRun(agent.value.id, {
         input: {
-          message
+          message,
+          ...(bundleIds.value.length > 0 ? { upload_bundle_ids: bundleIds.value } : {})
         },
         session_id: nextSessionId,
         metadata: {},
@@ -721,6 +856,7 @@ const submitMessage = async () => {
     }
 
     composerMessage.value = ''
+    clearBundles()
     if (textareaRef.value) {
       textareaRef.value.style.height = 'auto'
     }
@@ -751,12 +887,31 @@ const openRunDetail = () => {
   router.push(`/agents/runs/${currentRun.value.id}`)
 }
 
+const formatUploadBundle = (bundle) => {
+  const files = Array.isArray(bundle?.files) ? bundle.files : []
+  const names = files.slice(0, 2).map((file) => file.path || file.name).filter(Boolean)
+  const rest = files.length - names.length
+  return [names.join('，'), rest > 0 ? `等 ${files.length} 个` : '', bundle?.skipped?.length ? `跳过 ${bundle.skipped.length} 个` : '']
+    .filter(Boolean)
+    .join(' · ')
+}
+
 watch(() => [route.params.id, route.query.session], async () => {
   try {
     await loadConversation()
     await scrollThreadToBottom()
   } catch (error) {
     console.error('Failed to reload agent conversation:', error)
+  }
+})
+
+watch(() => currentRun.value?.id, () => {
+  surfaceOpen.value = false
+})
+
+watch(showStructuredSurface, (visible) => {
+  if (!visible) {
+    surfaceOpen.value = false
   }
 })
 
@@ -1073,6 +1228,30 @@ const formatTime = (value) => {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.uploaded-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.uploaded-file-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.uploaded-file-name {
+  max-width: min(460px, 64vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
 .plain-text {
   white-space: pre-wrap;
   word-break: break-word;
@@ -1151,39 +1330,137 @@ const formatTime = (value) => {
   font-size: 13px;
 }
 
+.surface-toggle {
+  border-style: solid;
+  background: rgba(15, 23, 42, 0.03);
+}
+
 .composer-shell {
   border-top: 1px solid rgba(15, 23, 42, 0.08);
-  padding: 18px 20px 20px;
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(12px);
+  padding: 16px 20px 20px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.82) 0%, rgba(255, 255, 255, 0.96) 18%, rgba(255, 255, 255, 0.98) 100%);
+  backdrop-filter: blur(16px);
   display: grid;
-  gap: 14px;
+  gap: 12px;
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
 }
 
-.composer-copy {
-  display: grid;
-  gap: 4px;
-}
-
-.composer-copy strong {
-  color: #0f172a;
-}
-
-.composer-copy span {
-  color: #64748b;
-  line-height: 1.6;
+.upload-input {
+  display: none;
 }
 
 .composer-form {
   display: block;
 }
 
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-bottom: 4px;
+}
+
+.composer-tool-btn {
+  width: 46px;
+  height: 46px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.92);
+  color: #334155;
+  border-radius: 16px;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.composer-tool-btn:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: rgba(15, 118, 110, 0.34);
+  transform: translateY(-1px);
+}
+
+.composer-tool-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.composer-tool-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.composer-tool-meta {
+  color: #64748b;
+  font-size: 12px;
+  padding-left: 58px;
+}
+
+.composer-upload-list {
+  display: grid;
+  gap: 10px;
+}
+
+.composer-upload-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.composer-upload-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.composer-upload-main strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.composer-upload-main span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.composer-upload-remove {
+  border: none;
+  background: transparent;
+  color: #c2410c;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.upload-error {
+  padding: 12px 14px;
+  border-radius: 16px;
+  font-size: 13px;
+}
+
 .input-container {
   width: 100%;
+  display: grid;
+  gap: 8px;
 }
 
 .input-inner {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: end;
   gap: 12px;
 }
 
@@ -1194,12 +1471,12 @@ const formatTime = (value) => {
 .input-wrapper {
   display: flex;
   align-items: flex-end;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 14px;
+  padding: 12px 12px 12px 18px;
   border-radius: 24px;
   background: #ffffff;
   border: 1px solid rgba(15, 23, 42, 0.1);
-  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -1210,15 +1487,15 @@ const formatTime = (value) => {
 
 .message-input {
   flex: 1;
-  min-height: 24px;
+  min-height: 46px;
   max-height: 180px;
   resize: none;
   border: none;
   background: transparent;
   font: inherit;
-  line-height: 1.7;
+  line-height: 1.65;
   color: #0f172a;
-  padding: 2px 0;
+  padding: 10px 0 8px;
 }
 
 .message-input:focus {
@@ -1231,8 +1508,8 @@ const formatTime = (value) => {
 }
 
 .btn-send {
-  width: 44px;
-  height: 44px;
+  width: 46px;
+  height: 46px;
   border: none;
   border-radius: 16px;
   flex-shrink: 0;
@@ -1259,6 +1536,8 @@ const formatTime = (value) => {
 .result-surface {
   display: grid;
   gap: 16px;
+  max-height: min(76vh, 940px);
+  overflow: hidden;
 }
 
 .send-icon {
@@ -1424,7 +1703,20 @@ const formatTime = (value) => {
   }
 
   .input-wrapper {
-    padding: 12px 14px;
+    padding: 10px 10px 10px 14px;
+  }
+
+  .input-inner {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .composer-tools {
+    padding-bottom: 0;
+  }
+
+  .composer-tool-meta {
+    padding-left: 0;
   }
 }
 </style>

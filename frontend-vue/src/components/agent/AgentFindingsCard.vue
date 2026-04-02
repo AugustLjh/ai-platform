@@ -64,6 +64,8 @@ const severityClass = (value) => {
   border-radius: 20px;
   padding: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
+  max-height: min(52vh, 520px);
+  overflow: auto;
 }
 
 .artifact-head {
@@ -108,6 +110,9 @@ const severityClass = (value) => {
   display: grid;
   gap: 12px;
   margin-top: 14px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .finding-card {
@@ -171,6 +176,7 @@ pre {
   border-radius: 12px;
   background: rgba(15, 23, 42, 0.04);
   overflow: auto;
+  max-height: 220px;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono);

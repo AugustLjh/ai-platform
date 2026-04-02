@@ -84,11 +84,22 @@
             @click="detailsOpen = !detailsOpen"
           >
             <span>执行细节</span>
-            <span>{{ steps.length }} 步 · {{ toolCalls.length }} 次工具 · {{ runEvents.length }} 个事件</span>
+            <span>{{ steps.length }} 步 · {{ toolCalls.length }} 次工具 · {{ runTreeInvocations.length }} 次委派 · {{ runEvents.length }} 个事件</span>
           </button>
         </div>
 
-        <div v-if="showStructuredSurface" class="result-surface">
+        <div v-if="showStructuredSurface" class="message-row assistant detail-row">
+          <button
+            type="button"
+            class="detail-toggle surface-toggle"
+            @click="surfaceOpen = !surfaceOpen"
+          >
+            <span>结构化结果</span>
+            <span>{{ surfaceOpen ? '点击收起结果面板' : `默认收起 · ${structuredResultCount} 个结果面板` }}</span>
+          </button>
+        </div>
+
+        <div v-if="showStructuredSurface && surfaceOpen" class="result-surface">
           <AgentArtifactPanel
             :artifacts="surfaceArtifacts"
             :final-output-json="surfaceOutputJson"
@@ -160,6 +171,8 @@
         />
         <AgentPlanPanel :plan="plan" />
       </div>
+      <AgentRunTree v-if="currentRunTree" :root="currentRunTree" />
+      <AgentSubagentInvocationPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
       <AgentTimeline :events="runEvents" />
       <AgentStepList :steps="steps" :tool-calls="toolCalls" />
     </section>
@@ -173,6 +186,8 @@ import AgentArtifactPanel from '@/components/agent/AgentArtifactPanel.vue'
 import AgentPlanPanel from '@/components/agent/AgentPlanPanel.vue'
 import AgentStepList from '@/components/agent/AgentStepList.vue'
 import AgentTimeline from '@/components/agent/AgentTimeline.vue'
+import AgentRunTree from '@/components/agent/AgentRunTree.vue'
+import AgentSubagentInvocationPanel from '@/components/agent/AgentSubagentInvocationPanel.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
 import { getRunAnswerText } from '@/utils/agentArtifacts'
@@ -186,6 +201,7 @@ const toastStore = useToastStore()
 const resumeMessage = ref('')
 const resumeLoading = ref(false)
 const detailsOpen = ref(false)
+const surfaceOpen = ref(false)
 const threadRef = ref(null)
 
 const run = computed(() => agentsStore.currentRun)
@@ -196,6 +212,8 @@ const toolCalls = computed(() => agentsStore.toolCalls)
 const plan = computed(() => agentsStore.plan)
 const artifacts = computed(() => agentsStore.artifacts)
 const executionSurface = computed(() => agentsStore.executionSurface)
+const currentRunTree = computed(() => agentsStore.currentRunTree)
+const runTreeInvocations = computed(() => agentsStore.currentRunInvocations)
 const errorMessage = computed(() => agentsStore.error || '')
 
 const statusMap = {
@@ -220,11 +238,13 @@ const showDetailHint = computed(() => (
   runEvents.value.length > 0 ||
   Boolean(plan.value) ||
   artifacts.value.length > 0 ||
-  Boolean(run.value?.finalOutputJson)
+  Boolean(run.value?.finalOutputJson) ||
+  Boolean(currentRunTree.value?.invocations?.length)
 ))
 const surfaceArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType !== 'answer'))
 const surfaceOutputJson = computed(() => surfaceArtifacts.value.length > 0 ? null : run.value?.finalOutputJson || null)
 const showStructuredSurface = computed(() => surfaceArtifacts.value.length > 0 || Boolean(surfaceOutputJson.value))
+const structuredResultCount = computed(() => surfaceArtifacts.value.length + (surfaceOutputJson.value ? 1 : 0))
 
 const topbarSummary = computed(() => {
   if (run.value?.status === 'waiting_user') {
@@ -373,6 +393,7 @@ const loadRun = async () => {
     return
   }
 
+  surfaceOpen.value = false
   const currentRun = await agentsStore.openRun(runId, { stream: true })
   if (currentRun?.agentDefinitionId) {
     await agentsStore.fetchAgent(currentRun.agentDefinitionId)
@@ -436,6 +457,16 @@ watch(() => route.params.run_id, async () => {
     await scrollThreadToBottom()
   } catch (error) {
     console.error('Failed to load run detail:', error)
+  }
+})
+
+watch(() => run.value?.id, () => {
+  surfaceOpen.value = false
+})
+
+watch(showStructuredSurface, (visible) => {
+  if (!visible) {
+    surfaceOpen.value = false
   }
 })
 
@@ -803,9 +834,16 @@ const formatTime = (value) => {
   overflow-wrap: anywhere;
 }
 
+.surface-toggle {
+  border-style: solid;
+  background: rgba(15, 23, 42, 0.03);
+}
+
 .result-surface {
   display: grid;
   gap: 16px;
+  max-height: min(76vh, 940px);
+  overflow: hidden;
 }
 
 .composer-shell {

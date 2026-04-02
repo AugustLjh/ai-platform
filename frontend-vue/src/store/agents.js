@@ -8,6 +8,7 @@ import {
 import { buildRunEventPatch, deriveRunState } from '@/utils/agentRunState'
 import { collectRunEventPages } from '@/utils/runEventHydration'
 import { normalizeMCPBindingUsage } from '@/utils/mcpServers'
+import { collectRunTreeInvocations, normalizeRunTreeNode } from '@/utils/agentRunTree'
 
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
 
@@ -292,6 +293,8 @@ export const useAgentsStore = defineStore('agents', {
     runs: [],
     currentAgent: null,
     currentRun: null,
+    currentRunTree: null,
+    currentRunInvocations: [],
     runEvents: [],
     steps: [],
     toolCalls: [],
@@ -337,6 +340,8 @@ export const useAgentsStore = defineStore('agents', {
 
     resetRunState() {
       this.currentRun = null
+      this.currentRunTree = null
+      this.currentRunInvocations = []
       this.runEvents = []
       this.steps = []
       this.toolCalls = []
@@ -414,6 +419,19 @@ export const useAgentsStore = defineStore('agents', {
         this.artifacts = patch.artifacts
       }
       this.applyRunPatch(event.runId, patch)
+    },
+
+    async fetchRunTree(runId, maxDepth = 4) {
+      try {
+        const { data } = await agentsAPI.getRunTree(runId, maxDepth)
+        const root = data?.root ? normalizeRunTreeNode(data.root) : null
+        this.currentRunTree = root
+        this.currentRunInvocations = collectRunTreeInvocations(root)
+        return root
+      } catch (error) {
+        this.setError(error, 'Failed to fetch run tree')
+        throw error
+      }
     },
 
     async fetchAgents(includeArchived = false) {
@@ -619,7 +637,10 @@ export const useAgentsStore = defineStore('agents', {
       this.stopRunStream()
       this.resetRunState()
       const run = await this.fetchRun(runId)
-      await this.fetchRunEvents(runId, 0, 500)
+      await Promise.all([
+        this.fetchRunEvents(runId, 0, 500),
+        this.fetchRunTree(runId).catch(() => null)
+      ])
 
       if (stream && run && !terminalRunStatuses.has(run.status)) {
         this.subscribeToRun(run.id)
@@ -642,6 +663,12 @@ export const useAgentsStore = defineStore('agents', {
           const normalized = normalizeEvent(event)
           this.applyEvents([normalized])
           this.applyRunEvent(normalized)
+          if (
+            normalized.runId === runId &&
+            (normalized.eventType.startsWith('subagent.') || normalized.eventType === 'run.resumed')
+          ) {
+            this.fetchRunTree(runId).catch(() => null)
+          }
         },
         onError: (error) => {
           if (controller.signal.aborted) {
@@ -683,6 +710,7 @@ export const useAgentsStore = defineStore('agents', {
         this.currentRun = run
         this.upsertRun(run)
         this.stopRunStream()
+        await this.fetchRunTree(run.id).catch(() => null)
         return run
       } catch (error) {
         this.setError(error, 'Failed to cancel run')
@@ -708,6 +736,8 @@ export const useAgentsStore = defineStore('agents', {
         }
         this.currentRun = run
         this.upsertRun(run)
+        this.currentRunTree = null
+        this.currentRunInvocations = []
         this.runEvents = []
         this.steps = []
         this.toolCalls = []

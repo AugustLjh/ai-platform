@@ -84,6 +84,10 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
   border-radius: 24px;
   padding: 22px;
   box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  max-height: min(72vh, 840px);
+  overflow: hidden;
   min-width: 0;
   width: 100%;
   max-width: 100%;
@@ -131,6 +135,8 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
   display: grid;
   gap: 16px;
   min-width: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .step-card {
@@ -140,6 +146,8 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
   background: linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
   min-width: 0;
   max-width: 100%;
+  max-height: 420px;
+  overflow: auto;
 }
 
 .step-card-head {
@@ -240,5 +248,8 @@ pre {
   gap: 12px;
   margin-top: 14px;
   min-width: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 </style>

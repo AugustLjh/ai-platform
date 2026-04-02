@@ -110,6 +110,16 @@ export const agentsAPI = {
     return api.get(`/api/v1/agents/runs/${runId}`)
   },
 
+  getRunInvocations(runId) {
+    return api.get(`/api/v1/agents/runs/${runId}/invocations`)
+  },
+
+  getRunTree(runId, maxDepth = 4) {
+    return api.get(`/api/v1/agents/runs/${runId}/tree`, {
+      params: { max_depth: maxDepth }
+    })
+  },
+
   getRunEvents(runId, afterSequence = 0, limit = 500) {
     return api.get(`/api/v1/agents/runs/${runId}/events`, {
       params: { after_sequence: afterSequence, limit }

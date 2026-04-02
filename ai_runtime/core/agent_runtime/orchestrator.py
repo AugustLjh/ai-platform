@@ -1159,11 +1159,13 @@ class AgentOrchestrator:
             )
 
         handoff_envelope = delegation.metadata.get("handoff_envelope") if isinstance(delegation.metadata, dict) else None
+        review_result = delegation.metadata.get("review_result") if isinstance(delegation.metadata, dict) else None
         handoff_summary = self._summarize_handoff_envelope(handoff_envelope)
         step_output = {
             "delegate_result": delegation.model_dump(mode="json"),
             "delegation_gate": gate,
             "handoff": handoff_summary,
+            "review_result": review_result,
         }
         await self.run_repository.update_step(
             step["id"],
@@ -1194,6 +1196,7 @@ class AgentOrchestrator:
             final_output_text=delegation.final_output_text,
             final_output_json=delegation.final_output_json,
             artifacts=delegation.artifacts,
+            review_result=review_result,
             invocation_id=delegation.metadata.get("invocation_id") if isinstance(delegation.metadata, dict) else None,
             delegation_gate=gate,
             handoff=handoff_summary,
@@ -1216,6 +1219,7 @@ class AgentOrchestrator:
                 "status": delegation.status,
                 "summary": delegation.summary,
                 "final_output_text": delegation.final_output_text,
+                "review_result": review_result,
             },
             delegate_target=target.slug,
         )

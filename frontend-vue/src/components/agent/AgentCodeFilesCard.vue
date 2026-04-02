@@ -43,6 +43,8 @@ const files = computed(() => Array.isArray(props.artifact?.payload?.files) ? pro
   border-radius: 20px;
   padding: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
+  max-height: min(52vh, 520px);
+  overflow: auto;
 }
 
 .artifact-head {
@@ -87,6 +89,9 @@ const files = computed(() => Array.isArray(props.artifact?.payload?.files) ? pro
   display: grid;
   gap: 12px;
   margin-top: 14px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .file-card {
@@ -115,6 +120,7 @@ pre {
   margin: 0;
   padding: 14px;
   overflow: auto;
+  max-height: 260px;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono);

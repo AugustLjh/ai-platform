@@ -194,3 +194,74 @@ class AgentRunListResponse(BaseModel):
 class AgentRunEventListResponse(BaseModel):
     events: List[AgentRunEvent]
     total: int
+
+
+class AgentSubagentInvocation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    parent_run_id: str
+    parent_step_id: Optional[str] = None
+    subagent_definition_id: str
+    publication_id: Optional[str] = None
+    version_id: Optional[str] = None
+    authorization_id: Optional[str] = None
+    child_run_id: Optional[str] = None
+    status: str
+    request_payload: Dict[str, Any] = Field(default_factory=dict)
+    result_payload: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class AgentSubagentInvocationListResponse(BaseModel):
+    invocations: List[AgentSubagentInvocation]
+    total: int
+
+
+class AgentRunTreeRunSummary(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    agent_definition_id: str
+    tenant_id: str
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    status: RunStatus
+    input: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    final_output: Optional[str] = None
+    final_output_text: Optional[str] = None
+    final_output_json: Any = None
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentRunTreeEdge(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    invocation: AgentSubagentInvocation
+    child_run: Optional["AgentRunTreeNode"] = None
+
+
+class AgentRunTreeNode(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    run: AgentRunTreeRunSummary
+    depth: int = 0
+    invocations: List[AgentRunTreeEdge] = Field(default_factory=list)
+
+
+class AgentRunTreeResponse(BaseModel):
+    root: AgentRunTreeNode
+
+
+AgentRunTreeEdge.model_rebuild()
+AgentRunTreeNode.model_rebuild()

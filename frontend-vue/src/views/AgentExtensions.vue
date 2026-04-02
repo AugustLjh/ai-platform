@@ -71,7 +71,7 @@
 
     <section class="extensions-grid">
       <div class="stack">
-        <div class="card">
+        <div class="card scroll-card">
           <div class="section-head">
             <div>
               <h2>Skills</h2>
@@ -114,7 +114,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card scroll-card">
           <div class="section-head">
             <div>
               <h2>知识库</h2>
@@ -140,7 +140,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card scroll-card">
           <div class="section-head">
             <div>
               <h2>专家能力</h2>
@@ -174,7 +174,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card scroll-card">
           <div class="section-head">
             <div>
               <h2>MCP Servers</h2>
@@ -246,7 +246,7 @@
       </div>
 
       <aside class="stack">
-        <div class="card">
+        <div class="card scroll-card">
           <div class="section-head">
             <div>
               <h2>生效能力</h2>
@@ -688,6 +688,18 @@ onMounted(async () => {
   box-shadow: var(--shadow-sm);
 }
 
+.scroll-card .catalog-list,
+.scroll-card .tool-list {
+  max-height: min(58vh, 680px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.scroll-card .panel-empty {
+  max-height: min(36vh, 280px);
+  overflow-y: auto;
+}
+
 .section-head {
   display: flex;
   justify-content: space-between;
@@ -798,6 +810,7 @@ onMounted(async () => {
 .catalog-main {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .skill-meta {
@@ -809,11 +822,13 @@ onMounted(async () => {
 
 .catalog-main strong {
   color: var(--gray-900);
+  word-break: break-word;
 }
 
 .catalog-main span,
 .catalog-main small {
   color: var(--gray-600);
+  word-break: break-word;
 }
 
 .meta-tag {
@@ -927,6 +942,7 @@ onMounted(async () => {
 .tool-head p {
   margin-top: 4px;
   color: var(--gray-600);
+  word-break: break-word;
 }
 
 .tool-source {

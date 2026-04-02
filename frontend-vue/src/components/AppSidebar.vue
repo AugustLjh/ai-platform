@@ -431,6 +431,10 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1 1 auto;
+  min-height: clamp(320px, 64vh, 760px);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .session-row {
@@ -483,8 +487,10 @@ onMounted(async () => {
 }
 
 .session-title {
+  display: block;
   font-size: 13px;
   font-weight: 500;
+  max-width: 10em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

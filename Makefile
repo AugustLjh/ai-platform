@@ -4,6 +4,8 @@ PROD_BACKEND_FILES := -f docker-compose.backend.yml
 PROD_FRONTEND_FILES := -f docker-compose.frontend.yml
 SAFE_BUILD_ENV := DOCKER_BUILDKIT=0 COMPOSE_PARALLEL_LIMIT=1
 FRONTEND_RELEASE_ROOT := frontend-dist
+PYTHON_BIN := .venv/bin/python
+GO_TEST_CACHE := /tmp/ai-platform-go-cache
 PROD_REQUIRED_IMAGES := \
 	postgres:16 \
 	docker.1ms.run/library/redis:alpine \
@@ -21,7 +23,7 @@ PROD_REQUIRED_IMAGES := \
 	ai-runtime-up ai-runtime-build ai-runtime-build-safe ai-runtime-down \
 	api-up api-build api-build-safe api-down \
 	platform-up platform-build platform-build-safe platform-down \
-	ps clean test \
+	ps clean test test-agent-runtime test-platform test-frontend \
 	db-upgrade db-current db-history db-revision db-reset-to-alembic db-shell redis-cli qdrant-backfill \
 	restart-platform restart-ai-runtime restart-frontend restart-nginx
 
@@ -70,7 +72,10 @@ help:
 	@echo "通用命令:"
 	@echo "  make ps               - 查看 ai-platform 相关容器"
 	@echo "  make clean            - 停止当前统一部署环境，并清理卷"
-	@echo "  make test             - 在本地开发环境执行测试"
+	@echo "  make test             - 在本地开发环境执行 Python/Go/前端单测"
+	@echo "  make test-agent-runtime - 执行 ai_runtime 单测"
+	@echo "  make test-platform    - 执行 platform Go 单测"
+	@echo "  make test-frontend    - 执行 frontend-vue 原生 Node 单测"
 	@echo ""
 	@echo "数据库与服务:"
 	@echo "  make db-upgrade       - 使用 Alembic 升级到最新版本"
@@ -273,8 +278,20 @@ clean:
 
 test:
 	@echo "运行本地测试..."
-	cd ai_runtime && pytest
-	cd platform && go test ./...
+	$(MAKE) test-agent-runtime
+	$(MAKE) test-platform
+	$(MAKE) test-frontend
+
+test-agent-runtime:
+	@test -x $(PYTHON_BIN) || (echo "缺少 $(PYTHON_BIN)，请先在仓库根目录创建并安装项目虚拟环境" && exit 1)
+	$(PYTHON_BIN) -m pytest ai_runtime/tests -q
+
+test-platform:
+	@mkdir -p $(GO_TEST_CACHE)
+	cd platform && GOCACHE=$(GO_TEST_CACHE) go test ./...
+
+test-frontend:
+	cd frontend-vue && npm test
 
 # ============================================
 # 数据库与缓存
