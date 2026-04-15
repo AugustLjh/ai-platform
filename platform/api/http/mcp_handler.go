@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/ai-platform/platform/middleware"
 	"github.com/ai-platform/platform/service"
@@ -49,6 +50,32 @@ func (h *MCPHandler) HandleServers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *MCPHandler) HandleGovernance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	result, err := h.agentService.GetMCPGovernance(
+		user.TenantID,
+		r.URL.Query().Get("server_id"),
+		r.URL.Query().Get("action_type"),
+		r.URL.Query().Get("status"),
+		r.URL.Query().Get("failure_mode"),
+		limit,
+	)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
 func (h *MCPHandler) HandleServerByID(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.GetUser(r.Context())
 	if !ok {
@@ -82,7 +109,7 @@ func (h *MCPHandler) HandleServerByID(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, item, http.StatusOK)
 	case http.MethodDelete:
-		if err := h.agentService.DeleteMCPServer(user.TenantID, serverID); err != nil {
+		if err := h.agentService.DeleteMCPServer(user.TenantID, user.ID, serverID); err != nil {
 			respondError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -107,7 +134,7 @@ func (h *MCPHandler) HandleTestServer(w http.ResponseWriter, r *http.Request) {
 		respondError(w, "Invalid server id", http.StatusBadRequest)
 		return
 	}
-	result, err := h.agentService.TestMCPServer(r.Context(), user.TenantID, serverID)
+	result, err := h.agentService.TestMCPServer(r.Context(), user.TenantID, serverID, user.ID)
 	if err != nil {
 		respondError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -130,13 +157,36 @@ func (h *MCPHandler) HandleRefreshServerTools(w http.ResponseWriter, r *http.Req
 		respondError(w, "Invalid server id", http.StatusBadRequest)
 		return
 	}
-	result, err := h.agentService.RefreshMCPServerTools(user.TenantID, serverID)
+	result, err := h.agentService.RefreshMCPServerTools(user.TenantID, serverID, user.ID)
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrNotImplemented) {
 			status = http.StatusNotImplemented
 		}
 		respondError(w, err.Error(), status)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *MCPHandler) HandleBulkActions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req service.MCPServerBulkActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	result, err := h.agentService.RunMCPServerBulkAction(user.TenantID, user.ID, &req)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	respondJSON(w, result, http.StatusOK)

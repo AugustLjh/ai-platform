@@ -15,27 +15,29 @@ import (
 var ErrMCPServerNotFound = errors.New("mcp server not found")
 
 type MCPServer struct {
-	ID           string           `json:"id"`
-	TenantID     string           `json:"tenant_id"`
-	Name         string           `json:"name"`
-	Transport    string           `json:"transport"`
-	Endpoint     string           `json:"endpoint,omitempty"`
-	Command      string           `json:"command,omitempty"`
-	Args         json.RawMessage  `json:"args"`
-	Env          json.RawMessage  `json:"env"`
-	Status       string           `json:"status"`
-	LastTestedAt *time.Time       `json:"last_tested_at,omitempty"`
-	LastError    *string          `json:"last_error,omitempty"`
-	Metadata     json.RawMessage  `json:"metadata"`
-	CreatedBy    *string          `json:"created_by,omitempty"`
-	UpdatedBy    *string          `json:"updated_by,omitempty"`
-	CreatedAt    time.Time        `json:"created_at"`
-	UpdatedAt    time.Time        `json:"updated_at"`
-	Tools        []*MCPServerTool `json:"tools,omitempty"`
-	Connection   *MCPConnection   `json:"connection,omitempty"`
-	Catalog      *MCPCatalog      `json:"catalog,omitempty"`
-	Availability *MCPAvailability `json:"availability,omitempty"`
-	BindingUsage *MCPBindingUsage `json:"binding_usage,omitempty"`
+	ID           string            `json:"id"`
+	TenantID     string            `json:"tenant_id"`
+	Name         string            `json:"name"`
+	Transport    string            `json:"transport"`
+	Endpoint     string            `json:"endpoint,omitempty"`
+	Command      string            `json:"command,omitempty"`
+	Args         json.RawMessage   `json:"args"`
+	Env          json.RawMessage   `json:"env"`
+	Status       string            `json:"status"`
+	LastTestedAt *time.Time        `json:"last_tested_at,omitempty"`
+	LastError    *string           `json:"last_error,omitempty"`
+	Metadata     json.RawMessage   `json:"metadata"`
+	CreatedBy    *string           `json:"created_by,omitempty"`
+	UpdatedBy    *string           `json:"updated_by,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	Tools        []*MCPServerTool  `json:"tools,omitempty"`
+	Connection   *MCPConnection    `json:"connection,omitempty"`
+	Catalog      *MCPCatalog       `json:"catalog,omitempty"`
+	Availability *MCPAvailability  `json:"availability,omitempty"`
+	BindingUsage *MCPBindingUsage  `json:"binding_usage,omitempty"`
+	Recovery     *MCPRecovery      `json:"recovery,omitempty"`
+	Events       []*MCPServerEvent `json:"events,omitempty"`
 }
 
 type MCPServerTool struct {
@@ -79,16 +81,57 @@ type MCPAvailability struct {
 }
 
 type MCPBindingUsage struct {
-	AgentCount int                `json:"agent_count"`
-	Summary    string             `json:"summary"`
-	MoreCount  int                `json:"more_count,omitempty"`
-	Agents     []*MCPBindingAgent `json:"agents,omitempty"`
+	AgentCount         int                `json:"agent_count"`
+	ActiveAgentCount   int                `json:"active_agent_count"`
+	InactiveAgentCount int                `json:"inactive_agent_count"`
+	Summary            string             `json:"summary"`
+	MoreCount          int                `json:"more_count,omitempty"`
+	Agents             []*MCPBindingAgent `json:"agents,omitempty"`
 }
 
 type MCPBindingAgent struct {
 	AgentID string `json:"agent_id"`
 	Name    string `json:"name"`
 	Status  string `json:"status"`
+}
+
+type MCPRecovery struct {
+	Status      string               `json:"status"`
+	Severity    string               `json:"severity"`
+	Summary     string               `json:"summary"`
+	FailureMode string               `json:"failure_mode,omitempty"`
+	Recoverable bool                 `json:"recoverable"`
+	Actions     []*MCPRecoveryAction `json:"actions,omitempty"`
+	Impact      *MCPRecoveryImpact   `json:"impact,omitempty"`
+}
+
+type MCPRecoveryAction struct {
+	Type        string `json:"type"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Priority    string `json:"priority,omitempty"`
+}
+
+type MCPRecoveryImpact struct {
+	AgentCount         int    `json:"agent_count"`
+	ActiveAgentCount   int    `json:"active_agent_count"`
+	InactiveAgentCount int    `json:"inactive_agent_count"`
+	Summary            string `json:"summary"`
+}
+
+type MCPServerEvent struct {
+	ID          string          `json:"id"`
+	TenantID    string          `json:"tenant_id"`
+	ServerID    string          `json:"server_id,omitempty"`
+	ServerName  string          `json:"server_name"`
+	EventType   string          `json:"event_type"`
+	ActionType  string          `json:"action_type"`
+	Status      string          `json:"status"`
+	FailureMode string          `json:"failure_mode,omitempty"`
+	Summary     string          `json:"summary"`
+	Details     json.RawMessage `json:"details"`
+	ActorUserID *string         `json:"actor_user_id,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
 }
 
 type MCPStore struct {
@@ -222,6 +265,37 @@ func (s *MCPStore) ListServers(tenantID string) ([]*MCPServer, error) {
 	return items, rows.Err()
 }
 
+func (s *MCPStore) AppendServerEvent(event *MCPServerEvent) (*MCPServerEvent, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := &MCPServerEvent{}
+	err := scanMCPServerEvent(s.pool.QueryRow(ctx, `
+		INSERT INTO mcp_server_events (
+			tenant_id, server_id, server_name, event_type, action_type,
+			status, failure_mode, summary, details, actor_user_id
+		)
+		VALUES ($1, NULLIF($2, '')::uuid, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, NULLIF($10, '')::uuid)
+		RETURNING id, tenant_id, COALESCE(server_id::text, ''), server_name, event_type,
+		          action_type, status, COALESCE(failure_mode, ''), summary, details, actor_user_id, created_at
+	`,
+		event.TenantID,
+		event.ServerID,
+		event.ServerName,
+		event.EventType,
+		event.ActionType,
+		event.Status,
+		event.FailureMode,
+		event.Summary,
+		normalizeJSONRaw(event.Details, `{}`),
+		nullIfPointer(event.ActorUserID),
+	), row)
+	if err != nil {
+		return nil, fmt.Errorf("failed to append mcp server event: %w", err)
+	}
+	return row, nil
+}
+
 func (s *MCPStore) DeleteServer(id, tenantID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -233,6 +307,81 @@ func (s *MCPStore) DeleteServer(id, tenantID string) error {
 		return ErrMCPServerNotFound
 	}
 	return nil
+}
+
+func (s *MCPStore) ListServerEvents(serverID, tenantID string, limit int) ([]*MCPServerEvent, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, tenant_id, COALESCE(server_id::text, ''), server_name, event_type,
+		       action_type, status, COALESCE(failure_mode, ''), summary, details, actor_user_id, created_at
+		FROM mcp_server_events
+		WHERE tenant_id = $1 AND server_id = NULLIF($2, '')::uuid
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, tenantID, serverID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list mcp server events: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*MCPServerEvent, 0, limit)
+	for rows.Next() {
+		item := &MCPServerEvent{}
+		if err := scanMCPServerEvent(rows, item); err != nil {
+			return nil, fmt.Errorf("failed to scan mcp server event: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *MCPStore) ListTenantServerEvents(
+	tenantID string,
+	serverID string,
+	actionType string,
+	status string,
+	failureMode string,
+	limit int,
+) ([]*MCPServerEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, tenant_id, COALESCE(server_id::text, ''), server_name, event_type,
+		       action_type, status, COALESCE(failure_mode, ''), summary, details, actor_user_id, created_at
+		FROM mcp_server_events
+		WHERE tenant_id = $1
+		  AND ($2 = '' OR COALESCE(server_id::text, '') = $2)
+		  AND ($3 = '' OR action_type = $3)
+		  AND ($4 = '' OR status = $4)
+		  AND ($5 = '' OR COALESCE(failure_mode, '') = $5)
+		ORDER BY created_at DESC
+		LIMIT $6
+	`, tenantID, serverID, actionType, status, failureMode, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tenant mcp server events: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*MCPServerEvent, 0, limit)
+	for rows.Next() {
+		item := &MCPServerEvent{}
+		if err := scanMCPServerEvent(rows, item); err != nil {
+			return nil, fmt.Errorf("failed to scan tenant mcp server event: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *MCPStore) ReplaceAgentMCPBindings(agentID string, serverIDs []string) error {
@@ -284,7 +433,7 @@ func (s *MCPStore) ListAgentMCPBindings(agentID string) ([]string, error) {
 	return items, rows.Err()
 }
 
-func (s *MCPStore) ListServerBindingAgents(serverID, tenantID string, limit int) ([]*MCPBindingAgent, int, error) {
+func (s *MCPStore) ListServerBindingAgents(serverID, tenantID string, limit int) ([]*MCPBindingAgent, int, int, int, error) {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -293,13 +442,18 @@ func (s *MCPStore) ListServerBindingAgents(serverID, tenantID string, limit int)
 	defer cancel()
 
 	var totalCount int
+	var activeCount int
+	var inactiveCount int
 	if err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(*)
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE COALESCE(agents.status, 'active') = 'active'),
+			COUNT(*) FILTER (WHERE COALESCE(agents.status, 'active') <> 'active')
 		FROM agent_mcp_bindings bindings
 		INNER JOIN agent_definitions agents ON agents.id = bindings.agent_definition_id
 		WHERE bindings.server_id = $1 AND agents.tenant_id = $2
-	`, serverID, tenantID).Scan(&totalCount); err != nil {
-		return nil, 0, fmt.Errorf("failed to count mcp server bindings: %w", err)
+	`, serverID, tenantID).Scan(&totalCount, &activeCount, &inactiveCount); err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("failed to count mcp server bindings: %w", err)
 	}
 
 	rows, err := s.pool.Query(ctx, `
@@ -311,7 +465,7 @@ func (s *MCPStore) ListServerBindingAgents(serverID, tenantID string, limit int)
 		LIMIT $3
 	`, serverID, tenantID, limit)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list mcp server binding agents: %w", err)
+		return nil, 0, 0, 0, fmt.Errorf("failed to list mcp server binding agents: %w", err)
 	}
 	defer rows.Close()
 
@@ -319,14 +473,14 @@ func (s *MCPStore) ListServerBindingAgents(serverID, tenantID string, limit int)
 	for rows.Next() {
 		agent := &MCPBindingAgent{}
 		if err := rows.Scan(&agent.AgentID, &agent.Name, &agent.Status); err != nil {
-			return nil, 0, fmt.Errorf("failed to scan mcp server binding agent: %w", err)
+			return nil, 0, 0, 0, fmt.Errorf("failed to scan mcp server binding agent: %w", err)
 		}
 		agents = append(agents, agent)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, 0, err
 	}
-	return agents, totalCount, nil
+	return agents, totalCount, activeCount, inactiveCount, nil
 }
 
 func (s *MCPStore) ReplaceServerTools(serverID string, tools []*MCPServerTool) error {
@@ -432,6 +586,32 @@ func scanMCPServerTool(scanner rowScanner, row *MCPServerTool) error {
 	}
 
 	row.Description = nullableStringValue(description)
+	return nil
+}
+
+func scanMCPServerEvent(scanner rowScanner, row *MCPServerEvent) error {
+	var actorUserID sql.NullString
+
+	if err := scanner.Scan(
+		&row.ID,
+		&row.TenantID,
+		&row.ServerID,
+		&row.ServerName,
+		&row.EventType,
+		&row.ActionType,
+		&row.Status,
+		&row.FailureMode,
+		&row.Summary,
+		&row.Details,
+		&actorUserID,
+		&row.CreatedAt,
+	); err != nil {
+		return err
+	}
+
+	if actorUserID.Valid && actorUserID.String != "" {
+		row.ActorUserID = &actorUserID.String
+	}
 	return nil
 }
 

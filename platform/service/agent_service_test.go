@@ -206,11 +206,14 @@ func TestBuildMCPBindingUsageSummary(t *testing.T) {
 		Status: "active",
 	}, []*database.MCPBindingAgent{
 		{AgentID: "agent-1", Name: "Docs Agent", Status: "active"},
-		{AgentID: "agent-2", Name: "Review Agent", Status: "active"},
-	}, 3)
+		{AgentID: "agent-2", Name: "Review Agent", Status: "disabled"},
+	}, 3, 2, 1)
 
 	if summary.AgentCount != 3 {
 		t.Fatalf("expected binding count 3, got %d", summary.AgentCount)
+	}
+	if summary.ActiveAgentCount != 2 || summary.InactiveAgentCount != 1 {
+		t.Fatalf("expected active/inactive binding counts 2/1, got %d/%d", summary.ActiveAgentCount, summary.InactiveAgentCount)
 	}
 	if summary.MoreCount != 1 {
 		t.Fatalf("expected more count 1, got %d", summary.MoreCount)
@@ -220,6 +223,233 @@ func TestBuildMCPBindingUsageSummary(t *testing.T) {
 	}
 	if len(summary.Agents) != 2 {
 		t.Fatalf("expected 2 sampled agents, got %d", len(summary.Agents))
+	}
+}
+
+func TestBuildMCPRecoverySummaryForConnectionFailure(t *testing.T) {
+	lastError := "dial tcp: timeout"
+	server := &database.MCPServer{
+		ID:        "server-1",
+		Name:      "Docs MCP",
+		Status:    "active",
+		LastError: &lastError,
+	}
+	connection := &database.MCPConnection{Status: "degraded", Error: lastError}
+	catalog := &database.MCPCatalog{Status: "ready", ToolCount: 3}
+	availability := &database.MCPAvailability{
+		Status:   "degraded",
+		Bindable: false,
+		Reason:   "connection_failed",
+	}
+	bindingUsage := &database.MCPBindingUsage{
+		AgentCount:         4,
+		ActiveAgentCount:   3,
+		InactiveAgentCount: 1,
+	}
+
+	recovery := buildMCPRecoverySummary(server, connection, catalog, availability, bindingUsage)
+
+	if recovery.Status != "blocked" || recovery.Severity != "critical" || !recovery.Recoverable {
+		t.Fatalf("unexpected recovery state: %#v", recovery)
+	}
+	if recovery.FailureMode != "connection_failed" {
+		t.Fatalf("expected connection_failed failure mode, got %s", recovery.FailureMode)
+	}
+	if len(recovery.Actions) != 2 || recovery.Actions[0].Type != "test" || recovery.Actions[1].Type != "refresh" {
+		t.Fatalf("expected test then refresh recovery actions, got %#v", recovery.Actions)
+	}
+	if recovery.Impact.AgentCount != 4 || recovery.Impact.ActiveAgentCount != 3 {
+		t.Fatalf("unexpected recovery impact: %#v", recovery.Impact)
+	}
+}
+
+func TestBuildMCPRecoverySummaryForStaleCatalog(t *testing.T) {
+	server := &database.MCPServer{
+		ID:     "server-2",
+		Name:   "Review MCP",
+		Status: "active",
+	}
+	connection := &database.MCPConnection{Status: "healthy"}
+	catalog := &database.MCPCatalog{Status: "stale", ToolCount: 2, IsStale: true}
+	availability := &database.MCPAvailability{
+		Status:   "warning",
+		Bindable: true,
+		Reason:   "catalog_stale",
+	}
+	bindingUsage := &database.MCPBindingUsage{
+		AgentCount:       1,
+		ActiveAgentCount: 1,
+	}
+
+	recovery := buildMCPRecoverySummary(server, connection, catalog, availability, bindingUsage)
+
+	if recovery.Status != "stale" || recovery.Severity != "medium" || recovery.FailureMode != "catalog_stale" {
+		t.Fatalf("unexpected stale recovery state: %#v", recovery)
+	}
+	if len(recovery.Actions) != 1 || recovery.Actions[0].Type != "refresh" {
+		t.Fatalf("expected refresh recovery action, got %#v", recovery.Actions)
+	}
+	if recovery.Impact.Summary != "当前影响 1 个已绑定 agent，且都处于 active 状态。" {
+		t.Fatalf("unexpected impact summary: %s", recovery.Impact.Summary)
+	}
+}
+
+func TestBuildMCPGovernanceSummaryFromHydratedServers(t *testing.T) {
+	service := &AgentService{}
+	longStaleAge := int64((96 * time.Hour).Seconds())
+	shortStaleAge := int64((30 * time.Hour).Seconds())
+
+	summary, err := service.buildMCPGovernanceSummary("tenant-1", []*database.MCPServer{
+		{
+			ID:     "server-1",
+			Name:   "Docs MCP",
+			Status: "active",
+			Connection: &database.MCPConnection{
+				Status:  "degraded",
+				Summary: "最近一次连接测试失败。",
+			},
+			Catalog: &database.MCPCatalog{
+				Status:     "ready",
+				ToolCount:  3,
+				AgeSeconds: func() *int64 { value := int64(120); return &value }(),
+			},
+			Recovery: &database.MCPRecovery{
+				Status:      "blocked",
+				FailureMode: "connection_failed",
+				Recoverable: true,
+			},
+			BindingUsage: &database.MCPBindingUsage{
+				AgentCount:       4,
+				ActiveAgentCount: 3,
+			},
+		},
+		{
+			ID:     "server-2",
+			Name:   "Review MCP",
+			Status: "active",
+			Connection: &database.MCPConnection{
+				Status:  "healthy",
+				Summary: "最近一次连接测试通过。",
+			},
+			Catalog: &database.MCPCatalog{
+				Status:     "stale",
+				ToolCount:  2,
+				IsStale:    true,
+				AgeSeconds: &longStaleAge,
+			},
+			Recovery: &database.MCPRecovery{
+				Status:      "stale",
+				FailureMode: "catalog_stale",
+				Recoverable: true,
+			},
+			BindingUsage: &database.MCPBindingUsage{
+				AgentCount:       2,
+				ActiveAgentCount: 1,
+			},
+		},
+		{
+			ID:     "server-3",
+			Name:   "New MCP",
+			Status: "active",
+			Connection: &database.MCPConnection{
+				Status:  "untested",
+				Summary: "尚未执行连接测试。",
+			},
+			Catalog: &database.MCPCatalog{
+				Status:     "stale",
+				ToolCount:  1,
+				IsStale:    true,
+				AgeSeconds: &shortStaleAge,
+			},
+			Recovery: &database.MCPRecovery{
+				Status:      "verify",
+				FailureMode: "connection_untested",
+				Recoverable: true,
+			},
+			BindingUsage: &database.MCPBindingUsage{
+				AgentCount:       1,
+				ActiveAgentCount: 1,
+			},
+		},
+	}, &MCPGovernanceEventFilters{
+		ActionType: "refresh",
+		Status:     "failed",
+		Limit:      20,
+	})
+	if err != nil {
+		t.Fatalf("buildMCPGovernanceSummary returned error: %v", err)
+	}
+	if summary.TotalServers != 3 {
+		t.Fatalf("expected total servers 3, got %d", summary.TotalServers)
+	}
+	if summary.RecoveringServers != 3 {
+		t.Fatalf("expected 3 recovering servers, got %d", summary.RecoveringServers)
+	}
+	if summary.BlockedServers != 1 {
+		t.Fatalf("expected 1 blocked server, got %d", summary.BlockedServers)
+	}
+	if summary.StaleServers != 2 {
+		t.Fatalf("expected 2 stale servers, got %d", summary.StaleServers)
+	}
+	if summary.UntestedServers != 1 {
+		t.Fatalf("expected 1 untested server, got %d", summary.UntestedServers)
+	}
+	if summary.ImpactedAgents != 7 || summary.ActiveImpactedAgents != 5 {
+		t.Fatalf("unexpected impacted agent counts: total=%d active=%d", summary.ImpactedAgents, summary.ActiveImpactedAgents)
+	}
+	if len(summary.LongStaleServers) != 1 || summary.LongStaleServers[0].ID != "server-2" {
+		t.Fatalf("expected server-2 as the only long stale server, got %#v", summary.LongStaleServers)
+	}
+	if summary.FailureModeCounts["connection_failed"] != 1 ||
+		summary.FailureModeCounts["catalog_stale"] != 1 ||
+		summary.FailureModeCounts["connection_untested"] != 1 {
+		t.Fatalf("unexpected failure mode counts: %#v", summary.FailureModeCounts)
+	}
+	if summary.EventFilters == nil || summary.EventFilters.ActionType != "refresh" || summary.EventFilters.Status != "failed" || summary.EventFilters.Limit != 20 {
+		t.Fatalf("unexpected event filters: %#v", summary.EventFilters)
+	}
+}
+
+func TestNormalizeMCPGovernanceEventFilters(t *testing.T) {
+	filters := normalizeMCPGovernanceEventFilters(&MCPGovernanceEventFilters{
+		ServerID:    " server-1 ",
+		ActionType:  " Refresh ",
+		Status:      " Failed ",
+		FailureMode: " Connection_Failed ",
+		Limit:       999,
+	})
+
+	if filters.ServerID != "server-1" || filters.ActionType != "refresh" || filters.Status != "failed" || filters.FailureMode != "connection_failed" {
+		t.Fatalf("unexpected normalized filters: %#v", filters)
+	}
+	if filters.Limit != 200 {
+		t.Fatalf("expected capped limit 200, got %d", filters.Limit)
+	}
+}
+
+func TestNormalizeMCPBulkGroupBy(t *testing.T) {
+	if got := normalizeMCPBulkGroupBy("failure_mode"); got != "failure_mode" {
+		t.Fatalf("expected failure_mode, got %s", got)
+	}
+	if got := normalizeMCPBulkGroupBy("weird"); got != "none" {
+		t.Fatalf("expected fallback none, got %s", got)
+	}
+}
+
+func TestBuildMCPBulkGroupKey(t *testing.T) {
+	server := &database.MCPServer{
+		Status:    "disabled",
+		Transport: "stdio",
+		Recovery:  &database.MCPRecovery{FailureMode: "connection_failed"},
+	}
+	if got := buildMCPBulkGroupKey(server, "status"); got != "disabled" {
+		t.Fatalf("expected disabled group key, got %s", got)
+	}
+	if got := buildMCPBulkGroupKey(server, "transport"); got != "stdio" {
+		t.Fatalf("expected stdio group key, got %s", got)
+	}
+	if got := buildMCPBulkGroupKey(server, "failure_mode"); got != "connection_failed" {
+		t.Fatalf("expected connection_failed group key, got %s", got)
 	}
 }
 

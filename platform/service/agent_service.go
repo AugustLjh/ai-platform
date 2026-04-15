@@ -165,6 +165,84 @@ type MCPServerRefreshResponse struct {
 	Availability *database.MCPAvailability `json:"availability,omitempty"`
 }
 
+type MCPServerGovernanceSummary struct {
+	TotalServers         int                        `json:"total_servers"`
+	RecoveringServers    int                        `json:"recovering_servers"`
+	BlockedServers       int                        `json:"blocked_servers"`
+	StaleServers         int                        `json:"stale_servers"`
+	UntestedServers      int                        `json:"untested_servers"`
+	ImpactedAgents       int                        `json:"impacted_agents"`
+	ActiveImpactedAgents int                        `json:"active_impacted_agents"`
+	RecentEventCount     int                        `json:"recent_event_count"`
+	LongStaleServers     []*database.MCPServer      `json:"long_stale_servers"`
+	RecoverableServers   []*database.MCPServer      `json:"recoverable_servers"`
+	RecentEvents         []*database.MCPServerEvent `json:"recent_events"`
+	FailureModeCounts    map[string]int             `json:"failure_mode_counts"`
+	ActionTypeCounts     map[string]int             `json:"action_type_counts"`
+	EventStatusCounts    map[string]int             `json:"event_status_counts"`
+	EventFilters         *MCPGovernanceEventFilters `json:"event_filters,omitempty"`
+}
+
+type MCPGovernanceEventFilters struct {
+	ServerID    string `json:"server_id,omitempty"`
+	ActionType  string `json:"action_type,omitempty"`
+	Status      string `json:"status,omitempty"`
+	FailureMode string `json:"failure_mode,omitempty"`
+	Limit       int    `json:"limit,omitempty"`
+}
+
+type MCPGovernanceResponse struct {
+	Servers []*database.MCPServer       `json:"servers"`
+	Summary *MCPServerGovernanceSummary `json:"summary"`
+	Total   int                         `json:"total"`
+}
+
+type MCPServerBulkActionRequest struct {
+	ServerIDs    []string `json:"server_ids"`
+	Action       string   `json:"action"`
+	GroupBy      string   `json:"group_by,omitempty"`
+	MaxBatchSize int      `json:"max_batch_size,omitempty"`
+	RetryFailed  int      `json:"retry_failed,omitempty"`
+}
+
+type MCPServerBulkActionResult struct {
+	ServerID string              `json:"server_id"`
+	Action   string              `json:"action"`
+	OK       bool                `json:"ok"`
+	Message  string              `json:"message"`
+	Server   *database.MCPServer `json:"server,omitempty"`
+	Attempts int                 `json:"attempts,omitempty"`
+	GroupKey string              `json:"group_key,omitempty"`
+}
+
+type MCPServerBulkActionExecution struct {
+	GroupBy       string `json:"group_by"`
+	MaxBatchSize  int    `json:"max_batch_size"`
+	RetryFailed   int    `json:"retry_failed"`
+	SelectedCount int    `json:"selected_count"`
+	GroupCount    int    `json:"group_count"`
+}
+
+type MCPServerBulkActionGroup struct {
+	Key     string                       `json:"key"`
+	Label   string                       `json:"label"`
+	Total   int                          `json:"total"`
+	Success int                          `json:"success"`
+	Failed  int                          `json:"failed"`
+	Results []*MCPServerBulkActionResult `json:"results"`
+}
+
+type MCPServerBulkActionResponse struct {
+	Action    string                        `json:"action"`
+	Results   []*MCPServerBulkActionResult  `json:"results"`
+	Total     int                           `json:"total"`
+	Success   int                           `json:"success"`
+	Failed    int                           `json:"failed"`
+	Summary   *MCPServerGovernanceSummary   `json:"summary,omitempty"`
+	Execution *MCPServerBulkActionExecution `json:"execution,omitempty"`
+	Groups    []*MCPServerBulkActionGroup   `json:"groups,omitempty"`
+}
+
 type AgentService struct {
 	aiClient           *grpc.AIClient
 	agentStore         *database.AgentStore
@@ -564,6 +642,35 @@ func (s *AgentService) ListMCPServers(tenantID string) ([]*database.MCPServer, e
 	return items, nil
 }
 
+func (s *AgentService) GetMCPGovernance(
+	tenantID string,
+	serverID string,
+	actionType string,
+	status string,
+	failureMode string,
+	limit int,
+) (*MCPGovernanceResponse, error) {
+	servers, err := s.ListMCPServers(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	summary, err := s.buildMCPGovernanceSummary(tenantID, servers, &MCPGovernanceEventFilters{
+		ServerID:    strings.TrimSpace(serverID),
+		ActionType:  strings.TrimSpace(actionType),
+		Status:      strings.TrimSpace(status),
+		FailureMode: strings.TrimSpace(failureMode),
+		Limit:       limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &MCPGovernanceResponse{
+		Servers: servers,
+		Summary: summary,
+		Total:   len(servers),
+	}, nil
+}
+
 func (s *AgentService) CreateMCPServer(tenantID, userID string, req *MCPServerUpsertRequest) (*database.MCPServer, error) {
 	server := &database.MCPServer{
 		TenantID:  tenantID,
@@ -587,7 +694,13 @@ func (s *AgentService) CreateMCPServer(tenantID, userID string, req *MCPServerUp
 	if err != nil {
 		return nil, err
 	}
-	return s.hydrateMCPServer(created)
+	hydrated, err := s.hydrateMCPServer(created)
+	if err != nil {
+		return nil, err
+	}
+	event, _ := s.recordMCPServerEvent(tenantID, userID, hydrated, "server.updated", "create", "succeeded", "server_created", "MCP server 已创建。")
+	hydrated = prependMCPServerEvent(hydrated, event)
+	return hydrated, nil
 }
 
 func (s *AgentService) UpdateMCPServer(tenantID, userID, serverID string, req *MCPServerUpsertRequest) (*database.MCPServer, error) {
@@ -615,7 +728,13 @@ func (s *AgentService) UpdateMCPServer(tenantID, userID, serverID string, req *M
 	if err != nil {
 		return nil, err
 	}
-	return s.hydrateMCPServer(updated)
+	hydrated, err := s.hydrateMCPServer(updated)
+	if err != nil {
+		return nil, err
+	}
+	event, _ := s.recordMCPServerEvent(tenantID, userID, hydrated, "server.updated", "update", "succeeded", "server_updated", "MCP server 配置已更新。")
+	hydrated = prependMCPServerEvent(hydrated, event)
+	return hydrated, nil
 }
 
 func (s *AgentService) GetMCPServer(tenantID, serverID string) (*database.MCPServer, error) {
@@ -626,8 +745,28 @@ func (s *AgentService) GetMCPServer(tenantID, serverID string) (*database.MCPSer
 	return s.hydrateMCPServer(server)
 }
 
-func (s *AgentService) DeleteMCPServer(tenantID, serverID string) error {
-	bindingAgents, bindingCount, err := s.mcpStore.ListServerBindingAgents(serverID, tenantID, 5)
+func prependMCPServerEvent(server *database.MCPServer, event *database.MCPServerEvent) *database.MCPServer {
+	if server == nil || event == nil {
+		return server
+	}
+	events := make([]*database.MCPServerEvent, 0, len(server.Events)+1)
+	events = append(events, event)
+	for _, item := range server.Events {
+		if item == nil || item.ID == event.ID {
+			continue
+		}
+		events = append(events, item)
+	}
+	server.Events = events
+	return server
+}
+
+func (s *AgentService) DeleteMCPServer(tenantID, userID, serverID string) error {
+	server, err := s.GetMCPServer(tenantID, serverID)
+	if err != nil {
+		return err
+	}
+	bindingAgents, bindingCount, _, _, err := s.mcpStore.ListServerBindingAgents(serverID, tenantID, 5)
 	if err != nil {
 		return err
 	}
@@ -639,21 +778,39 @@ func (s *AgentService) DeleteMCPServer(tenantID, serverID string) error {
 			summarizeMCPBindingAgents(bindingAgents),
 		)
 	}
-	return s.mcpStore.DeleteServer(serverID, tenantID)
+	_, _ = s.recordMCPServerEvent(tenantID, userID, server, "server.deleted", "delete", "succeeded", "server_deleted", "MCP server 已删除。")
+	if err := s.mcpStore.DeleteServer(serverID, tenantID); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (s *AgentService) TestMCPServer(ctx context.Context, tenantID, serverID string) (*MCPServerTestResponse, error) {
+func (s *AgentService) TestMCPServer(ctx context.Context, tenantID, serverID, userID string) (*MCPServerTestResponse, error) {
 	if _, err := s.mcpStore.GetServer(serverID, tenantID); err != nil {
 		return nil, err
 	}
 	result, err := s.aiClient.TestMCPServer(ctx, tenantID, serverID)
 	if err != nil {
+		if server, getErr := s.GetMCPServer(tenantID, serverID); getErr == nil {
+			event, _ := s.recordMCPServerEvent(tenantID, userID, server, "server.tested", "test", "failed", "connection_failed", "MCP server 连接测试失败。")
+			server = prependMCPServerEvent(server, event)
+		}
 		return nil, err
 	}
 	server, err := s.GetMCPServer(tenantID, serverID)
 	if err != nil {
 		return nil, err
 	}
+	status := "succeeded"
+	failureMode := "connection_healthy"
+	summary := "MCP server 连接测试已完成。"
+	if ok, exists := result["ok"].(bool); exists && !ok {
+		status = "failed"
+		failureMode = "connection_failed"
+		summary = "MCP server 连接测试返回失败结果。"
+	}
+	event, _ := s.recordMCPServerEvent(tenantID, userID, server, "server.tested", "test", status, failureMode, summary)
+	server = prependMCPServerEvent(server, event)
 	return &MCPServerTestResponse{
 		Result:       maskSensitiveObject(result, false),
 		Server:       server,
@@ -663,12 +820,15 @@ func (s *AgentService) TestMCPServer(ctx context.Context, tenantID, serverID str
 	}, nil
 }
 
-func (s *AgentService) RefreshMCPServerTools(tenantID, serverID string) (*MCPServerRefreshResponse, error) {
+func (s *AgentService) RefreshMCPServerTools(tenantID, serverID, userID string) (*MCPServerRefreshResponse, error) {
 	if _, err := s.mcpStore.GetServer(serverID, tenantID); err != nil {
 		return nil, err
 	}
 	items, err := s.aiClient.RefreshMCPServerTools(context.Background(), tenantID, serverID)
 	if err != nil {
+		if server, getErr := s.GetMCPServer(tenantID, serverID); getErr == nil {
+			_, _ = s.recordMCPServerEvent(tenantID, userID, server, "catalog.refreshed", "refresh", "failed", "refresh_failed", "MCP catalog 刷新失败。")
+		}
 		return nil, err
 	}
 	for _, item := range items {
@@ -679,6 +839,14 @@ func (s *AgentService) RefreshMCPServerTools(tenantID, serverID string) (*MCPSer
 	if err != nil {
 		return nil, err
 	}
+	refreshFailureMode := "catalog_ready"
+	refreshSummary := fmt.Sprintf("MCP catalog 已刷新，共发现 %d 个工具。", len(items))
+	if len(items) == 0 {
+		refreshFailureMode = "catalog_empty"
+		refreshSummary = "MCP catalog 已刷新，但未发现任何工具。"
+	}
+	event, _ := s.recordMCPServerEvent(tenantID, userID, server, "catalog.refreshed", "refresh", "succeeded", refreshFailureMode, refreshSummary)
+	server = prependMCPServerEvent(server, event)
 	return &MCPServerRefreshResponse{
 		Tools:        items,
 		Total:        len(items),
@@ -687,6 +855,221 @@ func (s *AgentService) RefreshMCPServerTools(tenantID, serverID string) (*MCPSer
 		Catalog:      server.Catalog,
 		Availability: server.Availability,
 	}, nil
+}
+
+func (s *AgentService) RunMCPServerBulkAction(tenantID, userID string, req *MCPServerBulkActionRequest) (*MCPServerBulkActionResponse, error) {
+	action := strings.TrimSpace(strings.ToLower(req.Action))
+	if action == "" {
+		return nil, errors.New("action is required")
+	}
+
+	serverIDs := normalizeServerIDs(req.ServerIDs)
+	if len(serverIDs) == 0 {
+		return nil, errors.New("server_ids is required")
+	}
+
+	groupBy := normalizeMCPBulkGroupBy(req.GroupBy)
+	maxBatchSize := req.MaxBatchSize
+	if maxBatchSize <= 0 {
+		maxBatchSize = len(serverIDs)
+	}
+	if maxBatchSize <= 0 {
+		maxBatchSize = 1
+	}
+	retryFailed := req.RetryFailed
+	if retryFailed < 0 {
+		retryFailed = 0
+	}
+
+	groupedServerIDs := map[string][]string{}
+	groupOrder := make([]string, 0)
+	for _, serverID := range serverIDs {
+		server, err := s.GetMCPServer(tenantID, serverID)
+		if err != nil {
+			return nil, err
+		}
+		groupKey := buildMCPBulkGroupKey(server, groupBy)
+		if _, exists := groupedServerIDs[groupKey]; !exists {
+			groupOrder = append(groupOrder, groupKey)
+		}
+		groupedServerIDs[groupKey] = append(groupedServerIDs[groupKey], serverID)
+	}
+
+	results := make([]*MCPServerBulkActionResult, 0, len(serverIDs))
+	groups := make([]*MCPServerBulkActionGroup, 0, len(groupOrder))
+	success := 0
+	failed := 0
+
+	for _, groupKey := range groupOrder {
+		groupServerIDs := groupedServerIDs[groupKey]
+		group := &MCPServerBulkActionGroup{
+			Key:     groupKey,
+			Label:   buildMCPBulkGroupLabel(groupKey, groupBy),
+			Results: make([]*MCPServerBulkActionResult, 0, len(groupServerIDs)),
+		}
+		for start := 0; start < len(groupServerIDs); start += maxBatchSize {
+			end := start + maxBatchSize
+			if end > len(groupServerIDs) {
+				end = len(groupServerIDs)
+			}
+			batch := groupServerIDs[start:end]
+			for _, serverID := range batch {
+				result := s.runSingleMCPBulkAction(tenantID, userID, action, serverID)
+				result.GroupKey = groupKey
+				for attempt := 0; !result.OK && attempt < retryFailed; attempt++ {
+					result = s.runSingleMCPBulkAction(tenantID, userID, action, serverID)
+					result.GroupKey = groupKey
+					result.Attempts = attempt + 2
+				}
+				if result.Attempts == 0 {
+					result.Attempts = 1
+				}
+				group.Total++
+				if result.OK {
+					group.Success++
+					success++
+				} else {
+					group.Failed++
+					failed++
+				}
+				group.Results = append(group.Results, result)
+				results = append(results, result)
+			}
+		}
+		groups = append(groups, group)
+	}
+
+	governance, err := s.GetMCPGovernance(tenantID, "", "", "", "", 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MCPServerBulkActionResponse{
+		Action:  action,
+		Results: results,
+		Total:   len(results),
+		Success: success,
+		Failed:  failed,
+		Summary: governance.Summary,
+		Execution: &MCPServerBulkActionExecution{
+			GroupBy:       groupBy,
+			MaxBatchSize:  maxBatchSize,
+			RetryFailed:   retryFailed,
+			SelectedCount: len(serverIDs),
+			GroupCount:    len(groups),
+		},
+		Groups: groups,
+	}, nil
+}
+
+func (s *AgentService) runSingleMCPBulkAction(tenantID, userID, action, serverID string) *MCPServerBulkActionResult {
+	result := &MCPServerBulkActionResult{
+		ServerID: serverID,
+		Action:   action,
+	}
+
+	switch action {
+	case "test":
+		response, err := s.TestMCPServer(context.Background(), tenantID, serverID, userID)
+		if err != nil {
+			result.OK = false
+			result.Message = err.Error()
+			return result
+		}
+		result.OK = true
+		if response.Connection != nil && strings.TrimSpace(response.Connection.Summary) != "" {
+			result.Message = response.Connection.Summary
+		} else {
+			result.Message = "连接测试已完成"
+		}
+		result.Server = response.Server
+	case "refresh":
+		response, err := s.RefreshMCPServerTools(tenantID, serverID, userID)
+		if err != nil {
+			result.OK = false
+			result.Message = err.Error()
+			return result
+		}
+		result.OK = true
+		result.Message = fmt.Sprintf("已刷新 %d 个工具", response.Total)
+		result.Server = response.Server
+	case "enable":
+		server, err := s.GetMCPServer(tenantID, serverID)
+		if err != nil {
+			result.OK = false
+			result.Message = err.Error()
+			return result
+		}
+		updated, err := s.UpdateMCPServer(tenantID, userID, serverID, &MCPServerUpsertRequest{
+			Name:      server.Name,
+			Transport: server.Transport,
+			Endpoint:  server.Endpoint,
+			Command:   server.Command,
+			Args:      server.Args,
+			Env:       server.Env,
+			Metadata:  server.Metadata,
+			Status:    "active",
+		})
+		if err != nil {
+			result.OK = false
+			result.Message = err.Error()
+			return result
+		}
+		event, _ := s.recordMCPServerEvent(tenantID, userID, updated, "server.updated", "enable", "succeeded", "server_enabled", "MCP server 已重新启用。")
+		updated = prependMCPServerEvent(updated, event)
+		result.OK = true
+		result.Message = "已重新启用"
+		result.Server = updated
+	default:
+		result.OK = false
+		result.Message = fmt.Sprintf("unsupported action %s", action)
+	}
+
+	return result
+}
+
+func normalizeMCPBulkGroupBy(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	switch value {
+	case "", "none":
+		return "none"
+	case "status", "transport", "failure_mode":
+		return value
+	default:
+		return "none"
+	}
+}
+
+func buildMCPBulkGroupKey(server *database.MCPServer, groupBy string) string {
+	if server == nil {
+		return "unknown"
+	}
+	switch groupBy {
+	case "status":
+		return firstNonEmpty(strings.TrimSpace(server.Status), "unknown")
+	case "transport":
+		return firstNonEmpty(strings.TrimSpace(server.Transport), "unknown")
+	case "failure_mode":
+		if server.Recovery != nil {
+			return firstNonEmpty(strings.TrimSpace(server.Recovery.FailureMode), "none")
+		}
+		return "none"
+	default:
+		return "all"
+	}
+}
+
+func buildMCPBulkGroupLabel(groupKey, groupBy string) string {
+	switch groupBy {
+	case "status":
+		return fmt.Sprintf("按状态分组: %s", groupKey)
+	case "transport":
+		return fmt.Sprintf("按 transport 分组: %s", groupKey)
+	case "failure_mode":
+		return fmt.Sprintf("按故障模式分组: %s", groupKey)
+	default:
+		return "全部选中服务器"
+	}
 }
 
 func (s *AgentService) UpdateAgentMCPServers(tenantID, agentID string, req *UpdateAgentMCPServersRequest) error {
@@ -1690,11 +2073,17 @@ func (s *AgentService) hydrateMCPServer(server *database.MCPServer) (*database.M
 	server.Connection = buildMCPConnectionSummary(server)
 	server.Catalog = buildMCPCatalogSummary(server, tools, time.Now().UTC())
 	server.Availability = buildMCPAvailabilitySummary(server, server.Connection, server.Catalog)
-	bindingAgents, bindingCount, err := s.mcpStore.ListServerBindingAgents(server.ID, server.TenantID, 6)
+	bindingAgents, bindingCount, activeBindingCount, inactiveBindingCount, err := s.mcpStore.ListServerBindingAgents(server.ID, server.TenantID, 6)
 	if err != nil {
 		return nil, err
 	}
-	server.BindingUsage = buildMCPBindingUsageSummary(server, bindingAgents, bindingCount)
+	server.BindingUsage = buildMCPBindingUsageSummary(server, bindingAgents, bindingCount, activeBindingCount, inactiveBindingCount)
+	server.Recovery = buildMCPRecoverySummary(server, server.Connection, server.Catalog, server.Availability, server.BindingUsage)
+	events, err := s.mcpStore.ListServerEvents(server.ID, server.TenantID, 12)
+	if err != nil {
+		return nil, err
+	}
+	server.Events = events
 	return server, nil
 }
 
@@ -1841,21 +2230,29 @@ func buildMCPBindingUsageSummary(
 	server *database.MCPServer,
 	agents []*database.MCPBindingAgent,
 	totalCount int,
+	activeCount int,
+	inactiveCount int,
 ) *database.MCPBindingUsage {
 	summary := &database.MCPBindingUsage{
-		AgentCount: totalCount,
-		Summary:    "当前还没有 agent 绑定这个 server。",
-		Agents:     make([]*database.MCPBindingAgent, 0, len(agents)),
+		AgentCount:         totalCount,
+		ActiveAgentCount:   activeCount,
+		InactiveAgentCount: inactiveCount,
+		Summary:            "当前还没有 agent 绑定这个 server。",
+		Agents:             make([]*database.MCPBindingAgent, 0, len(agents)),
 	}
 
 	for _, agent := range agents {
 		if agent == nil {
 			continue
 		}
+		status := strings.TrimSpace(agent.Status)
+		if status == "" {
+			status = "active"
+		}
 		summary.Agents = append(summary.Agents, &database.MCPBindingAgent{
 			AgentID: strings.TrimSpace(agent.AgentID),
 			Name:    strings.TrimSpace(agent.Name),
-			Status:  strings.TrimSpace(agent.Status),
+			Status:  status,
 		})
 	}
 
@@ -1877,6 +2274,296 @@ func buildMCPBindingUsageSummary(
 
 	summary.Summary = fmt.Sprintf("当前有 %d 个 agent 正在使用这个 server。", totalCount)
 	return summary
+}
+
+func buildMCPRecoverySummary(
+	server *database.MCPServer,
+	connection *database.MCPConnection,
+	catalog *database.MCPCatalog,
+	availability *database.MCPAvailability,
+	bindingUsage *database.MCPBindingUsage,
+) *database.MCPRecovery {
+	if server == nil {
+		return nil
+	}
+
+	recovery := &database.MCPRecovery{
+		Status:      "healthy",
+		Severity:    "info",
+		Summary:     "当前不需要额外恢复操作。",
+		FailureMode: "",
+		Recoverable: false,
+		Actions:     []*database.MCPRecoveryAction{},
+		Impact:      buildMCPRecoveryImpact(bindingUsage),
+	}
+
+	addAction := func(actionType, label, description, priority string) {
+		recovery.Actions = append(recovery.Actions, &database.MCPRecoveryAction{
+			Type:        actionType,
+			Label:       label,
+			Description: description,
+			Priority:    priority,
+		})
+	}
+
+	switch {
+	case server.Status != "active":
+		recovery.Status = "disabled"
+		recovery.Severity = "neutral"
+		recovery.Summary = "Server 已禁用，恢复前需先确认是否重新启用并重新验证。"
+		recovery.FailureMode = "server_disabled"
+		recovery.Recoverable = true
+		addAction("enable", "重新启用 Server", "确认配置仍然有效后重新启用。", "high")
+		addAction("test", "测试连接", "启用后先验证连接，再决定是否刷新 catalog。", "medium")
+		if catalog == nil || catalog.ToolCount == 0 || catalog.IsStale {
+			addAction("refresh", "刷新 Catalog", "重新发现工具并更新缓存 snapshot。", "medium")
+		}
+	case availability != nil && availability.Reason == "connection_failed":
+		recovery.Status = "blocked"
+		recovery.Severity = "critical"
+		recovery.Summary = "最近一次连接测试失败，需先恢复 server 连通性，再重新验证 catalog。"
+		recovery.FailureMode = "connection_failed"
+		recovery.Recoverable = true
+		addAction("test", "重新测试连接", "修复 endpoint、命令、凭据或网络后重新测试。", "high")
+		if catalog != nil && catalog.ToolCount > 0 {
+			addAction("refresh", "连接恢复后刷新 Catalog", "连接恢复后重新发现工具，避免继续依赖旧 snapshot。", "medium")
+		}
+	case availability != nil && availability.Reason == "catalog_empty":
+		recovery.Status = "needs_catalog"
+		recovery.Severity = "high"
+		recovery.Summary = "当前没有可供 agent 使用的缓存工具，需先建立或重建 catalog。"
+		recovery.FailureMode = "catalog_empty"
+		recovery.Recoverable = true
+		if connection != nil && connection.Status == "untested" {
+			addAction("test", "先测试连接", "确认 server 可达后再刷新 catalog，减少无效刷新。", "high")
+		}
+		addAction("refresh", "刷新 Catalog", "执行工具发现并写回最新缓存。", "high")
+	case availability != nil && availability.Reason == "catalog_stale":
+		recovery.Status = "stale"
+		recovery.Severity = "medium"
+		recovery.Summary = "当前仍能绑定，但缓存 catalog 已过期，建议尽快刷新，避免 agent 继续依赖旧工具快照。"
+		recovery.FailureMode = "catalog_stale"
+		recovery.Recoverable = true
+		addAction("refresh", "刷新 Catalog", "更新工具快照并消除 stale 状态。", "high")
+		if connection != nil && connection.Status != "healthy" {
+			addAction("test", "补做连接测试", "刷新前补齐连通性验证，确认 stale 不是由失联导致。", "medium")
+		}
+	case availability != nil && availability.Reason == "connection_untested":
+		recovery.Status = "verify"
+		recovery.Severity = "medium"
+		recovery.Summary = "已有缓存工具，但连接状态尚未验证，建议先补齐测试，避免把未知健康状态投入生产。"
+		recovery.FailureMode = "connection_untested"
+		recovery.Recoverable = true
+		addAction("test", "测试连接", "建立健康基线并确认当前缓存工具仍可访问。", "high")
+		if catalog != nil && catalog.IsStale {
+			addAction("refresh", "必要时刷新 Catalog", "若工具已过期，再补做 refresh。", "medium")
+		}
+	default:
+		recovery.Status = "healthy"
+		recovery.Severity = "info"
+		recovery.Summary = "连接、catalog 和可用性状态都已对齐，当前没有阻塞性恢复动作。"
+		recovery.FailureMode = "none"
+		recovery.Recoverable = false
+	}
+
+	return recovery
+}
+
+func buildMCPRecoveryImpact(bindingUsage *database.MCPBindingUsage) *database.MCPRecoveryImpact {
+	if bindingUsage == nil {
+		return &database.MCPRecoveryImpact{
+			Summary: "当前没有 agent 受到影响。",
+		}
+	}
+
+	impact := &database.MCPRecoveryImpact{
+		AgentCount:         bindingUsage.AgentCount,
+		ActiveAgentCount:   bindingUsage.ActiveAgentCount,
+		InactiveAgentCount: bindingUsage.InactiveAgentCount,
+	}
+
+	switch {
+	case impact.AgentCount <= 0:
+		impact.Summary = "当前没有 agent 受到影响。"
+	case impact.ActiveAgentCount > 0 && impact.InactiveAgentCount > 0:
+		impact.Summary = fmt.Sprintf("当前影响 %d 个已绑定 agent，其中 %d 个处于 active 状态。", impact.AgentCount, impact.ActiveAgentCount)
+	case impact.ActiveAgentCount > 0:
+		impact.Summary = fmt.Sprintf("当前影响 %d 个已绑定 agent，且都处于 active 状态。", impact.AgentCount)
+	default:
+		impact.Summary = fmt.Sprintf("当前影响 %d 个已绑定 agent，但采样中没有 active agent。", impact.AgentCount)
+	}
+
+	return impact
+}
+
+func (s *AgentService) buildMCPGovernanceSummary(
+	tenantID string,
+	servers []*database.MCPServer,
+	filters *MCPGovernanceEventFilters,
+) (*MCPServerGovernanceSummary, error) {
+	eventFilters := normalizeMCPGovernanceEventFilters(filters)
+	recentEvents := make([]*database.MCPServerEvent, 0)
+	if s.mcpStore != nil {
+		items, err := s.mcpStore.ListTenantServerEvents(
+			tenantID,
+			eventFilters.ServerID,
+			eventFilters.ActionType,
+			eventFilters.Status,
+			eventFilters.FailureMode,
+			eventFilters.Limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		recentEvents = items
+	}
+
+	summary := &MCPServerGovernanceSummary{
+		TotalServers:       len(servers),
+		LongStaleServers:   make([]*database.MCPServer, 0),
+		RecoverableServers: make([]*database.MCPServer, 0),
+		RecentEvents:       recentEvents,
+		FailureModeCounts:  map[string]int{},
+		ActionTypeCounts:   map[string]int{},
+		EventStatusCounts:  map[string]int{},
+		EventFilters:       eventFilters,
+	}
+
+	for _, server := range servers {
+		if server == nil {
+			continue
+		}
+
+		if server.Recovery != nil {
+			failureMode := strings.TrimSpace(server.Recovery.FailureMode)
+			if failureMode != "" && failureMode != "none" {
+				summary.FailureModeCounts[failureMode]++
+			}
+			if server.Recovery.Recoverable && server.Recovery.Status != "healthy" {
+				summary.RecoveringServers++
+				summary.RecoverableServers = append(summary.RecoverableServers, server)
+			}
+			if server.Recovery.Status == "blocked" {
+				summary.BlockedServers++
+			}
+		}
+
+		if server.Catalog != nil {
+			if server.Catalog.IsStale {
+				summary.StaleServers++
+				if server.Catalog.AgeSeconds != nil && *server.Catalog.AgeSeconds > int64((72*time.Hour).Seconds()) {
+					summary.LongStaleServers = append(summary.LongStaleServers, server)
+				}
+			}
+		}
+
+		if server.Connection != nil && server.Connection.Status == "untested" {
+			summary.UntestedServers++
+		}
+
+		if server.BindingUsage != nil {
+			summary.ImpactedAgents += server.BindingUsage.AgentCount
+			summary.ActiveImpactedAgents += server.BindingUsage.ActiveAgentCount
+		}
+	}
+
+	for _, event := range recentEvents {
+		if event == nil {
+			continue
+		}
+		status := strings.TrimSpace(event.Status)
+		if status != "" {
+			summary.EventStatusCounts[status]++
+		}
+		actionType := strings.TrimSpace(event.ActionType)
+		if actionType != "" {
+			summary.ActionTypeCounts[actionType]++
+		}
+		failureMode := strings.TrimSpace(event.FailureMode)
+		if failureMode != "" && failureMode != "none" {
+			summary.FailureModeCounts[failureMode]++
+		}
+	}
+	summary.RecentEventCount = len(recentEvents)
+
+	return summary, nil
+}
+
+func normalizeMCPGovernanceEventFilters(filters *MCPGovernanceEventFilters) *MCPGovernanceEventFilters {
+	if filters == nil {
+		filters = &MCPGovernanceEventFilters{}
+	}
+	normalized := &MCPGovernanceEventFilters{
+		ServerID:    strings.TrimSpace(filters.ServerID),
+		ActionType:  strings.TrimSpace(strings.ToLower(filters.ActionType)),
+		Status:      strings.TrimSpace(strings.ToLower(filters.Status)),
+		FailureMode: strings.TrimSpace(strings.ToLower(filters.FailureMode)),
+		Limit:       filters.Limit,
+	}
+	if normalized.Limit <= 0 {
+		normalized.Limit = 40
+	}
+	if normalized.Limit > 200 {
+		normalized.Limit = 200
+	}
+	return normalized
+}
+
+func (s *AgentService) recordMCPServerEvent(
+	tenantID string,
+	userID string,
+	server *database.MCPServer,
+	eventType string,
+	actionType string,
+	status string,
+	failureMode string,
+	summary string,
+) (*database.MCPServerEvent, error) {
+	if server == nil {
+		return nil, nil
+	}
+
+	details := map[string]any{
+		"server_status": server.Status,
+	}
+	if server.Connection != nil {
+		details["connection"] = server.Connection
+	}
+	if server.Catalog != nil {
+		details["catalog"] = server.Catalog
+	}
+	if server.Availability != nil {
+		details["availability"] = server.Availability
+	}
+	if server.Recovery != nil {
+		details["recovery"] = server.Recovery
+	}
+	if server.BindingUsage != nil {
+		details["impact"] = server.BindingUsage
+	}
+
+	detailsRaw, err := json.Marshal(maskSensitiveObject(details, false))
+	if err != nil {
+		detailsRaw = json.RawMessage(`{}`)
+	}
+
+	var actorUserID *string
+	if strings.TrimSpace(userID) != "" {
+		actorUserID = stringPtr(userID)
+	}
+
+	return s.mcpStore.AppendServerEvent(&database.MCPServerEvent{
+		TenantID:    tenantID,
+		ServerID:    server.ID,
+		ServerName:  server.Name,
+		EventType:   eventType,
+		ActionType:  actionType,
+		Status:      status,
+		FailureMode: failureMode,
+		Summary:     summary,
+		Details:     detailsRaw,
+		ActorUserID: actorUserID,
+	})
 }
 
 func summarizeMCPBindingAgents(agents []*database.MCPBindingAgent) string {

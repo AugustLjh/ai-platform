@@ -385,6 +385,22 @@ func main() {
 			guardMiddleware.Handler,
 		))
 
+	mux.Handle("/api/v1/mcp/governance",
+		chain(
+			http.HandlerFunc(mcpHandler.HandleGovernance),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/mcp/bulk-actions",
+		chain(
+			http.HandlerFunc(mcpHandler.HandleBulkActions),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
 	mux.Handle("/api/v1/mcp/servers",
 		chain(
 			http.HandlerFunc(mcpHandler.HandleServers),
