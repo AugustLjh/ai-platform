@@ -64,7 +64,10 @@ class SkillContract(BaseModel):
     has_output_schema: bool = False
     output_field_names: List[str] = Field(default_factory=list)
     surfaces: List[str] = Field(default_factory=list)
+    governance_status: str = "ready"
+    governance_errors: List[str] = Field(default_factory=list)
     governance_warnings: List[str] = Field(default_factory=list)
+    governance_requirements: List[str] = Field(default_factory=list)
 
 
 def derive_skill_contract(
@@ -82,6 +85,7 @@ def derive_skill_contract(
     normalized_tool_allowlist = [str(item).strip() for item in tool_allowlist or [] if str(item).strip()]
     has_system_prompt = bool(str(system_prompt or "").strip())
     has_output_schema = isinstance(output_schema, dict) and bool(output_schema)
+    system_skill = _coerce_bool(metadata.get("system_skill"))
     output_field_names = []
     if isinstance(output_schema, dict) and isinstance(output_schema.get("properties"), dict):
         output_field_names = sorted(str(key) for key in output_schema["properties"].keys() if str(key).strip())
@@ -103,7 +107,6 @@ def derive_skill_contract(
     capability_type = str(metadata.get("capability_type") or "").strip().lower()
     display_name = str(metadata.get("display_name") or name or slug or "").strip()
     fixed_binding = _coerce_bool(metadata.get("fixed_binding")) or normalized_slug == "implementation-planner"
-    system_skill = _coerce_bool(metadata.get("system_skill"))
 
     tool_policy_mode = "inherit"
     if managed_tool_kinds:
@@ -120,6 +123,8 @@ def derive_skill_contract(
         surfaces.append("output")
 
     governance_warnings: List[str] = []
+    governance_errors: List[str] = []
+    governance_requirements: List[str] = []
     if requested_kind == "role_prompt" and derived_kind != requested_kind:
         governance_warnings.append(
             "role_prompt 不能同时声明 tool_allowlist、managed_tool_kinds 或 output_schema，已按 capability_pack 解释。"
@@ -128,10 +133,33 @@ def derive_skill_contract(
         governance_warnings.append("role_prompt 通常只应参与 planning/synthesis，当前 phase 配置已超出推荐边界。")
     if derived_kind == "capability_pack" and not surfaces:
         governance_warnings.append("capability_pack 没有声明 prompt、tools 或 output surface，契约为空。")
+        governance_errors.append("skill contract 必须至少声明一个执行 surface，当前缺少 prompt、tools 和 output_schema。")
+        governance_requirements.append("为 capability_pack 至少补一个 surface：system_prompt、tool_allowlist/managed_tool_kinds 或 output_schema。")
     if not activation_intents:
         governance_warnings.append("未声明 activation_intents，当前将按所有意图生效。")
+        if not system_skill:
+            governance_errors.append("非系统 skill 必须显式声明 activation_intents，避免默认对所有意图生效。")
+            governance_requirements.append("在 metadata 中声明 activation_intents，限定 skill 的适用意图。")
     if not activation_phases:
         governance_warnings.append("未声明 activation_phases，当前将按所有阶段生效。")
+        if not system_skill:
+            governance_errors.append("非系统 skill 必须显式声明 activation_phases，避免默认对所有执行阶段生效。")
+            governance_requirements.append("在 metadata 中声明 activation_phases，限定 skill 的生效阶段。")
+    if not requested_kind and not system_skill:
+        governance_errors.append("非系统 skill 必须显式声明 contract_kind。")
+        governance_requirements.append("在 metadata 中声明 contract_kind，明确该 skill 是 capability_pack 还是 role_prompt。")
+    if managed_tool_kinds and normalized_tool_allowlist:
+        governance_errors.append("skill contract 不能同时声明 managed_tool_kinds 和 tool_allowlist。")
+        governance_requirements.append("二选一：由 provider 托管工具种类，或显式声明 tool_allowlist。")
+    if fixed_binding and not system_skill and normalized_slug != "implementation-planner":
+        governance_errors.append("只有系统 skill 才允许 fixed binding。")
+        governance_requirements.append("移除 fixed_binding，或把该 skill 明确纳入系统固定能力。")
+
+    governance_status = "ready"
+    if governance_errors:
+        governance_status = "blocked"
+    elif governance_warnings:
+        governance_status = "warning"
 
     return SkillContract(
         kind=derived_kind,
@@ -149,7 +177,10 @@ def derive_skill_contract(
         has_output_schema=has_output_schema,
         output_field_names=output_field_names,
         surfaces=surfaces,
+        governance_status=governance_status,
+        governance_errors=list(dict.fromkeys(governance_errors)),
         governance_warnings=governance_warnings,
+        governance_requirements=list(dict.fromkeys(governance_requirements)),
     )
 
 

@@ -142,6 +142,100 @@
         {{ bulkExecutionSummary }}
       </div>
 
+      <div v-if="bulkFollowUp" class="bulk-preview-panel">
+        <div class="catalog-tool-head">
+          <strong>执行后续编排</strong>
+          <span>{{ bulkFollowUp.status || 'settled' }}</span>
+        </div>
+        <p>{{ bulkFollowUp.summary }}</p>
+        <p v-if="bulkFollowUp.requiresManualReview && bulkFollowUp.manualReviewReason" class="preview-confirmation">
+          {{ bulkFollowUp.manualReviewReason }}
+        </p>
+        <div v-if="bulkFollowUp.recoveryStageCounts?.length" class="bulk-preview-list">
+          <article
+            v-for="stage in bulkFollowUp.recoveryStageCounts"
+            :key="stage.key"
+            class="bulk-preview-card"
+          >
+            <div class="catalog-tool-head">
+              <strong>{{ stage.label || stage.key }}</strong>
+              <span :class="['mini-badge', `recovery-${stage.priority || 'medium'}`]">
+                {{ stage.count }} 个
+              </span>
+            </div>
+            <p>{{ stage.summary || '需要继续治理收敛。' }}</p>
+          </article>
+        </div>
+        <div v-if="bulkFollowUp.recommendedActions?.length" class="server-item-badges">
+          <span
+            v-for="(item, index) in bulkFollowUp.recommendedActions"
+            :key="`follow-up-${item}-${index}`"
+            class="mini-badge recovery-neutral"
+          >
+            {{ item }}
+          </span>
+        </div>
+        <div v-if="bulkFollowUp.compensationActions?.length" class="server-item-badges">
+          <span
+            v-for="(item, index) in bulkFollowUp.compensationActions"
+            :key="`compensation-${item}-${index}`"
+            class="mini-badge recovery-warning"
+          >
+            补救：{{ item }}
+          </span>
+        </div>
+        <div v-if="bulkFollowUp.rollbackActions?.length" class="server-item-badges">
+          <span
+            v-for="(item, index) in bulkFollowUp.rollbackActions"
+            :key="`rollback-${item}-${index}`"
+            class="mini-badge recovery-critical"
+          >
+            回退：{{ item }}
+          </span>
+        </div>
+      </div>
+
+      <div v-if="bulkPreview" class="bulk-preview-panel">
+        <div class="catalog-tool-head">
+          <strong>批量执行预演</strong>
+          <span>{{ bulkPreview.orderedBy || 'impact_and_recovery' }}</span>
+        </div>
+        <p>{{ bulkPreview.riskSummary }}</p>
+        <p v-if="bulkPreview.confirmationMessage" class="preview-confirmation">
+          {{ bulkPreview.confirmationMessage }}
+        </p>
+        <div v-if="bulkPreview.recommendations?.length" class="bulk-preview-list">
+          <article
+            v-for="recommendation in bulkPreview.recommendations.slice(0, 6)"
+            :key="`${recommendation.serverId}-${recommendation.order}`"
+            class="bulk-preview-card"
+          >
+            <div class="catalog-tool-head">
+              <strong>{{ recommendation.order }}. {{ recommendation.serverName || recommendation.serverId }}</strong>
+              <span :class="['mini-badge', `recovery-${recommendation.priority || 'medium'}`]">
+                {{ recommendation.priority || 'medium' }}
+              </span>
+            </div>
+            <p>{{ recommendation.reason || '建议优先处理该 server。' }}</p>
+            <div class="catalog-tool-meta">
+              <span v-if="recommendation.failureMode">{{ recommendation.failureMode }}</span>
+              <span v-if="recommendation.recoveryStatus">{{ recommendation.recoveryStatus }}</span>
+              <span>影响 {{ recommendation.impactedAgents || 0 }} 个 agent</span>
+              <span>active {{ recommendation.activeImpactedAgents || 0 }}</span>
+            </div>
+            <div v-if="recommendation.suggestedFollowUps?.length" class="server-item-badges">
+              <span
+                v-for="followUp in recommendation.suggestedFollowUps"
+                :key="`${recommendation.serverId}-${followUp.type}`"
+                class="mini-badge recovery-neutral"
+              >
+                {{ followUp.label || followUp.type }}
+              </span>
+            </div>
+          </article>
+        </div>
+      </div>
+
       <div v-if="governanceSummary?.recentEvents?.length" class="governance-events">
         <article
           v-for="event in governanceSummary.recentEvents.slice(0, 8)"
@@ -497,11 +591,14 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { mcpAPI } from '@/api'
+import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
 import {
   bindingUsageLabel,
   governanceFocusLabel,
   buildAgentExtensionsRoute,
+  normalizeMCPBulkFollowUpPlan,
+  normalizeMCPBulkPreview,
   normalizeMCPEvent,
   normalizeMCPGovernanceSummary,
   normalizeMCPBindingUsage,
@@ -514,6 +611,7 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+const agentsStore = useAgentsStore()
 const toastStore = useToastStore()
 
 const loading = ref(false)
@@ -533,6 +631,8 @@ const bulkGroupBy = ref('none')
 const bulkMaxBatchSize = ref(1000)
 const bulkRetryFailed = ref(0)
 const lastBulkExecution = ref(null)
+const bulkPreview = ref(agentsStore.mcpBulkPreviewContext || null)
+const bulkFollowUp = ref(null)
 const returnToAgentRoute = computed(() => {
   const agentId = String(route.query.agent || '').trim()
   if (!agentId) return null
@@ -947,16 +1047,38 @@ const runBulkAction = async (action) => {
   busyAction.value = `bulk-${action}`
   errorMessage.value = ''
   try {
-    const { data } = await mcpAPI.bulkAction({
+    const previewResponse = await mcpAPI.previewBulkAction({
       action,
       server_ids: serverIds,
       group_by: bulkGroupBy.value,
       max_batch_size: bulkMaxBatchSize.value,
       retry_failed: bulkRetryFailed.value
     })
+    bulkPreview.value = normalizeMCPBulkPreview(previewResponse.data?.preview)
+    bulkFollowUp.value = normalizeMCPBulkFollowUpPlan(previewResponse.data?.follow_up)
+    agentsStore.setMCPBulkPreviewContext(bulkPreview.value)
+    if (bulkPreview.value?.requiresConfirmation) {
+      const confirmed = window.confirm(`${bulkPreview.value.confirmationMessage || '建议先确认高影响 server。'}\n是否继续执行？`)
+      if (!confirmed) {
+        agentsStore.setMCPBulkPreviewContext(bulkPreview.value)
+        return
+      }
+    }
+    const { data } = await mcpAPI.bulkAction({
+      action,
+      server_ids: serverIds,
+      group_by: bulkGroupBy.value,
+      max_batch_size: bulkMaxBatchSize.value,
+      retry_failed: bulkRetryFailed.value,
+      preview_token: bulkPreview.value?.previewToken || '',
+      confirmed: true
+    })
     const resultServers = Array.isArray(data.results) ? data.results.map((item) => item.server).filter(Boolean) : []
     resultServers.forEach((server) => applyServerSnapshot(server))
     lastBulkExecution.value = data.execution || null
+    bulkPreview.value = normalizeMCPBulkPreview(data.preview)
+    bulkFollowUp.value = normalizeMCPBulkFollowUpPlan(data.follow_up)
+    agentsStore.setMCPBulkPreviewContext(bulkPreview.value)
     if (data.summary) {
       governanceSummary.value = normalizeMCPGovernanceSummary(data.summary)
     } else {
@@ -975,6 +1097,11 @@ const runBulkAction = async (action) => {
   } catch (error) {
     console.error('Failed to run MCP bulk action:', error)
     errorMessage.value = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '批量 MCP 操作失败'
+    if (/preview/i.test(errorMessage.value) || /漂移/.test(errorMessage.value)) {
+      agentsStore.clearMCPBulkPreviewContext()
+      bulkPreview.value = null
+    }
+    bulkFollowUp.value = null
     toastStore.showToast({ type: 'error', message: errorMessage.value })
   } finally {
     busyAction.value = ''
@@ -1361,6 +1488,32 @@ watch([eventActionFilter, eventStatusFilter, eventFailureModeFilter], async () =
   display: grid;
   gap: 12px;
   margin-top: 16px;
+}
+
+.bulk-preview-panel {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: linear-gradient(180deg, #fffef8 0%, #fff7ed 100%);
+}
+
+.preview-confirmation {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.bulk-preview-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.bulk-preview-card {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .governance-event-card,

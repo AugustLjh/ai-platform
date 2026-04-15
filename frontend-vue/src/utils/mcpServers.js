@@ -161,6 +161,80 @@ export const normalizeMCPGovernanceSummary = (raw = null) => {
   }
 }
 
+export const normalizeMCPBulkPreview = (raw = null) => {
+  if (!raw || typeof raw !== 'object') return null
+  return {
+    action: raw.action || '',
+    previewOnly: Boolean(raw.preview_only || raw.previewOnly),
+    previewToken: raw.preview_token || raw.previewToken || '',
+    orderedBy: raw.ordered_by || raw.orderedBy || '',
+    riskSummary: raw.risk_summary || raw.riskSummary || '',
+    requiresConfirmation: Boolean(raw.requires_confirmation || raw.requiresConfirmation),
+    confirmationMessage: raw.confirmation_message || raw.confirmationMessage || '',
+    generatedAt: raw.generated_at || raw.generatedAt || null,
+    expiresAt: raw.expires_at || raw.expiresAt || null,
+    selectedServerIds: Array.isArray(raw.selected_server_ids || raw.selectedServerIds)
+      ? [...(raw.selected_server_ids || raw.selectedServerIds)]
+      : [],
+    recommendations: Array.isArray(raw.recommendations)
+      ? raw.recommendations.map((item, index) => ({
+          order: Number(item.order || index + 1),
+          serverId: item.server_id || item.serverId || '',
+          serverName: item.server_name || item.serverName || '',
+          action: item.action || '',
+          priority: item.priority || 'medium',
+          reason: item.reason || '',
+          failureMode: item.failure_mode || item.failureMode || '',
+          recoveryStatus: item.recovery_status || item.recoveryStatus || '',
+          impactedAgents: Number(item.impacted_agents || item.impactedAgents || 0),
+          activeImpactedAgents: Number(item.active_impacted_agents || item.activeImpactedAgents || 0),
+          suggestedFollowUps: Array.isArray(item.suggested_follow_ups || item.suggestedFollowUps)
+            ? (item.suggested_follow_ups || item.suggestedFollowUps).map((action) => ({
+                type: action.type || '',
+                label: action.label || '',
+                description: action.description || '',
+                priority: action.priority || ''
+              }))
+            : []
+        }))
+      : []
+  }
+}
+
+export const normalizeMCPBulkFollowUpPlan = (raw = null) => {
+  if (!raw || typeof raw !== 'object') return null
+  return {
+    status: raw.status || 'settled',
+    summary: raw.summary || '',
+    requiresManualReview: Boolean(raw.requires_manual_review || raw.requiresManualReview),
+    manualReviewReason: raw.manual_review_reason || raw.manualReviewReason || '',
+    recommendedActions: Array.isArray(raw.recommended_actions || raw.recommendedActions)
+      ? [...(raw.recommended_actions || raw.recommendedActions)].filter(Boolean)
+      : [],
+    compensationActions: Array.isArray(raw.compensation_actions || raw.compensationActions)
+      ? [...(raw.compensation_actions || raw.compensationActions)].filter(Boolean)
+      : [],
+    rollbackActions: Array.isArray(raw.rollback_actions || raw.rollbackActions)
+      ? [...(raw.rollback_actions || raw.rollbackActions)].filter(Boolean)
+      : [],
+    failedServerIds: Array.isArray(raw.failed_server_ids || raw.failedServerIds)
+      ? [...(raw.failed_server_ids || raw.failedServerIds)].filter(Boolean)
+      : [],
+    driftedServerIds: Array.isArray(raw.drifted_server_ids || raw.driftedServerIds)
+      ? [...(raw.drifted_server_ids || raw.driftedServerIds)].filter(Boolean)
+      : [],
+    recoveryStageCounts: Array.isArray(raw.recovery_stage_counts || raw.recoveryStageCounts)
+      ? (raw.recovery_stage_counts || raw.recoveryStageCounts).map((item) => ({
+          key: item.key || '',
+          label: item.label || '',
+          count: Number(item.count || 0),
+          priority: item.priority || '',
+          summary: item.summary || ''
+        }))
+      : []
+  }
+}
+
 export const bindingUsageLabel = (bindingUsage) => {
   const count = Number(bindingUsage?.agentCount || 0)
   if (count <= 0) return '未绑定'

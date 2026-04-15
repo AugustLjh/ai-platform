@@ -57,6 +57,11 @@
       长期 stale {{ agentsStore.mcpGovernanceSummary.longStaleServers?.length || 0 }} 个。
     </div>
 
+    <div v-if="agentsStore.mcpBulkPreviewContext" class="info-banner">
+      最近一次 MCP 批量治理预演：{{ agentsStore.mcpBulkPreviewContext.riskSummary }}
+      <router-link :to="manageMCPRoute" class="inline-action">继续处理</router-link>
+    </div>
+
     <div v-if="selectedMCPWarnings.length > 0" class="warning-banner">
       <strong>当前选中的 MCP 绑定需要关注：</strong>
       <ul class="tips-list compact warning-action-list">
@@ -90,13 +95,16 @@
 
           <div v-if="skills.length === 0" class="panel-empty">当前还没有发现技能包。</div>
           <div v-else class="catalog-list">
-            <label v-for="skill in skills" :key="skill.id" :class="['catalog-item', { fixed: isFixedSkill(skill) }]">
+            <label v-for="skill in skills" :key="skill.id" :class="['catalog-item', { fixed: isFixedSkill(skill), blocked: isGovernanceBlockedSkill(skill) }]">
               <span class="catalog-main">
                 <strong>{{ skill.name }}</strong>
                 <span>{{ skill.slug }} · v{{ skill.version }}</span>
                 <small v-if="skill.description">{{ skill.description }}</small>
                 <div class="skill-meta">
                   <span class="meta-tag">{{ skillContractLabel(skill) }}</span>
+                  <span v-if="skillGovernanceStatusLabel(skill)" :class="['meta-tag', 'status-tag', `availability-${skill.contract?.governanceStatus || 'ready'}`]">
+                    {{ skillGovernanceStatusLabel(skill) }}
+                  </span>
                   <span v-if="skillBindingSummary(skill)" class="meta-tag">{{ skillBindingSummary(skill) }}</span>
                   <span v-if="skillCapabilitySummary(skill)" class="meta-tag">{{ skillCapabilitySummary(skill) }}</span>
                   <span v-if="skillIntentSummary(skill)" class="meta-tag">{{ skillIntentSummary(skill) }}</span>
@@ -105,9 +113,19 @@
                   <span v-if="skillToolPolicySummary(skill)" class="meta-tag">{{ skillToolPolicySummary(skill) }}</span>
                   <span v-if="skillOutputSummary(skill)" class="meta-tag">{{ skillOutputSummary(skill) }}</span>
                 </div>
+                <div v-if="skillGovernanceErrors(skill).length > 0" class="skill-error-list">
+                  <p v-for="error in skillGovernanceErrors(skill)" :key="`${skill.id}-error-${error}`">
+                    {{ error }}
+                  </p>
+                </div>
                 <div v-if="skillGovernanceWarnings(skill).length > 0" class="skill-warning-list">
                   <p v-for="warning in skillGovernanceWarnings(skill)" :key="`${skill.id}-${warning}`">
                     {{ warning }}
+                  </p>
+                </div>
+                <div v-if="skillGovernanceRequirements(skill).length > 0" class="skill-warning-list">
+                  <p v-for="requirement in skillGovernanceRequirements(skill)" :key="`${skill.id}-requirement-${requirement}`">
+                    需补齐：{{ requirement }}
                   </p>
                 </div>
               </span>
@@ -117,7 +135,7 @@
                 type="checkbox"
                 class="selector"
                 :value="skill.id"
-                :disabled="isFixedSkill(skill)"
+                :disabled="isFixedSkill(skill) || isGovernanceBlockedSkill(skill)"
               />
             </label>
           </div>
@@ -311,7 +329,7 @@
           <ul class="tips-list">
             <li>Skill 决定行为策略和工作流，不直接等于工具。</li>
             <li>专家能力绑定的是 publication 授权，不是把另一个普通 agent 直接暴露给当前 agent。</li>
-            <li>当前 runtime 仍保留一层 compatibility bridge，但控制面已经按 capability publication 授权和回显。</li>
+            <li>当前 runtime 已按 capability publication 授权解析专家能力，旧 binding 仅保留为治理清点与迁移对象。</li>
             <li>MCP 提供外部执行能力，绑定后才可能进入运行时工具列表。</li>
             <li>工具列表保留为只读结果视图，用于理解和排查当前 agent 的实际能力边界。</li>
           </ul>
@@ -510,6 +528,12 @@ const handleMCPWarningAction = async (warning) => {
 }
 
 const skillContractLabel = (skill) => skill?.contract?.kind === 'role_prompt' ? '角色提示' : '能力包'
+const isGovernanceBlockedSkill = (skill) => skill?.contract?.governanceStatus === 'blocked'
+const skillGovernanceStatusLabel = (skill) => {
+  if (skill?.contract?.governanceStatus === 'blocked') return '治理阻断'
+  if (skill?.contract?.governanceStatus === 'warning') return '治理告警'
+  return ''
+}
 
 const skillBindingSummary = (skill) => {
   if (skill?.contract?.bindingMode === 'fixed') return '绑定: 固定'
@@ -582,6 +606,12 @@ const skillOutputSummary = (skill) => {
 const skillGovernanceWarnings = (skill) => Array.isArray(skill?.contract?.governanceWarnings)
   ? skill.contract.governanceWarnings.filter(Boolean)
   : []
+const skillGovernanceErrors = (skill) => Array.isArray(skill?.contract?.governanceErrors)
+  ? skill.contract.governanceErrors.filter(Boolean)
+  : []
+const skillGovernanceRequirements = (skill) => Array.isArray(skill?.contract?.governanceRequirements)
+  ? skill.contract.governanceRequirements.filter(Boolean)
+  : []
 
 const knowledgeAccessLabel = (accessLevel) => {
   if (accessLevel === 'user') {
@@ -610,10 +640,11 @@ const subagentVersionLabel = (subagent) => {
 const subagentRiskSummary = (subagent) => {
   const risk = subagent?.metadata?.risk_level || subagent?.publicationMetadata?.risk_level
   const cost = subagent?.metadata?.cost_tier || subagent?.publicationMetadata?.cost_tier
+  const compatibility = subagent?.hostAgentDefinitionId ? '兼容桥接' : ''
   if (risk && cost) return `风险 ${risk} · 成本 ${cost}`
   if (risk) return `风险 ${risk}`
   if (cost) return `成本 ${cost}`
-  return ''
+  return compatibility
 }
 
 const subagentReviewSummary = (subagent) => {
@@ -909,9 +940,25 @@ onMounted(async () => {
   margin-top: 6px;
 }
 
+.skill-error-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.skill-error-list p {
+  color: #b91c1c;
+  font-size: 12px;
+}
+
 .skill-warning-list p {
   color: #92400e;
   font-size: 12px;
+}
+
+.catalog-item.blocked {
+  border-color: rgba(239, 68, 68, 0.26);
+  background: rgba(239, 68, 68, 0.04);
 }
 
 .mcp-server-details p {

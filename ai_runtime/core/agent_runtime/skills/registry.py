@@ -33,6 +33,28 @@ class SkillRegistry:
     def _is_fixed_binding(self, skill: SkillDefinition) -> bool:
         return self._contract(skill).get("binding_mode") == "fixed"
 
+    def _is_governance_blocked(self, skill: SkillDefinition) -> bool:
+        return str(self._contract(skill).get("governance_status") or "").strip().lower() == "blocked"
+
+    def _partition_governance(self, skills: List[SkillDefinition]) -> tuple[List[SkillDefinition], list[dict]]:
+        allowed: List[SkillDefinition] = []
+        blocked: list[dict] = []
+        for skill in skills:
+            contract = self._contract(skill)
+            if str(contract.get("governance_status") or "").strip().lower() == "blocked":
+                blocked.append(
+                    {
+                        "id": skill.id,
+                        "slug": skill.slug,
+                        "name": skill.name,
+                        "errors": list(contract.get("governance_errors") or []),
+                        "requirements": list(contract.get("governance_requirements") or []),
+                    }
+                )
+                continue
+            allowed.append(skill)
+        return allowed, blocked
+
     def _normalize_allowlist(self, allowlist: Iterable[str] | None) -> tuple[set[str], set[str]]:
         ids: set[str] = set()
         slugs: set[str] = set()
@@ -86,6 +108,7 @@ class SkillRegistry:
         include_output_schema: bool,
         metadata: dict | None = None,
     ) -> SkillRuntimeContext:
+        skills, blocked_skills = self._partition_governance(skills)
         prompts = [skill.system_prompt.strip() for skill in skills if include_prompts and skill.system_prompt.strip()]
         tool_allowlist: List[str] = []
         seen_tools: set[str] = set()
@@ -112,9 +135,12 @@ class SkillRegistry:
             output_schema=output_schema,
             metadata={
                 **(metadata or {}),
+                "skill_ids": [skill.id for skill in skills if skill.id],
+                "skill_slugs": [skill.slug for skill in skills],
                 "capability_skill_slugs": capability_skill_slugs,
                 "role_prompt_skill_slugs": role_prompt_skill_slugs,
                 "skill_contracts": [self._contract(skill) for skill in skills],
+                "blocked_skill_contracts": blocked_skills,
             },
         )
 

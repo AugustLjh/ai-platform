@@ -2,11 +2,16 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,12 +26,19 @@ const (
 	maskedSecretValue      = "********"
 	fallbackFixedSkillSlug = "implementation-planner"
 	mcpCatalogStaleAfter   = 24 * time.Hour
+	mcpBulkPreviewTTL      = 15 * time.Minute
 )
 
 var systemSkillSlugs = []string{
 	"implementation-planner",
 	"engineering",
 }
+
+var (
+	sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(\b(?:api[_-]?key|access[_-]?key|client[_-]?secret|secret|password|passwd|token|authorization|private[_-]?key|cookie)\b\s*[:=]\s*)([^\s,&;"']+)`)
+	bearerTokenPattern         = regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{8,})`)
+	basicAuthPattern           = regexp.MustCompile(`(?i)\bBasic\s+([A-Za-z0-9._~+/=-]{8,})`)
+)
 
 type AgentDefinitionUpsertRequest struct {
 	Name         string          `json:"name"`
@@ -110,10 +122,56 @@ type SubagentVersionCreateRequest struct {
 }
 
 type SubagentPublicationUpdateRequest struct {
-	VersionID           string          `json:"version_id"`
-	PublicationScope    string          `json:"publication_scope"`
-	Status              string          `json:"status"`
-	PublicationMetadata json.RawMessage `json:"publication_metadata"`
+	VersionID            string          `json:"version_id"`
+	PublicationScope     string          `json:"publication_scope"`
+	Status               string          `json:"status"`
+	PublicationMetadata  json.RawMessage `json:"publication_metadata"`
+	ChangeReason         string          `json:"change_reason,omitempty"`
+	ChangeNotes          string          `json:"change_notes,omitempty"`
+	RollbackRecoveryPlan string          `json:"rollback_recovery_plan,omitempty"`
+	GovernanceMetadata   json.RawMessage `json:"governance_metadata,omitempty"`
+	PreviewOnly          bool            `json:"preview_only,omitempty"`
+	Confirmed            bool            `json:"confirmed,omitempty"`
+}
+
+type SubagentMetadataAliasFreezeRequest struct {
+	DefinitionIDs []string `json:"definition_ids,omitempty"`
+	Scope         string   `json:"scope,omitempty"`
+	PreviewOnly   bool     `json:"preview_only,omitempty"`
+	Confirmed     bool     `json:"confirmed,omitempty"`
+}
+
+type SubagentTenantGovernanceSummary struct {
+	TotalCapabilities              int                                       `json:"total_capabilities"`
+	CompatibilityCapabilities      int                                       `json:"compatibility_capabilities"`
+	HostOverrideCapabilities       int                                       `json:"host_override_capabilities"`
+	MetadataAliasCapabilities      int                                       `json:"metadata_alias_capabilities"`
+	PublicationMissingCount        int                                       `json:"publication_missing_count"`
+	PublicationNotLatestCount      int                                       `json:"publication_not_latest_count"`
+	AuthorizationCount             int                                       `json:"authorization_count"`
+	EnabledAuthorizationCount      int                                       `json:"enabled_authorization_count"`
+	InactiveAuthorizationCount     int                                       `json:"inactive_authorization_count"`
+	BridgeRemovalReadyCapabilities int                                       `json:"bridge_removal_ready_capabilities"`
+	BridgeRemovalBlockedCount      int                                       `json:"bridge_removal_blocked_count"`
+	BridgeRemovalPendingCount      int                                       `json:"bridge_removal_pending_count"`
+	HighRiskEventCount             int                                       `json:"high_risk_event_count"`
+	ConfirmationRequiredEventCount int                                       `json:"confirmation_required_event_count"`
+	CompatibilityEventCount        int                                       `json:"compatibility_event_count"`
+	RecentEventCount               int                                       `json:"recent_event_count"`
+	ActionTypeCounts               map[string]int                            `json:"action_type_counts"`
+	EventStageCounts               map[string]int                            `json:"event_stage_counts"`
+	ChangeTypeCounts               map[string]int                            `json:"change_type_counts"`
+	RiskLevelCounts                map[string]int                            `json:"risk_level_counts"`
+	Filters                        *database.SubagentPublicationEventFilters `json:"event_filters,omitempty"`
+}
+
+type SubagentGovernanceResponse struct {
+	Events                     []*database.SubagentPublicationEvent         `json:"events"`
+	Summary                    *SubagentTenantGovernanceSummary             `json:"summary"`
+	MetadataAliasFreezePreview *database.SubagentMetadataAliasFreezePreview `json:"metadata_alias_freeze_preview,omitempty"`
+	Total                      int                                          `json:"total"`
+	Limit                      int                                          `json:"limit"`
+	Offset                     int                                          `json:"offset"`
 }
 
 type SubagentTestRunRequest struct {
@@ -203,16 +261,25 @@ type MCPServerBulkActionRequest struct {
 	GroupBy      string   `json:"group_by,omitempty"`
 	MaxBatchSize int      `json:"max_batch_size,omitempty"`
 	RetryFailed  int      `json:"retry_failed,omitempty"`
+	PreviewOnly  bool     `json:"preview_only,omitempty"`
+	PreviewToken string   `json:"preview_token,omitempty"`
+	Confirmed    bool     `json:"confirmed,omitempty"`
 }
 
 type MCPServerBulkActionResult struct {
-	ServerID string              `json:"server_id"`
-	Action   string              `json:"action"`
-	OK       bool                `json:"ok"`
-	Message  string              `json:"message"`
-	Server   *database.MCPServer `json:"server,omitempty"`
-	Attempts int                 `json:"attempts,omitempty"`
-	GroupKey string              `json:"group_key,omitempty"`
+	ServerID            string                        `json:"server_id"`
+	ServerName          string                        `json:"server_name,omitempty"`
+	Action              string                        `json:"action"`
+	OK                  bool                          `json:"ok"`
+	Message             string                        `json:"message"`
+	Server              *database.MCPServer           `json:"server,omitempty"`
+	Attempts            int                           `json:"attempts,omitempty"`
+	GroupKey            string                        `json:"group_key,omitempty"`
+	FailureMode         string                        `json:"failure_mode,omitempty"`
+	RecoveryStatus      string                        `json:"recovery_status,omitempty"`
+	ImpactSummary       string                        `json:"impact_summary,omitempty"`
+	SuggestedFollowUps  []*database.MCPRecoveryAction `json:"suggested_follow_ups,omitempty"`
+	RecommendedPriority string                        `json:"recommended_priority,omitempty"`
 }
 
 type MCPServerBulkActionExecution struct {
@@ -221,6 +288,29 @@ type MCPServerBulkActionExecution struct {
 	RetryFailed   int    `json:"retry_failed"`
 	SelectedCount int    `json:"selected_count"`
 	GroupCount    int    `json:"group_count"`
+	PreviewOnly   bool   `json:"preview_only"`
+	OrderedBy     string `json:"ordered_by,omitempty"`
+}
+
+type MCPServerBulkFollowUpStage struct {
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Count    int    `json:"count"`
+	Priority string `json:"priority,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+}
+
+type MCPServerBulkFollowUpPlan struct {
+	Status               string                        `json:"status"`
+	Summary              string                        `json:"summary"`
+	RecommendedActions   []string                      `json:"recommended_actions,omitempty"`
+	FailedServerIDs      []string                      `json:"failed_server_ids,omitempty"`
+	DriftedServerIDs     []string                      `json:"drifted_server_ids,omitempty"`
+	RecoveryStageCounts  []*MCPServerBulkFollowUpStage `json:"recovery_stage_counts,omitempty"`
+	RequiresManualReview bool                          `json:"requires_manual_review,omitempty"`
+	ManualReviewReason   string                        `json:"manual_review_reason,omitempty"`
+	CompensationActions  []string                      `json:"compensation_actions,omitempty"`
+	RollbackActions      []string                      `json:"rollback_actions,omitempty"`
 }
 
 type MCPServerBulkActionGroup struct {
@@ -232,6 +322,56 @@ type MCPServerBulkActionGroup struct {
 	Results []*MCPServerBulkActionResult `json:"results"`
 }
 
+type MCPServerBulkActionRecommendation struct {
+	Order                int                           `json:"order"`
+	ServerID             string                        `json:"server_id"`
+	ServerName           string                        `json:"server_name,omitempty"`
+	Action               string                        `json:"action"`
+	Priority             string                        `json:"priority"`
+	Reason               string                        `json:"reason"`
+	FailureMode          string                        `json:"failure_mode,omitempty"`
+	RecoveryStatus       string                        `json:"recovery_status,omitempty"`
+	ImpactedAgents       int                           `json:"impacted_agents,omitempty"`
+	ActiveImpactedAgents int                           `json:"active_impacted_agents,omitempty"`
+	SuggestedFollowUps   []*database.MCPRecoveryAction `json:"suggested_follow_ups,omitempty"`
+}
+
+type MCPServerBulkActionPreview struct {
+	Action               string                               `json:"action"`
+	PreviewOnly          bool                                 `json:"preview_only"`
+	PreviewToken         string                               `json:"preview_token,omitempty"`
+	OrderedBy            string                               `json:"ordered_by"`
+	RiskSummary          string                               `json:"risk_summary"`
+	RequiresConfirmation bool                                 `json:"requires_confirmation"`
+	ConfirmationMessage  string                               `json:"confirmation_message,omitempty"`
+	GeneratedAt          *time.Time                           `json:"generated_at,omitempty"`
+	ExpiresAt            *time.Time                           `json:"expires_at,omitempty"`
+	SelectedServerIDs    []string                             `json:"selected_server_ids,omitempty"`
+	Recommendations      []*MCPServerBulkActionRecommendation `json:"recommendations,omitempty"`
+}
+
+type mcpBulkServerCandidate struct {
+	server *database.MCPServer
+	order  int
+}
+
+type mcpBulkPreviewTokenPayload struct {
+	Action               string                         `json:"action"`
+	GroupBy              string                         `json:"group_by"`
+	MaxBatchSize         int                            `json:"max_batch_size"`
+	RetryFailed          int                            `json:"retry_failed"`
+	GeneratedAt          time.Time                      `json:"generated_at"`
+	ConfirmedRequired    bool                           `json:"confirmed_required"`
+	SelectedServerIDs    []string                       `json:"selected_server_ids"`
+	ServerStateSnapshots []*mcpBulkPreviewStateSnapshot `json:"server_state_snapshots"`
+}
+
+type mcpBulkPreviewStateSnapshot struct {
+	ServerID   string `json:"server_id"`
+	Signature  string `json:"signature"`
+	ServerName string `json:"server_name,omitempty"`
+}
+
 type MCPServerBulkActionResponse struct {
 	Action    string                        `json:"action"`
 	Results   []*MCPServerBulkActionResult  `json:"results"`
@@ -241,6 +381,8 @@ type MCPServerBulkActionResponse struct {
 	Summary   *MCPServerGovernanceSummary   `json:"summary,omitempty"`
 	Execution *MCPServerBulkActionExecution `json:"execution,omitempty"`
 	Groups    []*MCPServerBulkActionGroup   `json:"groups,omitempty"`
+	Preview   *MCPServerBulkActionPreview   `json:"preview,omitempty"`
+	FollowUp  *MCPServerBulkFollowUpPlan    `json:"follow_up,omitempty"`
 }
 
 type AgentService struct {
@@ -567,6 +709,9 @@ func (s *AgentService) SyncSkills() ([]*database.Skill, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := validateSkillGovernance(skill); err != nil {
+			return nil, err
+		}
 		upserted, err := s.skillStore.UpsertSkill(skill)
 		if err != nil {
 			return nil, err
@@ -592,7 +737,11 @@ func (s *AgentService) UpdateAgentSkills(tenantID, agentID string, req *UpdateAg
 	if err != nil {
 		return err
 	}
-	return s.skillStore.ReplaceAgentSkillBindings(agentID, mergeFixedSkillIDs(req.SkillIDs, fixedSkillIDs))
+	mergedSkillIDs := mergeFixedSkillIDs(req.SkillIDs, fixedSkillIDs)
+	if err := s.validateAgentSkillSelection(tenantID, mergedSkillIDs); err != nil {
+		return err
+	}
+	return s.skillStore.ReplaceAgentSkillBindings(agentID, mergedSkillIDs)
 }
 
 func (s *AgentService) hydrateAgentBindings(definition *database.AgentDefinition) (*database.AgentDefinition, error) {
@@ -881,18 +1030,103 @@ func (s *AgentService) RunMCPServerBulkAction(tenantID, userID string, req *MCPS
 		retryFailed = 0
 	}
 
-	groupedServerIDs := map[string][]string{}
-	groupOrder := make([]string, 0)
-	for _, serverID := range serverIDs {
+	orderedBy := "impact_and_recovery"
+	previewOnly := req.PreviewOnly
+	candidates := make([]mcpBulkServerCandidate, 0, len(serverIDs))
+	for index, serverID := range serverIDs {
 		server, err := s.GetMCPServer(tenantID, serverID)
 		if err != nil {
 			return nil, err
 		}
+		candidates = append(candidates, mcpBulkServerCandidate{
+			server: server,
+			order:  index,
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return compareMCPBulkCandidates(candidates[i], candidates[j])
+	})
+
+	recommendations := make([]*MCPServerBulkActionRecommendation, 0, len(candidates))
+	for index, candidate := range candidates {
+		recommendations = append(recommendations, buildMCPBulkRecommendation(candidate.server, action, index+1))
+	}
+	generatedAt := time.Now().UTC()
+	preview, previewPayload, err := buildMCPBulkPreview(action, true, groupBy, maxBatchSize, retryFailed, generatedAt, candidates, recommendations)
+	if err != nil {
+		return nil, err
+	}
+
+	if previewOnly {
+		_, _ = s.recordMCPBulkActionAuditEvent(
+			tenantID,
+			userID,
+			"preview",
+			preview,
+			nil,
+			"preview_generated",
+			"MCP 批量治理预演已生成。",
+		)
+		governance, err := s.GetMCPGovernance(tenantID, "", "", "", "", 0)
+		if err != nil {
+			return nil, err
+		}
+		return &MCPServerBulkActionResponse{
+			Action:  action,
+			Results: []*MCPServerBulkActionResult{},
+			Total:   len(candidates),
+			Success: 0,
+			Failed:  0,
+			Summary: governance.Summary,
+			Execution: &MCPServerBulkActionExecution{
+				GroupBy:       groupBy,
+				MaxBatchSize:  maxBatchSize,
+				RetryFailed:   retryFailed,
+				SelectedCount: len(candidates),
+				GroupCount:    countMCPBulkGroups(candidates, groupBy),
+				PreviewOnly:   true,
+				OrderedBy:     orderedBy,
+			},
+			Preview: preview,
+		}, nil
+	}
+
+	if preview.RequiresConfirmation && !req.Confirmed {
+		return nil, errors.New("bulk action requires confirmed=true after preview review")
+	}
+	if strings.TrimSpace(req.PreviewToken) == "" {
+		return nil, errors.New("preview_token is required for bulk execution")
+	}
+	tokenPayload, err := decodeMCPBulkPreviewToken(req.PreviewToken)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateMCPBulkPreviewToken(tokenPayload, previewPayload, action, groupBy, maxBatchSize, retryFailed, serverIDs); err != nil {
+		return nil, err
+	}
+	driftedServers := detectMCPBulkPreviewDrift(tokenPayload, candidates)
+	if len(driftedServers) > 0 {
+		_, _ = s.recordMCPBulkActionAuditEvent(
+			tenantID,
+			userID,
+			"execute",
+			preview,
+			driftedServers,
+			"preview_state_drift",
+			"MCP 批量治理执行前检测到 server 状态漂移，已阻止继续执行。",
+		)
+		return nil, fmt.Errorf("preview state drift detected for %s; regenerate preview before execution", strings.Join(driftedServers, ", "))
+	}
+
+	groupedServerIDs := map[string][]*database.MCPServer{}
+	groupOrder := make([]string, 0)
+	for _, candidate := range candidates {
+		server := candidate.server
 		groupKey := buildMCPBulkGroupKey(server, groupBy)
 		if _, exists := groupedServerIDs[groupKey]; !exists {
 			groupOrder = append(groupOrder, groupKey)
 		}
-		groupedServerIDs[groupKey] = append(groupedServerIDs[groupKey], serverID)
+		groupedServerIDs[groupKey] = append(groupedServerIDs[groupKey], server)
 	}
 
 	results := make([]*MCPServerBulkActionResult, 0, len(serverIDs))
@@ -901,23 +1135,27 @@ func (s *AgentService) RunMCPServerBulkAction(tenantID, userID string, req *MCPS
 	failed := 0
 
 	for _, groupKey := range groupOrder {
-		groupServerIDs := groupedServerIDs[groupKey]
+		groupServers := groupedServerIDs[groupKey]
 		group := &MCPServerBulkActionGroup{
 			Key:     groupKey,
-			Label:   buildMCPBulkGroupLabel(groupKey, groupBy),
-			Results: make([]*MCPServerBulkActionResult, 0, len(groupServerIDs)),
+			Label:   buildMCPBulkGroupLabel(groupKey, groupBy, groupServers),
+			Results: make([]*MCPServerBulkActionResult, 0, len(groupServers)),
 		}
-		for start := 0; start < len(groupServerIDs); start += maxBatchSize {
+		for start := 0; start < len(groupServers); start += maxBatchSize {
 			end := start + maxBatchSize
-			if end > len(groupServerIDs) {
-				end = len(groupServerIDs)
+			if end > len(groupServers) {
+				end = len(groupServers)
 			}
-			batch := groupServerIDs[start:end]
-			for _, serverID := range batch {
-				result := s.runSingleMCPBulkAction(tenantID, userID, action, serverID)
+			batch := groupServers[start:end]
+			for _, server := range batch {
+				result := s.runSingleMCPBulkAction(tenantID, userID, action, server)
 				result.GroupKey = groupKey
 				for attempt := 0; !result.OK && attempt < retryFailed; attempt++ {
-					result = s.runSingleMCPBulkAction(tenantID, userID, action, serverID)
+					refreshedServer, err := s.GetMCPServer(tenantID, server.ID)
+					if err == nil {
+						server = refreshedServer
+					}
+					result = s.runSingleMCPBulkAction(tenantID, userID, action, server)
 					result.GroupKey = groupKey
 					result.Attempts = attempt + 2
 				}
@@ -943,6 +1181,20 @@ func (s *AgentService) RunMCPServerBulkAction(tenantID, userID string, req *MCPS
 	if err != nil {
 		return nil, err
 	}
+	followUp := buildMCPBulkFollowUpPlan(results, nil)
+	completedPreview, _, err := buildMCPBulkPreview(action, false, groupBy, maxBatchSize, retryFailed, generatedAt, candidates, recommendations)
+	if err != nil {
+		return nil, err
+	}
+	_, _ = s.recordMCPBulkActionAuditEvent(
+		tenantID,
+		userID,
+		"execute",
+		completedPreview,
+		nil,
+		"bulk_action_executed",
+		fmt.Sprintf("MCP 批量治理已执行，成功 %d 个，失败 %d 个。", success, failed),
+	)
 
 	return &MCPServerBulkActionResponse{
 		Action:  action,
@@ -957,16 +1209,33 @@ func (s *AgentService) RunMCPServerBulkAction(tenantID, userID string, req *MCPS
 			RetryFailed:   retryFailed,
 			SelectedCount: len(serverIDs),
 			GroupCount:    len(groups),
+			PreviewOnly:   false,
+			OrderedBy:     orderedBy,
 		},
-		Groups: groups,
+		Groups:   groups,
+		Preview:  completedPreview,
+		FollowUp: followUp,
 	}, nil
 }
 
-func (s *AgentService) runSingleMCPBulkAction(tenantID, userID, action, serverID string) *MCPServerBulkActionResult {
+func (s *AgentService) runSingleMCPBulkAction(tenantID, userID, action string, server *database.MCPServer) *MCPServerBulkActionResult {
 	result := &MCPServerBulkActionResult{
-		ServerID: serverID,
-		Action:   action,
+		Action: action,
 	}
+	if server != nil {
+		result.ServerID = server.ID
+		result.ServerName = server.Name
+		if server.Recovery != nil {
+			result.FailureMode = strings.TrimSpace(server.Recovery.FailureMode)
+			result.RecoveryStatus = strings.TrimSpace(server.Recovery.Status)
+			result.SuggestedFollowUps = cloneRecoveryActions(server.Recovery.Actions, action)
+			result.RecommendedPriority = highestRecoveryPriority(server.Recovery.Actions)
+			if server.Recovery.Impact != nil {
+				result.ImpactSummary = strings.TrimSpace(server.Recovery.Impact.Summary)
+			}
+		}
+	}
+	serverID := result.ServerID
 
 	switch action {
 	case "test":
@@ -974,6 +1243,7 @@ func (s *AgentService) runSingleMCPBulkAction(tenantID, userID, action, serverID
 		if err != nil {
 			result.OK = false
 			result.Message = err.Error()
+			result.SuggestedFollowUps = appendMCPBulkFailureFollowUps(server, action, result.SuggestedFollowUps)
 			return result
 		}
 		result.OK = true
@@ -983,36 +1253,44 @@ func (s *AgentService) runSingleMCPBulkAction(tenantID, userID, action, serverID
 			result.Message = "连接测试已完成"
 		}
 		result.Server = response.Server
+		result = updateMCPBulkResultFromServer(result, response.Server, action)
 	case "refresh":
 		response, err := s.RefreshMCPServerTools(tenantID, serverID, userID)
 		if err != nil {
 			result.OK = false
 			result.Message = err.Error()
+			result.SuggestedFollowUps = appendMCPBulkFailureFollowUps(server, action, result.SuggestedFollowUps)
 			return result
 		}
 		result.OK = true
 		result.Message = fmt.Sprintf("已刷新 %d 个工具", response.Total)
 		result.Server = response.Server
+		result = updateMCPBulkResultFromServer(result, response.Server, action)
 	case "enable":
-		server, err := s.GetMCPServer(tenantID, serverID)
-		if err != nil {
-			result.OK = false
-			result.Message = err.Error()
-			return result
+		currentServer := server
+		if currentServer == nil {
+			var err error
+			currentServer, err = s.GetMCPServer(tenantID, serverID)
+			if err != nil {
+				result.OK = false
+				result.Message = err.Error()
+				return result
+			}
 		}
 		updated, err := s.UpdateMCPServer(tenantID, userID, serverID, &MCPServerUpsertRequest{
-			Name:      server.Name,
-			Transport: server.Transport,
-			Endpoint:  server.Endpoint,
-			Command:   server.Command,
-			Args:      server.Args,
-			Env:       server.Env,
-			Metadata:  server.Metadata,
+			Name:      currentServer.Name,
+			Transport: currentServer.Transport,
+			Endpoint:  currentServer.Endpoint,
+			Command:   currentServer.Command,
+			Args:      currentServer.Args,
+			Env:       currentServer.Env,
+			Metadata:  currentServer.Metadata,
 			Status:    "active",
 		})
 		if err != nil {
 			result.OK = false
 			result.Message = err.Error()
+			result.SuggestedFollowUps = appendMCPBulkFailureFollowUps(currentServer, action, result.SuggestedFollowUps)
 			return result
 		}
 		event, _ := s.recordMCPServerEvent(tenantID, userID, updated, "server.updated", "enable", "succeeded", "server_enabled", "MCP server 已重新启用。")
@@ -1020,6 +1298,7 @@ func (s *AgentService) runSingleMCPBulkAction(tenantID, userID, action, serverID
 		result.OK = true
 		result.Message = "已重新启用"
 		result.Server = updated
+		result = updateMCPBulkResultFromServer(result, updated, action)
 	default:
 		result.OK = false
 		result.Message = fmt.Sprintf("unsupported action %s", action)
@@ -1059,17 +1338,614 @@ func buildMCPBulkGroupKey(server *database.MCPServer, groupBy string) string {
 	}
 }
 
-func buildMCPBulkGroupLabel(groupKey, groupBy string) string {
+func buildMCPBulkGroupLabel(groupKey, groupBy string, servers []*database.MCPServer) string {
+	impactCount := 0
+	activeImpactCount := 0
+	for _, server := range servers {
+		if server == nil || server.Recovery == nil || server.Recovery.Impact == nil {
+			continue
+		}
+		impactCount += server.Recovery.Impact.AgentCount
+		activeImpactCount += server.Recovery.Impact.ActiveAgentCount
+	}
+	impactSuffix := ""
+	if impactCount > 0 {
+		impactSuffix = fmt.Sprintf(" · 影响 %d 个 agent（active %d）", impactCount, activeImpactCount)
+	}
 	switch groupBy {
 	case "status":
-		return fmt.Sprintf("按状态分组: %s", groupKey)
+		return fmt.Sprintf("按状态分组: %s%s", groupKey, impactSuffix)
 	case "transport":
-		return fmt.Sprintf("按 transport 分组: %s", groupKey)
+		return fmt.Sprintf("按 transport 分组: %s%s", groupKey, impactSuffix)
 	case "failure_mode":
-		return fmt.Sprintf("按故障模式分组: %s", groupKey)
+		return fmt.Sprintf("按故障模式分组: %s%s", groupKey, impactSuffix)
 	default:
+		if impactSuffix != "" {
+			return fmt.Sprintf("全部选中服务器%s", impactSuffix)
+		}
 		return "全部选中服务器"
 	}
+}
+
+func countMCPBulkGroups(candidates []mcpBulkServerCandidate, groupBy string) int {
+	if len(candidates) == 0 {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		key := buildMCPBulkGroupKey(candidate.server, groupBy)
+		seen[key] = struct{}{}
+	}
+	return len(seen)
+}
+
+func compareMCPBulkCandidates(left, right mcpBulkServerCandidate) bool {
+	leftScore := scoreMCPBulkServer(left.server)
+	rightScore := scoreMCPBulkServer(right.server)
+	if leftScore != rightScore {
+		return leftScore > rightScore
+	}
+	leftPriority := scoreMCPRecoveryPriority(left.server)
+	rightPriority := scoreMCPRecoveryPriority(right.server)
+	if leftPriority != rightPriority {
+		return leftPriority > rightPriority
+	}
+	return left.order < right.order
+}
+
+func scoreMCPBulkServer(server *database.MCPServer) int {
+	if server == nil {
+		return 0
+	}
+	score := 0
+	if server.Recovery != nil {
+		score += 100 * scoreMCPRecoveryStatus(server.Recovery.Status)
+		score += 25 * scoreMCPRecoveryPriority(server)
+		if server.Recovery.Impact != nil {
+			score += server.Recovery.Impact.ActiveAgentCount * 10
+			score += server.Recovery.Impact.AgentCount * 4
+		}
+	}
+	if server.Catalog != nil && server.Catalog.IsStale {
+		score += 20
+	}
+	if server.Connection != nil && server.Connection.Status == "untested" {
+		score += 10
+	}
+	return score
+}
+
+func scoreMCPRecoveryStatus(status string) int {
+	switch strings.TrimSpace(status) {
+	case "blocked":
+		return 6
+	case "needs_catalog":
+		return 5
+	case "disabled":
+		return 4
+	case "stale":
+		return 3
+	case "verify":
+		return 2
+	case "healthy":
+		return 0
+	default:
+		return 1
+	}
+}
+
+func scoreMCPRecoveryPriority(server *database.MCPServer) int {
+	if server == nil || server.Recovery == nil {
+		return 0
+	}
+	return priorityWeight(highestRecoveryPriority(server.Recovery.Actions))
+}
+
+func priorityWeight(priority string) int {
+	switch strings.TrimSpace(strings.ToLower(priority)) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func highestRecoveryPriority(actions []*database.MCPRecoveryAction) string {
+	best := ""
+	bestWeight := 0
+	for _, action := range actions {
+		if action == nil {
+			continue
+		}
+		weight := priorityWeight(action.Priority)
+		if weight > bestWeight {
+			bestWeight = weight
+			best = strings.TrimSpace(strings.ToLower(action.Priority))
+		}
+	}
+	return best
+}
+
+func buildMCPBulkRecommendation(server *database.MCPServer, action string, order int) *MCPServerBulkActionRecommendation {
+	recommendation := &MCPServerBulkActionRecommendation{
+		Order:              order,
+		Action:             action,
+		Priority:           "medium",
+		SuggestedFollowUps: []*database.MCPRecoveryAction{},
+	}
+	if server == nil {
+		return recommendation
+	}
+	recommendation.ServerID = server.ID
+	recommendation.ServerName = server.Name
+	if server.Recovery != nil {
+		recommendation.FailureMode = strings.TrimSpace(server.Recovery.FailureMode)
+		recommendation.RecoveryStatus = strings.TrimSpace(server.Recovery.Status)
+		recommendation.Priority = firstNonEmpty(highestRecoveryPriority(server.Recovery.Actions), "medium")
+		recommendation.SuggestedFollowUps = cloneRecoveryActions(server.Recovery.Actions, action)
+		if server.Recovery.Impact != nil {
+			recommendation.ImpactedAgents = server.Recovery.Impact.AgentCount
+			recommendation.ActiveImpactedAgents = server.Recovery.Impact.ActiveAgentCount
+			recommendation.Reason = strings.TrimSpace(server.Recovery.Impact.Summary)
+		}
+		if strings.TrimSpace(server.Recovery.Summary) != "" {
+			if recommendation.Reason != "" {
+				recommendation.Reason = fmt.Sprintf("%s %s", server.Recovery.Summary, recommendation.Reason)
+			} else {
+				recommendation.Reason = strings.TrimSpace(server.Recovery.Summary)
+			}
+		}
+	}
+	if recommendation.Reason == "" {
+		recommendation.Reason = fmt.Sprintf("建议优先处理 %s。", firstNonEmpty(server.Name, server.ID))
+	}
+	return recommendation
+}
+
+func buildMCPBulkPreview(
+	action string,
+	previewOnly bool,
+	groupBy string,
+	maxBatchSize int,
+	retryFailed int,
+	generatedAt time.Time,
+	candidates []mcpBulkServerCandidate,
+	recommendations []*MCPServerBulkActionRecommendation,
+) (*MCPServerBulkActionPreview, *mcpBulkPreviewTokenPayload, error) {
+	selectedServerIDs := make([]string, 0, len(candidates))
+	snapshots := make([]*mcpBulkPreviewStateSnapshot, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.server == nil {
+			continue
+		}
+		selectedServerIDs = append(selectedServerIDs, candidate.server.ID)
+		snapshots = append(snapshots, &mcpBulkPreviewStateSnapshot{
+			ServerID:   candidate.server.ID,
+			ServerName: candidate.server.Name,
+			Signature:  signatureForMCPBulkPreviewServer(candidate.server),
+		})
+	}
+
+	preview := &MCPServerBulkActionPreview{
+		Action:               action,
+		PreviewOnly:          previewOnly,
+		OrderedBy:            "impact_and_recovery",
+		RiskSummary:          "当前批量治理未发现显著风险。",
+		RequiresConfirmation: false,
+		GeneratedAt:          &generatedAt,
+		ExpiresAt:            timePtr(generatedAt.Add(mcpBulkPreviewTTL)),
+		SelectedServerIDs:    selectedServerIDs,
+		Recommendations:      recommendations,
+	}
+
+	totalAgents := 0
+	activeAgents := 0
+	highRiskCount := 0
+	for _, recommendation := range recommendations {
+		if recommendation == nil {
+			continue
+		}
+		totalAgents += recommendation.ImpactedAgents
+		activeAgents += recommendation.ActiveImpactedAgents
+		if priorityWeight(recommendation.Priority) >= 3 {
+			highRiskCount++
+		}
+	}
+
+	preview.RequiresConfirmation = highRiskCount > 0 || activeAgents > 0
+	preview.RiskSummary = fmt.Sprintf(
+		"本次批量%s将按影响面和恢复严重度排序处理 %d 个 server，覆盖 %d 个已绑定 agent，其中 %d 个处于 active 状态。",
+		action,
+		len(recommendations),
+		totalAgents,
+		activeAgents,
+	)
+	if preview.RequiresConfirmation {
+		preview.ConfirmationMessage = "建议先核对排序靠前的阻塞项与高影响 server，再执行批量恢复。"
+	}
+
+	payload := &mcpBulkPreviewTokenPayload{
+		Action:               action,
+		GroupBy:              groupBy,
+		MaxBatchSize:         maxBatchSize,
+		RetryFailed:          retryFailed,
+		GeneratedAt:          generatedAt,
+		ConfirmedRequired:    preview.RequiresConfirmation,
+		SelectedServerIDs:    selectedServerIDs,
+		ServerStateSnapshots: snapshots,
+	}
+	token, err := encodeMCPBulkPreviewToken(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	preview.PreviewToken = token
+	return preview, payload, nil
+}
+
+func buildMCPBulkFollowUpPlan(results []*MCPServerBulkActionResult, driftedServerIDs []string) *MCPServerBulkFollowUpPlan {
+	stages := make(map[string]*MCPServerBulkFollowUpStage)
+	failedServerIDs := make([]string, 0)
+	recommendedActions := make([]string, 0, 6)
+	compensationActions := make([]string, 0, 4)
+	rollbackActions := make([]string, 0, 4)
+	manualReviewReason := ""
+	requiresManualReview := false
+	failedActiveImpactCount := 0
+
+	ensureStage := func(key, label, priority string) *MCPServerBulkFollowUpStage {
+		if existing, ok := stages[key]; ok {
+			return existing
+		}
+		stage := &MCPServerBulkFollowUpStage{
+			Key:      key,
+			Label:    label,
+			Priority: priority,
+		}
+		stages[key] = stage
+		return stage
+	}
+
+	for _, result := range results {
+		if result == nil {
+			continue
+		}
+		if !result.OK {
+			failedServerIDs = append(failedServerIDs, result.ServerID)
+			if strings.Contains(result.ImpactSummary, "active") || strings.Contains(result.ImpactSummary, "已绑定 agent") {
+				failedActiveImpactCount++
+			}
+		}
+		switch strings.TrimSpace(result.RecoveryStatus) {
+		case "blocked":
+			stage := ensureStage("blocked", "阻塞项处理", "high")
+			stage.Count++
+		case "needs_catalog":
+			stage := ensureStage("needs_catalog", "Catalog 重建", "high")
+			stage.Count++
+		case "stale":
+			stage := ensureStage("stale", "Catalog 收敛", "medium")
+			stage.Count++
+		case "verify":
+			stage := ensureStage("verify", "连接复核", "medium")
+			stage.Count++
+		case "disabled":
+			stage := ensureStage("disabled", "启用恢复", "medium")
+			stage.Count++
+		}
+		for _, action := range result.SuggestedFollowUps {
+			if action == nil {
+				continue
+			}
+			switch strings.TrimSpace(action.Type) {
+			case "test":
+				recommendedActions = append(recommendedActions, "优先对仍失败或 blocked 的 server 重新执行连接测试，并确认失败模式是否已经变化。")
+				compensationActions = append(compensationActions, "把失败 server 重新分组为连接复核批次，先确认连接已恢复再继续 catalog 收敛。")
+			case "refresh":
+				recommendedActions = append(recommendedActions, "对连接已恢复但 catalog 仍为空或过期的 server 继续刷新 Catalog，确认工具快照已经收敛。")
+				compensationActions = append(compensationActions, "对 refresh 失败但连接已恢复的 server 单独重跑 catalog 刷新，避免阻塞整个治理批次。")
+			case "enable":
+				recommendedActions = append(recommendedActions, "对仍处于 disabled 的 server 先恢复启用，再进入连接测试与 catalog 刷新。")
+				rollbackActions = append(rollbackActions, "若 enable 后立即出现更高风险失败，可临时重新置为 disabled 并通知受影响 agent 维护窗口。")
+			}
+		}
+		if result.OK && strings.TrimSpace(result.Action) == "enable" && strings.TrimSpace(result.RecoveryStatus) == "blocked" {
+			rollbackActions = append(rollbackActions, "已启用但仍 blocked 的 server 应考虑回退到 disabled，避免继续扩大不可用影响面。")
+		}
+	}
+
+	stageList := make([]*MCPServerBulkFollowUpStage, 0, len(stages))
+	for _, stage := range stages {
+		if stage == nil {
+			continue
+		}
+		switch stage.Key {
+		case "blocked":
+			stage.Summary = fmt.Sprintf("仍有 %d 个 server 处于阻塞恢复态，应优先处理连接失败或不可达问题。", stage.Count)
+		case "needs_catalog":
+			stage.Summary = fmt.Sprintf("仍有 %d 个 server 缺少可用 catalog，需要继续刷新或重建工具快照。", stage.Count)
+		case "stale":
+			stage.Summary = fmt.Sprintf("仍有 %d 个 server 的 catalog 处于 stale 状态，需要继续收敛缓存。", stage.Count)
+		case "verify":
+			stage.Summary = fmt.Sprintf("仍有 %d 个 server 需要继续做连接复核。", stage.Count)
+		case "disabled":
+			stage.Summary = fmt.Sprintf("仍有 %d 个 server 处于 disabled 状态。", stage.Count)
+		default:
+			stage.Summary = fmt.Sprintf("仍有 %d 个 server 需要后续治理。", stage.Count)
+		}
+		stageList = append(stageList, stage)
+	}
+	sort.SliceStable(stageList, func(i, j int) bool {
+		left := priorityWeight(stageList[i].Priority)
+		right := priorityWeight(stageList[j].Priority)
+		if left != right {
+			return left > right
+		}
+		if stageList[i].Count != stageList[j].Count {
+			return stageList[i].Count > stageList[j].Count
+		}
+		return stageList[i].Key < stageList[j].Key
+	})
+
+	failedServerIDs = uniqueNonEmptyStrings(failedServerIDs)
+	driftedServerIDs = uniqueNonEmptyStrings(driftedServerIDs)
+	recommendedActions = uniqueNonEmptyStrings(recommendedActions)
+
+	status := "settled"
+	summary := "本次批量治理已完成，当前没有额外后续编排压力。"
+	switch {
+	case len(driftedServerIDs) > 0:
+		status = "drifted"
+		summary = fmt.Sprintf("有 %d 个 server 在预演和执行之间发生状态漂移，需重新生成预演后再执行。", len(driftedServerIDs))
+		recommendedActions = append([]string{"先重新生成批量预演，确认状态签名已经更新，再继续正式执行。"}, recommendedActions...)
+		requiresManualReview = true
+		manualReviewReason = "执行前检测到 preview state drift，需人工确认最新状态后再发起新批次。"
+	case len(failedServerIDs) > 0:
+		status = "needs_follow_up"
+		summary = fmt.Sprintf("本次批量治理后仍有 %d 个 server 执行失败，需要继续做补救和状态收敛。", len(failedServerIDs))
+		if failedActiveImpactCount > 0 {
+			requiresManualReview = true
+			manualReviewReason = "失败结果仍影响 active agent，建议人工确认批量补救顺序和维护窗口。"
+		}
+	default:
+		for _, stage := range stageList {
+			if stage == nil || stage.Count == 0 {
+				continue
+			}
+			status = "needs_follow_up"
+			summary = fmt.Sprintf("本次批量治理已执行完成，但仍有 %d 类恢复阶段需要继续收口。", len(stageList))
+			break
+		}
+	}
+	if len(recommendedActions) == 0 && status == "settled" {
+		recommendedActions = append(recommendedActions, "继续观察跨页面刷新后的治理摘要，确认状态已经稳定收敛。")
+	}
+	if len(compensationActions) == 0 && len(failedServerIDs) > 0 {
+		compensationActions = append(compensationActions, "把失败 server 拆出独立补救批次，避免继续沿用同一批次参数盲目重试。")
+	}
+	if len(rollbackActions) == 0 && status == "needs_follow_up" {
+		rollbackActions = append(rollbackActions, "若批量恢复导致风险继续放大，可对高风险 server 暂停暴露并回到单机治理模式。")
+	}
+
+	return &MCPServerBulkFollowUpPlan{
+		Status:               status,
+		Summary:              summary,
+		RecommendedActions:   uniqueNonEmptyStrings(recommendedActions),
+		FailedServerIDs:      failedServerIDs,
+		DriftedServerIDs:     driftedServerIDs,
+		RecoveryStageCounts:  stageList,
+		RequiresManualReview: requiresManualReview,
+		ManualReviewReason:   strings.TrimSpace(manualReviewReason),
+		CompensationActions:  uniqueNonEmptyStrings(compensationActions),
+		RollbackActions:      uniqueNonEmptyStrings(rollbackActions),
+	}
+}
+
+func encodeMCPBulkPreviewToken(payload *mcpBulkPreviewTokenPayload) (string, error) {
+	if payload == nil {
+		return "", errors.New("preview payload is required")
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode mcp bulk preview token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded), nil
+}
+
+func decodeMCPBulkPreviewToken(raw string) (*mcpBulkPreviewTokenPayload, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, errors.New("preview token is required")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(trimmed)
+	if err != nil {
+		return nil, errors.New("invalid preview token")
+	}
+	payload := &mcpBulkPreviewTokenPayload{}
+	if err := json.Unmarshal(decoded, payload); err != nil {
+		return nil, errors.New("invalid preview token payload")
+	}
+	return payload, nil
+}
+
+func validateMCPBulkPreviewToken(
+	tokenPayload *mcpBulkPreviewTokenPayload,
+	currentPayload *mcpBulkPreviewTokenPayload,
+	action string,
+	groupBy string,
+	maxBatchSize int,
+	retryFailed int,
+	serverIDs []string,
+) error {
+	if tokenPayload == nil || currentPayload == nil {
+		return errors.New("preview token payload is required")
+	}
+	if time.Since(tokenPayload.GeneratedAt) > mcpBulkPreviewTTL || tokenPayload.GeneratedAt.After(time.Now().UTC().Add(1*time.Minute)) {
+		return errors.New("preview token expired; regenerate preview before execution")
+	}
+	if tokenPayload.Action != action || tokenPayload.GroupBy != groupBy || tokenPayload.MaxBatchSize != maxBatchSize || tokenPayload.RetryFailed != retryFailed {
+		return errors.New("preview token does not match current bulk action parameters")
+	}
+	if !sameStringSet(tokenPayload.SelectedServerIDs, serverIDs) || !sameStringSet(currentPayload.SelectedServerIDs, serverIDs) {
+		return errors.New("preview token does not match selected server ids")
+	}
+	return nil
+}
+
+func detectMCPBulkPreviewDrift(
+	tokenPayload *mcpBulkPreviewTokenPayload,
+	candidates []mcpBulkServerCandidate,
+) []string {
+	if tokenPayload == nil {
+		return nil
+	}
+	expected := map[string]string{}
+	names := map[string]string{}
+	for _, snapshot := range tokenPayload.ServerStateSnapshots {
+		if snapshot == nil || strings.TrimSpace(snapshot.ServerID) == "" {
+			continue
+		}
+		expected[snapshot.ServerID] = snapshot.Signature
+		names[snapshot.ServerID] = snapshot.ServerName
+	}
+	drifted := make([]string, 0)
+	for _, candidate := range candidates {
+		if candidate.server == nil {
+			continue
+		}
+		signature := signatureForMCPBulkPreviewServer(candidate.server)
+		if expected[candidate.server.ID] != signature {
+			driftName := firstNonEmpty(names[candidate.server.ID], candidate.server.Name)
+			drifted = append(drifted, firstNonEmpty(driftName, candidate.server.ID))
+		}
+	}
+	return drifted
+}
+
+func signatureForMCPBulkPreviewServer(server *database.MCPServer) string {
+	if server == nil {
+		return ""
+	}
+	payload := map[string]any{
+		"id":           server.ID,
+		"status":       server.Status,
+		"updated_at":   server.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		"last_tested":  "",
+		"last_error":   "",
+		"connection":   "",
+		"catalog":      "",
+		"availability": "",
+		"recovery":     "",
+	}
+	if server.LastTestedAt != nil {
+		payload["last_tested"] = server.LastTestedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if server.LastError != nil {
+		payload["last_error"] = strings.TrimSpace(*server.LastError)
+	}
+	if server.Connection != nil {
+		payload["connection"] = server.Connection.Status
+	}
+	if server.Catalog != nil {
+		payload["catalog"] = fmt.Sprintf("%s:%d:%v", server.Catalog.Status, server.Catalog.ToolCount, server.Catalog.IsStale)
+	}
+	if server.Availability != nil {
+		payload["availability"] = fmt.Sprintf("%s:%v:%s", server.Availability.Status, server.Availability.Bindable, server.Availability.Reason)
+	}
+	if server.Recovery != nil {
+		payload["recovery"] = fmt.Sprintf("%s:%s:%v", server.Recovery.Status, server.Recovery.FailureMode, server.Recovery.Recoverable)
+	}
+	encoded, _ := json.Marshal(payload)
+	sum := sha256.Sum256(encoded)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	leftSet := map[string]int{}
+	for _, item := range left {
+		leftSet[strings.TrimSpace(item)]++
+	}
+	for _, item := range right {
+		trimmed := strings.TrimSpace(item)
+		if leftSet[trimmed] <= 0 {
+			return false
+		}
+		leftSet[trimmed]--
+	}
+	for _, count := range leftSet {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneRecoveryActions(actions []*database.MCPRecoveryAction, currentAction string) []*database.MCPRecoveryAction {
+	if len(actions) == 0 {
+		return []*database.MCPRecoveryAction{}
+	}
+	cloned := make([]*database.MCPRecoveryAction, 0, len(actions))
+	for _, action := range actions {
+		if action == nil || strings.TrimSpace(action.Type) == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(action.Type), strings.TrimSpace(currentAction)) {
+			continue
+		}
+		cloned = append(cloned, &database.MCPRecoveryAction{
+			Type:        action.Type,
+			Label:       action.Label,
+			Description: action.Description,
+			Priority:    action.Priority,
+		})
+	}
+	return cloned
+}
+
+func appendMCPBulkFailureFollowUps(
+	server *database.MCPServer,
+	action string,
+	existing []*database.MCPRecoveryAction,
+) []*database.MCPRecoveryAction {
+	actions := append([]*database.MCPRecoveryAction{}, existing...)
+	if server == nil || server.Recovery == nil {
+		return actions
+	}
+	if len(actions) > 0 {
+		return actions
+	}
+	return cloneRecoveryActions(server.Recovery.Actions, action)
+}
+
+func updateMCPBulkResultFromServer(
+	result *MCPServerBulkActionResult,
+	server *database.MCPServer,
+	currentAction string,
+) *MCPServerBulkActionResult {
+	if result == nil || server == nil {
+		return result
+	}
+	result.Server = server
+	result.ServerID = server.ID
+	result.ServerName = server.Name
+	if server.Recovery != nil {
+		result.FailureMode = strings.TrimSpace(server.Recovery.FailureMode)
+		result.RecoveryStatus = strings.TrimSpace(server.Recovery.Status)
+		result.SuggestedFollowUps = cloneRecoveryActions(server.Recovery.Actions, currentAction)
+		result.RecommendedPriority = firstNonEmpty(highestRecoveryPriority(server.Recovery.Actions), result.RecommendedPriority)
+		if server.Recovery.Impact != nil {
+			result.ImpactSummary = strings.TrimSpace(server.Recovery.Impact.Summary)
+		}
+	}
+	return result
 }
 
 func (s *AgentService) UpdateAgentMCPServers(tenantID, agentID string, req *UpdateAgentMCPServersRequest) error {
@@ -1135,8 +2011,67 @@ func (s *AgentService) GetSubagentControlPlane(tenantID, userRole, subagentID st
 	if _, err := s.hydrateSubagentDefinition(controlPlane.Definition); err != nil {
 		return nil, err
 	}
-	controlPlane.Governance = buildSubagentGovernanceSummary(controlPlane)
-	return controlPlane, nil
+	return enrichSubagentControlPlaneGovernance(controlPlane), nil
+}
+
+func (s *AgentService) GetSubagentGovernance(
+	tenantID string,
+	userRole string,
+	filters *database.SubagentPublicationEventFilters,
+) (*SubagentGovernanceResponse, error) {
+	if err := ensureSubagentAdminRole(userRole); err != nil {
+		return nil, err
+	}
+	if s.subagentStore == nil {
+		return &SubagentGovernanceResponse{
+			Events:  []*database.SubagentPublicationEvent{},
+			Summary: buildSubagentTenantGovernanceSummary(nil, nil, filters),
+			Total:   0,
+			Limit:   20,
+			Offset:  0,
+		}, nil
+	}
+	page, err := s.subagentStore.ListTenantSubagentPublicationEvents(tenantID, filters)
+	if err != nil {
+		return nil, err
+	}
+	controlPlanes, err := s.listSubagentControlPlanesForGovernance(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	summary := buildSubagentTenantGovernanceSummary(controlPlanes, page.Items, page.Filters)
+	return &SubagentGovernanceResponse{
+		Events:  page.Items,
+		Summary: summary,
+		Total:   page.Total,
+		Limit:   page.Filters.Limit,
+		Offset:  page.Filters.Offset,
+	}, nil
+}
+
+func (s *AgentService) listSubagentControlPlanesForGovernance(tenantID string) ([]*database.SubagentControlPlane, error) {
+	definitions, err := s.subagentStore.ListSubagentDefinitions(tenantID, true)
+	if err != nil {
+		return nil, err
+	}
+	controlPlanes := make([]*database.SubagentControlPlane, 0, len(definitions))
+	for _, definition := range definitions {
+		if definition == nil || strings.TrimSpace(definition.ID) == "" {
+			continue
+		}
+		controlPlane, err := s.subagentStore.GetSubagentControlPlane(definition.ID, tenantID)
+		if err != nil {
+			if errors.Is(err, database.ErrSubagentDefinitionNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if _, err := s.hydrateSubagentDefinition(controlPlane.Definition); err != nil {
+			return nil, err
+		}
+		controlPlanes = append(controlPlanes, enrichSubagentControlPlaneGovernance(controlPlane))
+	}
+	return controlPlanes, nil
 }
 
 func (s *AgentService) CreateSubagentDefinition(tenantID, userID, userRole string, req *SubagentDefinitionUpsertRequest) (*database.SubagentDefinition, error) {
@@ -1250,6 +2185,10 @@ func (s *AgentService) UpdateSubagentPublication(
 	if err != nil {
 		return nil, err
 	}
+	controlPlane, err := s.GetSubagentControlPlane(tenantID, userRole, subagentID)
+	if err != nil {
+		return nil, err
+	}
 	currentPublication, err := s.subagentStore.GetSubagentPublicationState(subagentID, tenantID)
 	if err != nil && !errors.Is(err, database.ErrSubagentPublicationNotFound) {
 		return nil, err
@@ -1261,13 +2200,45 @@ func (s *AgentService) UpdateSubagentPublication(
 	if versionID == "" {
 		return nil, errors.New("version_id is required")
 	}
+	var targetVersion *database.SubagentDefinitionVersion
+	for _, version := range controlPlane.Versions {
+		if version != nil && version.ID == versionID {
+			targetVersion = version
+			break
+		}
+	}
+	if targetVersion == nil {
+		return nil, fmt.Errorf("subagent version %s not found", versionID)
+	}
+	targetScope := defaultString(strings.TrimSpace(req.PublicationScope), definition.PublicationScope)
+	targetStatus := defaultString(strings.TrimSpace(req.Status), definition.Status)
+	preview := buildSubagentPublicationChangePreview(controlPlane, targetVersion, targetScope, targetStatus)
+	if preview == nil {
+		return nil, errors.New("failed to build subagent publication preview")
+	}
+	if err := validateSubagentPublicationGovernanceInputs(preview, req); err != nil {
+		return nil, err
+	}
+	controlPlane = enrichSubagentControlPlaneGovernance(controlPlane)
+	if controlPlane.Governance != nil {
+		controlPlane.Governance.NextPublicationPreview = preview
+	}
+	if req.PreviewOnly {
+		if event, err := s.recordSubagentPublicationEvent(tenantID, userID, controlPlane, currentPublication, req, preview, "previewed"); err == nil {
+			controlPlane = prependSubagentPublicationEvent(controlPlane, event)
+		}
+		return controlPlane, nil
+	}
+	if preview.RequiresConfirmation && !req.Confirmed {
+		return nil, errors.New("publication change requires confirmed=true after preview review")
+	}
 
 	publication := &database.SubagentPublication{
 		DefinitionID: subagentID,
 		VersionID:    versionID,
 		TenantID:     subagentPublicationTenant(definition),
-		Visibility:   defaultString(strings.TrimSpace(req.PublicationScope), definition.PublicationScope),
-		Status:       defaultString(strings.TrimSpace(req.Status), definition.Status),
+		Visibility:   targetScope,
+		Status:       targetStatus,
 		Metadata:     database.NormalizeJSONRawForExport(req.PublicationMetadata, `{}`),
 		UpdatedBy:    stringPtr(userID),
 	}
@@ -1286,7 +2257,87 @@ func (s *AgentService) UpdateSubagentPublication(
 	if _, err := s.subagentStore.UpdateSubagentPublication(subagentID, tenantID, publication); err != nil {
 		return nil, err
 	}
-	return s.GetSubagentControlPlane(tenantID, userRole, subagentID)
+	updatedControlPlane, err := s.GetSubagentControlPlane(tenantID, userRole, subagentID)
+	if err != nil {
+		return nil, err
+	}
+	if event, err := s.recordSubagentPublicationEvent(tenantID, userID, updatedControlPlane, currentPublication, req, preview, "executed"); err == nil {
+		updatedControlPlane = prependSubagentPublicationEvent(updatedControlPlane, event)
+	}
+	return updatedControlPlane, nil
+}
+
+func (s *AgentService) FreezeSubagentMetadataAliases(
+	tenantID,
+	userID,
+	userRole string,
+	req *SubagentMetadataAliasFreezeRequest,
+) (*SubagentGovernanceResponse, error) {
+	if err := ensureSubagentAdminRole(userRole); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		req = &SubagentMetadataAliasFreezeRequest{}
+	}
+
+	controlPlanes, err := s.listSubagentControlPlanesForGovernance(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	preview := buildSubagentMetadataAliasFreezePreview(controlPlanes, req)
+	if preview == nil {
+		return nil, errors.New("failed to build metadata alias freeze preview")
+	}
+
+	if req.PreviewOnly {
+		if events, eventErr := s.recordSubagentMetadataAliasFreezeEvent(tenantID, userID, preview, 0, "previewed"); eventErr == nil && len(events) > 0 {
+			summary := buildSubagentTenantGovernanceSummary(controlPlanes, events, &database.SubagentPublicationEventFilters{Limit: 20, Offset: 0})
+			return &SubagentGovernanceResponse{
+				Events:                     events,
+				Summary:                    summary,
+				MetadataAliasFreezePreview: preview,
+				Total:                      len(events),
+				Limit:                      20,
+				Offset:                     0,
+			}, nil
+		}
+		return &SubagentGovernanceResponse{
+			Events:                     []*database.SubagentPublicationEvent{},
+			Summary:                    buildSubagentTenantGovernanceSummary(controlPlanes, nil, &database.SubagentPublicationEventFilters{Limit: 20, Offset: 0}),
+			MetadataAliasFreezePreview: preview,
+			Total:                      0,
+			Limit:                      20,
+			Offset:                     0,
+		}, nil
+	}
+
+	if !preview.Executable {
+		return nil, errors.New(firstNonEmpty(preview.BlockedReason, "metadata alias freeze is currently blocked"))
+	}
+	if preview.RequiresConfirmation && !req.Confirmed {
+		return nil, errors.New("metadata alias freeze requires confirmed=true after preview review")
+	}
+
+	if _, err := s.subagentStore.CanonicalizeSubagentMetadataAliases(preview.DefinitionIDs, tenantID, stringPtr(userID)); err != nil {
+		return nil, err
+	}
+
+	updatedControlPlanes, err := s.listSubagentControlPlanesForGovernance(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	events, total, filters, err := s.loadTenantGovernanceEventsWithRecordedFreezeEvent(tenantID, userID, updatedControlPlanes, preview)
+	if err != nil {
+		return nil, err
+	}
+	return &SubagentGovernanceResponse{
+		Events:                     events,
+		Summary:                    buildSubagentTenantGovernanceSummary(updatedControlPlanes, events, filters),
+		MetadataAliasFreezePreview: buildSubagentMetadataAliasFreezePreview(updatedControlPlanes, req),
+		Total:                      total,
+		Limit:                      filters.Limit,
+		Offset:                     filters.Offset,
+	}, nil
 }
 
 func (s *AgentService) CreateSubagentTestRun(
@@ -1338,9 +2389,6 @@ func (s *AgentService) CreateSubagentTestRun(
 	hostAgentID := strings.TrimSpace(req.AgentDefinitionID)
 	if hostAgentID == "" {
 		hostAgentID = strings.TrimSpace(controlPlane.Definition.HostAgentDefinitionID)
-	}
-	if hostAgentID == "" {
-		hostAgentID = strings.TrimSpace(controlPlane.Definition.TargetAgentDefinitionID)
 	}
 	if hostAgentID == "" {
 		return nil, errors.New("agent_definition_id is required for test run")
@@ -1405,7 +2453,6 @@ func (s *AgentService) UpdateAgentSubagents(tenantID, userID, agentID string, re
 		publicationsByID[item.PublicationID] = item
 	}
 
-	legacyDefinitionIDs := make([]string, 0, len(publicationIDs))
 	for _, publicationID := range publicationIDs {
 		subagent, ok := publicationsByID[publicationID]
 		if !ok {
@@ -1418,18 +2465,15 @@ func (s *AgentService) UpdateAgentSubagents(tenantID, userID, agentID string, re
 		if hydrated.Status != "active" {
 			return fmt.Errorf("subagent publication %s is not active", publicationID)
 		}
-		if strings.TrimSpace(hydrated.TargetAgentDefinitionID) != "" && hydrated.TargetAgentDefinitionID == agentID {
+		if strings.TrimSpace(hydrated.HostAgentDefinitionID) != "" && hydrated.HostAgentDefinitionID == agentID {
 			return fmt.Errorf("subagent publication %s cannot delegate back to the same agent definition", publicationID)
-		}
-		if strings.TrimSpace(hydrated.TargetAgentDefinitionID) != "" {
-			legacyDefinitionIDs = append(legacyDefinitionIDs, hydrated.ID)
 		}
 	}
 
 	if err := s.subagentStore.ReplaceAgentSubagentAuthorizations(agentID, publicationIDs, stringPtr(userID)); err != nil {
 		return err
 	}
-	return s.subagentStore.ReplaceAgentSubagentBindings(agentID, tenantID, legacyDefinitionIDs)
+	return nil
 }
 
 func (s *AgentService) loadSkillFromDirectory(path string) (*database.Skill, error) {
@@ -1513,11 +2557,49 @@ func (s *AgentService) ensureSystemSkillsSynced() error {
 		if err != nil {
 			return err
 		}
+		if err := validateSkillGovernance(skill); err != nil {
+			return err
+		}
 		if _, err := s.skillStore.UpsertSkill(skill); err != nil {
 			return err
 		}
 	}
 	s.systemSkillsSynced = true
+	return nil
+}
+
+func (s *AgentService) validateAgentSkillSelection(tenantID string, skillIDs []string) error {
+	if len(skillIDs) == 0 {
+		return nil
+	}
+	items, err := s.skillStore.ListSkills(tenantID)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]*database.Skill, len(items))
+	for _, item := range items {
+		if item == nil || strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		hydrated, err := hydrateSkillContract(item)
+		if err != nil {
+			return err
+		}
+		byID[item.ID] = hydrated
+	}
+	for _, skillID := range skillIDs {
+		skillID = strings.TrimSpace(skillID)
+		if skillID == "" {
+			continue
+		}
+		skill, ok := byID[skillID]
+		if !ok {
+			return fmt.Errorf("skill %s not found", skillID)
+		}
+		if err := validateSkillGovernance(skill); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1540,6 +2622,10 @@ func stringPtr(value string) *string {
 	if value == "" {
 		return nil
 	}
+	return &value
+}
+
+func timePtr(value time.Time) *time.Time {
 	return &value
 }
 
@@ -1570,20 +2656,217 @@ func appendSubagentGovernanceWarning(
 	})
 }
 
+func uniqueNonEmptyStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func buildSubagentCompatibilityAgentsFromAuthorizations(authorizations []*database.SubagentAuthorizedAgent) []*database.SubagentPublicationImpactAgent {
+	items := make([]*database.SubagentPublicationImpactAgent, 0, len(authorizations))
+	for _, authorization := range authorizations {
+		if authorization == nil {
+			continue
+		}
+		items = append(items, &database.SubagentPublicationImpactAgent{
+			AuthorizationID:     authorization.AuthorizationID,
+			AgentDefinitionID:   authorization.AgentDefinitionID,
+			AgentName:           authorization.AgentName,
+			AgentStatus:         authorization.AgentStatus,
+			AuthorizationStatus: authorization.Status,
+		})
+	}
+	return items
+}
+
+func countActiveCompatibilityAgents(agents []*database.SubagentPublicationImpactAgent) int {
+	activeCount := 0
+	for _, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(agent.AgentStatus), "active") {
+			activeCount++
+		}
+	}
+	return activeCount
+}
+
+func limitCompatibilityAgents(agents []*database.SubagentPublicationImpactAgent, limit int) []*database.SubagentPublicationImpactAgent {
+	if len(agents) <= limit {
+		return agents
+	}
+	return agents[:limit]
+}
+
+func metadataContainsLegacyHostAlias(raw json.RawMessage) bool {
+	payload := normalizeJSONObject(raw)
+	if len(payload) == 0 {
+		return false
+	}
+	return strings.TrimSpace(stringValueFromMap(payload, "target_agent_definition_id")) != "" ||
+		strings.TrimSpace(stringValueFromMap(payload, "agent_definition_id")) != ""
+}
+
+func buildSubagentMetadataAliasFreezeCandidates(controlPlanes []*database.SubagentControlPlane, definitionIDs []string) []*database.SubagentMetadataAliasFreezeCandidate {
+	selectedIDs := map[string]struct{}{}
+	for _, definitionID := range definitionIDs {
+		trimmed := strings.TrimSpace(definitionID)
+		if trimmed == "" {
+			continue
+		}
+		selectedIDs[trimmed] = struct{}{}
+	}
+
+	candidates := make([]*database.SubagentMetadataAliasFreezeCandidate, 0)
+	for _, controlPlane := range controlPlanes {
+		if controlPlane == nil || controlPlane.Definition == nil {
+			continue
+		}
+		definitionID := strings.TrimSpace(controlPlane.Definition.ID)
+		if len(selectedIDs) > 0 {
+			if _, ok := selectedIDs[definitionID]; !ok {
+				continue
+			}
+		}
+		if !metadataContainsLegacyHostAlias(controlPlane.Definition.Metadata) {
+			continue
+		}
+		hostAgentDefinitionID, _, _ := extractSubagentRuntimeMetadata(controlPlane.Definition.Metadata)
+		legacyAliasKey := ""
+		legacyAliasValue := ""
+		metadataPayload := normalizeJSONObject(controlPlane.Definition.Metadata)
+		if value := strings.TrimSpace(stringValueFromMap(metadataPayload, "target_agent_definition_id")); value != "" {
+			legacyAliasKey = "target_agent_definition_id"
+			legacyAliasValue = value
+		} else if value := strings.TrimSpace(stringValueFromMap(metadataPayload, "agent_definition_id")); value != "" {
+			legacyAliasKey = "agent_definition_id"
+			legacyAliasValue = value
+		}
+
+		candidate := &database.SubagentMetadataAliasFreezeCandidate{
+			DefinitionID:               definitionID,
+			DefinitionName:             strings.TrimSpace(controlPlane.Definition.Name),
+			DefinitionStatus:           strings.TrimSpace(controlPlane.Definition.DefinitionStatus),
+			HostAgentDefinitionID:      strings.TrimSpace(hostAgentDefinitionID),
+			LegacyAliasKey:             legacyAliasKey,
+			LegacyAliasValue:           legacyAliasValue,
+			AuthorizationCount:         len(controlPlane.Authorizations),
+			EnabledAuthorizationCount:  0,
+			InactiveAuthorizationCount: 0,
+		}
+		for _, authorization := range controlPlane.Authorizations {
+			if authorization == nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(authorization.Status), "enabled") {
+				candidate.EnabledAuthorizationCount++
+			}
+			if !strings.EqualFold(strings.TrimSpace(authorization.AgentStatus), "active") {
+				candidate.InactiveAuthorizationCount++
+			}
+		}
+		candidates = append(candidates, candidate)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].EnabledAuthorizationCount != candidates[j].EnabledAuthorizationCount {
+			return candidates[i].EnabledAuthorizationCount > candidates[j].EnabledAuthorizationCount
+		}
+		return candidates[i].DefinitionName < candidates[j].DefinitionName
+	})
+	return candidates
+}
+
+func buildSubagentMetadataAliasFreezePreview(controlPlanes []*database.SubagentControlPlane, req *SubagentMetadataAliasFreezeRequest) *database.SubagentMetadataAliasFreezePreview {
+	scope := "tenant"
+	if req != nil && strings.TrimSpace(req.Scope) != "" {
+		scope = strings.TrimSpace(req.Scope)
+	}
+	if scope != "selection" {
+		scope = "tenant"
+	}
+
+	definitionIDs := []string{}
+	if req != nil {
+		definitionIDs = req.DefinitionIDs
+	}
+	preview := &database.SubagentMetadataAliasFreezePreview{
+		Executable:           false,
+		RequiresConfirmation: false,
+		Summary:              "当前没有需要冻结的 metadata alias。",
+		Scope:                scope,
+		DefinitionIDs:        []string{},
+		RecommendedActions:   []string{},
+		AffectedCapabilities: []*database.SubagentMetadataAliasFreezeCandidate{},
+	}
+	if scope == "selection" && len(normalizeServerIDs(definitionIDs)) == 0 {
+		preview.BlockedReason = "当前还没有选中 capability，无法执行定向 metadata alias 冻结。"
+		preview.Summary = "当前选中范围为空，尚未生成 metadata alias 冻结预演。"
+		preview.RecommendedActions = append(preview.RecommendedActions, "先在左侧列表选择一个 capability，或切换到整个 tenant 范围后再执行冻结。")
+		return preview
+	}
+	candidates := buildSubagentMetadataAliasFreezeCandidates(controlPlanes, definitionIDs)
+	if len(candidates) == 0 {
+		preview.RecommendedActions = append(preview.RecommendedActions, "当前 tenant 已没有残留 metadata alias，可以继续收口 host override 并准备删除旧 bridge。")
+		return preview
+	}
+
+	preview.Executable = true
+	preview.ImpactedCapabilityCount = len(candidates)
+	preview.RequiresConfirmation = true
+	preview.AffectedCapabilities = candidates
+	for _, candidate := range candidates {
+		preview.DefinitionIDs = append(preview.DefinitionIDs, candidate.DefinitionID)
+		preview.AuthorizationCount += candidate.AuthorizationCount
+		preview.EnabledAuthorizationCount += candidate.EnabledAuthorizationCount
+		preview.InactiveAuthorizationCount += candidate.InactiveAuthorizationCount
+	}
+
+	targetLabel := "当前 tenant 内"
+	if scope == "selection" {
+		targetLabel = "当前选中范围内"
+	}
+	preview.Summary = fmt.Sprintf("%s有 %d 个 capability 仍残留 legacy metadata alias，可批量冻结为 canonical host_agent_definition_id。", targetLabel, preview.ImpactedCapabilityCount)
+	preview.ConfirmationMessage = fmt.Sprintf("该操作会直接改写 %d 个 capability definition 的 metadata，移除 target/agent alias，但不会创建新版本或改动 publication。", preview.ImpactedCapabilityCount)
+	preview.RecommendedActions = append(preview.RecommendedActions, "执行后重新检查 compatibility detail，确认 metadata alias 压力已经从 tenant 治理视图归零。")
+	if preview.EnabledAuthorizationCount > 0 {
+		preview.RecommendedActions = append(preview.RecommendedActions, fmt.Sprintf("当前仍有 %d 个 enabled authorization 依赖这些 capability，执行后应继续观察治理历史与运行时回归。", preview.EnabledAuthorizationCount))
+	}
+	if preview.InactiveAuthorizationCount > 0 {
+		preview.RecommendedActions = append(preview.RecommendedActions, "存在 inactive host agent 授权，冻结 alias 后仍建议继续清理无效授权。")
+	}
+	return preview
+}
+
 func buildSubagentGovernanceSummary(controlPlane *database.SubagentControlPlane) *database.SubagentGovernanceSummary {
 	if controlPlane == nil {
 		return nil
 	}
 
 	summary := &database.SubagentGovernanceSummary{
-		Warnings: []*database.SubagentGovernanceWarning{},
+		Warnings:             []*database.SubagentGovernanceWarning{},
+		CompatibilityDetails: []*database.SubagentCompatibilityDetail{},
 	}
 	if controlPlane.Definition != nil {
 		summary.HostAgentDefinitionID = strings.TrimSpace(controlPlane.Definition.HostAgentDefinitionID)
-		summary.CompatibilityMode = summary.HostAgentDefinitionID != ""
 	}
 	if len(controlPlane.Versions) > 0 && controlPlane.Versions[0] != nil {
 		summary.LatestVersionNumber = controlPlane.Versions[0].VersionNumber
+		if len(controlPlane.Versions) > 1 {
+			summary.RollbackCandidateCount = len(controlPlane.Versions) - 1
+			summary.HasRollbackCandidate = true
+		}
 	}
 	if controlPlane.Publication != nil {
 		summary.PublishedVersionNumber = controlPlane.Publication.VersionNumber
@@ -1605,12 +2888,25 @@ func buildSubagentGovernanceSummary(controlPlane *database.SubagentControlPlane)
 		}
 	}
 
+	if controlPlane.Definition != nil && metadataContainsLegacyHostAlias(controlPlane.Definition.Metadata) {
+		agents := buildSubagentCompatibilityAgentsFromAuthorizations(controlPlane.Authorizations)
+		summary.CompatibilityMode = true
+		summary.CompatibilityDetails = append(summary.CompatibilityDetails, &database.SubagentCompatibilityDetail{
+			Kind:                  "metadata_alias",
+			Summary:               "definition metadata 里仍残留 legacy host alias，后续删除旧 bridge 前需要先完成数据迁移。",
+			HostAgentDefinitionID: summary.HostAgentDefinitionID,
+			ReferenceKey:          "target_agent_definition_id/agent_definition_id",
+			ImpactedAgentCount:    len(agents),
+			ActiveAgentCount:      countActiveCompatibilityAgents(agents),
+			Agents:                limitCompatibilityAgents(agents, 6),
+		})
+	}
 	if summary.CompatibilityMode {
 		summary.Warnings = appendSubagentGovernanceWarning(
 			summary.Warnings,
-			"compatibility-host-override",
+			"metadata-alias-present",
 			"warning",
-			"当前 capability 仍显式绑定宿主 agent，属于兼容模式；后续应优先收口到 publication/version/authorization 语义。",
+			"definition metadata 中仍残留 legacy alias，删除旧桥后需要尽快完成 canonical 化收口。",
 		)
 	}
 	if controlPlane.Publication == nil {
@@ -1655,7 +2951,737 @@ func buildSubagentGovernanceSummary(controlPlane *database.SubagentControlPlane)
 			"当前 publication 已归档，但仍保留授权记录；请确认是否已经完成影响面收口。",
 		)
 	}
+	if controlPlane.Definition != nil && strings.TrimSpace(controlPlane.Definition.ID) != "" {
+		metadataAliasPreview := buildSubagentMetadataAliasFreezePreview([]*database.SubagentControlPlane{controlPlane}, &SubagentMetadataAliasFreezeRequest{
+			Scope:         "selection",
+			DefinitionIDs: []string{controlPlane.Definition.ID},
+		})
+		summary.MetadataAliasFreezePreview = metadataAliasPreview
+		summary.CanFreezeMetadataAliases = metadataAliasPreview != nil && metadataAliasPreview.Executable
+	}
+	summary.BridgeRemovalReadiness = buildSubagentBridgeRemovalReadiness(controlPlane, summary)
 	return summary
+}
+
+func buildSubagentBridgeRemovalReadiness(
+	controlPlane *database.SubagentControlPlane,
+	summary *database.SubagentGovernanceSummary,
+) *database.SubagentBridgeRemovalReadiness {
+	if controlPlane == nil {
+		return nil
+	}
+	if summary == nil {
+		summary = &database.SubagentGovernanceSummary{}
+	}
+
+	checklist := make([]*database.SubagentBridgeRemovalChecklistItem, 0, 4)
+	blockingIssueCount := 0
+	pendingIssueCount := 0
+	recommendedActions := make([]string, 0, 6)
+
+	appendItem := func(item *database.SubagentBridgeRemovalChecklistItem) {
+		if item == nil {
+			return
+		}
+		checklist = append(checklist, item)
+		if item.Blocking || item.Status == "blocked" {
+			blockingIssueCount++
+			recommendedActions = append(recommendedActions, item.RecommendedActions...)
+			return
+		}
+		if item.Status != "ready" {
+			pendingIssueCount++
+			recommendedActions = append(recommendedActions, item.RecommendedActions...)
+		}
+	}
+
+	metadataAliasPending := false
+	for _, detail := range summary.CompatibilityDetails {
+		if detail == nil {
+			continue
+		}
+		if detail.Kind == "metadata_alias" {
+			metadataAliasPending = true
+			break
+		}
+	}
+	metadataAliasItem := &database.SubagentBridgeRemovalChecklistItem{
+		Key:      "metadata_aliases",
+		Label:    "Metadata alias 冻结",
+		Status:   "ready",
+		Blocking: false,
+		Summary:  "definition metadata 已不再残留 target/agent alias。",
+	}
+	if metadataAliasPending {
+		metadataAliasItem.Status = "blocked"
+		metadataAliasItem.Blocking = true
+		metadataAliasItem.Summary = "definition metadata 中仍残留 legacy target/agent alias。"
+		metadataAliasItem.RecommendedActions = append(metadataAliasItem.RecommendedActions, "先执行 metadata alias freeze，把历史 metadata 收口到 canonical host_agent_definition_id。")
+	}
+	appendItem(metadataAliasItem)
+
+	publicationItem := &database.SubagentBridgeRemovalChecklistItem{
+		Key:      "publication_ready",
+		Label:    "Publication 承接能力",
+		Status:   "ready",
+		Blocking: false,
+		Summary:  "当前已有 active publication 承接授权语义。",
+	}
+	switch {
+	case controlPlane.Publication == nil:
+		publicationItem.Status = "blocked"
+		publicationItem.Blocking = true
+		publicationItem.Summary = "当前还没有 publication，删除 bridge 后将没有正式承接面。"
+		publicationItem.RecommendedActions = append(publicationItem.RecommendedActions, "先创建并激活 publication，再继续 bridge 收口。")
+	case !strings.EqualFold(controlPlane.Publication.Status, "active"):
+		publicationItem.Status = "blocked"
+		publicationItem.Blocking = true
+		publicationItem.Summary = fmt.Sprintf("当前 publication 状态为 %s，尚不适合作为 bridge 删除后的正式承接面。", firstNonEmpty(controlPlane.Publication.Status, "unknown"))
+		publicationItem.RecommendedActions = append(publicationItem.RecommendedActions, "先把 publication 调整到 active，确认授权已经指向正式版本。")
+	case !summary.IsPublishedVersionLatest:
+		publicationItem.Status = "pending"
+		publicationItem.Summary = fmt.Sprintf("当前发布停留在 v%d，最新版本为 v%d。", summary.PublishedVersionNumber, summary.LatestVersionNumber)
+		publicationItem.RecommendedActions = append(publicationItem.RecommendedActions, "bridge 删除前建议先把 publication 追平到最新稳定版本，避免同时处理兼容迁移和版本偏差。")
+	}
+	appendItem(publicationItem)
+
+	authorizationItem := &database.SubagentBridgeRemovalChecklistItem{
+		Key:      "authorization_cleanup",
+		Label:    "Authorization 收敛",
+		Status:   "ready",
+		Blocking: false,
+		Summary:  "当前 authorization 状态已收敛，没有明显的无效授权残量。",
+	}
+	if summary.AuthorizationCount == 0 {
+		authorizationItem.Status = "pending"
+		authorizationItem.Summary = "当前 publication 尚未被任何 host agent 正式授权使用。"
+		authorizationItem.RecommendedActions = append(authorizationItem.RecommendedActions, "至少确认一个正式 host agent 已通过 authorization 运行该 capability，再考虑删除 bridge。")
+	} else if summary.InactiveAuthorizationCount > 0 {
+		authorizationItem.Status = "pending"
+		authorizationItem.Summary = fmt.Sprintf("仍有 %d 个 authorization 对应 inactive host agent。", summary.InactiveAuthorizationCount)
+		authorizationItem.RecommendedActions = append(authorizationItem.RecommendedActions, "清理 inactive authorization，避免 bridge 删除后仍残留历史噪声。")
+	}
+	appendItem(authorizationItem)
+
+	runtimeItem := &database.SubagentBridgeRemovalChecklistItem{
+		Key:      "runtime_bridge_consumption",
+		Label:    "Runtime 主链路",
+		Status:   "ready",
+		Blocking: false,
+		Summary:  "runtime 主链路已停止消费旧 bridge，当前只走 publication/version/authorization。",
+	}
+	appendItem(runtimeItem)
+
+	recommendedActions = uniqueNonEmptyStrings(recommendedActions)
+	status := "ready"
+	ready := true
+	summaryText := "当前 capability 已满足删除旧 bridge 后的主要收口条件。"
+	switch {
+	case blockingIssueCount > 0:
+		status = "blocked"
+		ready = false
+		summaryText = fmt.Sprintf("当前 capability 仍有 %d 项删桥后收口阻塞项。", blockingIssueCount)
+	case pendingIssueCount > 0:
+		status = "pending"
+		ready = false
+		summaryText = fmt.Sprintf("当前 capability 已清掉硬阻塞，但仍有 %d 项收尾动作。", pendingIssueCount)
+	}
+
+	if len(recommendedActions) == 0 {
+		if ready {
+			recommendedActions = append(recommendedActions, "可以进入删桥后的最终回归验证与文档对齐。")
+		} else {
+			recommendedActions = append(recommendedActions, "继续清理删桥后的残余 metadata alias、发布偏差和无效授权。")
+		}
+	}
+
+	return &database.SubagentBridgeRemovalReadiness{
+		Status:             status,
+		Ready:              ready,
+		BlockingIssueCount: blockingIssueCount,
+		PendingIssueCount:  pendingIssueCount,
+		Summary:            summaryText,
+		RecommendedActions: recommendedActions,
+		Checklist:          checklist,
+	}
+}
+
+func buildSubagentTenantGovernanceSummary(
+	controlPlanes []*database.SubagentControlPlane,
+	events []*database.SubagentPublicationEvent,
+	filters *database.SubagentPublicationEventFilters,
+) *SubagentTenantGovernanceSummary {
+	summary := &SubagentTenantGovernanceSummary{
+		ActionTypeCounts: map[string]int{},
+		EventStageCounts: map[string]int{},
+		ChangeTypeCounts: map[string]int{},
+		RiskLevelCounts:  map[string]int{},
+		Filters:          filters,
+	}
+	for _, controlPlane := range controlPlanes {
+		if controlPlane == nil {
+			continue
+		}
+		governance := controlPlane.Governance
+		if governance == nil {
+			governance = buildSubagentGovernanceSummary(controlPlane)
+		}
+		summary.TotalCapabilities++
+		if governance == nil {
+			continue
+		}
+		if governance.CompatibilityMode {
+			summary.CompatibilityCapabilities++
+		}
+		if strings.TrimSpace(governance.HostAgentDefinitionID) != "" {
+			summary.HostOverrideCapabilities++
+		}
+		for _, detail := range governance.CompatibilityDetails {
+			if detail == nil {
+				continue
+			}
+			if detail.Kind == "metadata_alias" {
+				summary.MetadataAliasCapabilities++
+				break
+			}
+		}
+		if controlPlane.Publication == nil {
+			summary.PublicationMissingCount++
+		}
+		if !governance.IsPublishedVersionLatest {
+			summary.PublicationNotLatestCount++
+		}
+		summary.AuthorizationCount += governance.AuthorizationCount
+		summary.EnabledAuthorizationCount += governance.EnabledAuthorizationCount
+		summary.InactiveAuthorizationCount += governance.InactiveAuthorizationCount
+		if readiness := governance.BridgeRemovalReadiness; readiness != nil {
+			if readiness.Ready {
+				summary.BridgeRemovalReadyCapabilities++
+			}
+			summary.BridgeRemovalBlockedCount += readiness.BlockingIssueCount
+			summary.BridgeRemovalPendingCount += readiness.PendingIssueCount
+		}
+	}
+
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		summary.RecentEventCount++
+		actionType := firstNonEmpty(strings.TrimSpace(event.ActionType), "unknown")
+		eventStage := firstNonEmpty(strings.TrimSpace(event.EventStage), "unknown")
+		changeType := firstNonEmpty(strings.TrimSpace(event.ChangeType), "unknown")
+		riskLevel := firstNonEmpty(strings.TrimSpace(event.RiskLevel), "unknown")
+		summary.ActionTypeCounts[actionType]++
+		summary.EventStageCounts[eventStage]++
+		summary.ChangeTypeCounts[changeType]++
+		summary.RiskLevelCounts[riskLevel]++
+		if strings.EqualFold(riskLevel, "high") {
+			summary.HighRiskEventCount++
+		}
+		if event.RequiresConfirmation {
+			summary.ConfirmationRequiredEventCount++
+		}
+		if event.CompatibilityMode {
+			summary.CompatibilityEventCount++
+		}
+	}
+	return summary
+}
+
+func buildSubagentPublicationChangePreview(
+	controlPlane *database.SubagentControlPlane,
+	targetVersion *database.SubagentDefinitionVersion,
+	targetScope string,
+	targetStatus string,
+) *database.SubagentPublicationChangePreview {
+	if controlPlane == nil || targetVersion == nil {
+		return nil
+	}
+
+	currentPublication := controlPlane.Publication
+	preview := &database.SubagentPublicationChangePreview{
+		ChangeType:           "initial_publish",
+		RiskLevel:            "low",
+		RequiresConfirmation: false,
+		Current:              nil,
+		Target: &database.SubagentPublicationChangeEndpoint{
+			VersionID:           targetVersion.ID,
+			VersionNumber:       targetVersion.VersionNumber,
+			Status:              defaultString(strings.TrimSpace(targetStatus), "active"),
+			PublicationScope:    defaultString(strings.TrimSpace(targetScope), "tenant"),
+			PublicationTenantID: strings.TrimSpace(controlPlane.Definition.PublicationTenantID),
+		},
+		RecommendedActions: []string{},
+		AffectedAgents:     []*database.SubagentPublicationImpactAgent{},
+		CompatibilityMode:  controlPlane.Governance != nil && controlPlane.Governance.CompatibilityMode,
+	}
+
+	if currentPublication != nil {
+		preview.Current = &database.SubagentPublicationChangeEndpoint{
+			VersionID:           currentPublication.VersionID,
+			VersionNumber:       currentPublication.VersionNumber,
+			Status:              currentPublication.Status,
+			PublicationScope:    currentPublication.PublicationScope,
+			PublicationTenantID: currentPublication.TenantID,
+		}
+	}
+	if !preview.CompatibilityMode && controlPlane.Definition != nil {
+		preview.CompatibilityMode = strings.TrimSpace(controlPlane.Definition.HostAgentDefinitionID) != ""
+	}
+
+	switch {
+	case currentPublication == nil:
+		preview.ChangeType = "initial_publish"
+	case currentPublication.VersionID != targetVersion.ID:
+		if targetVersion.VersionNumber > currentPublication.VersionNumber {
+			preview.ChangeType = "rollout"
+		} else {
+			preview.ChangeType = "rollback"
+		}
+	case !strings.EqualFold(currentPublication.Status, preview.Target.Status):
+		preview.ChangeType = "status_change"
+	case !strings.EqualFold(currentPublication.PublicationScope, preview.Target.PublicationScope):
+		preview.ChangeType = "scope_change"
+	default:
+		preview.ChangeType = "metadata_update"
+	}
+
+	for _, authorization := range controlPlane.Authorizations {
+		if authorization == nil {
+			continue
+		}
+		preview.ImpactedAuthorizationCount++
+		if strings.EqualFold(authorization.Status, "enabled") {
+			preview.EnabledAuthorizationCount++
+		} else {
+			preview.InactiveAuthorizationCount++
+		}
+		if len(preview.AffectedAgents) < 6 {
+			preview.AffectedAgents = append(preview.AffectedAgents, &database.SubagentPublicationImpactAgent{
+				AuthorizationID:     authorization.AuthorizationID,
+				AgentDefinitionID:   authorization.AgentDefinitionID,
+				AgentName:           authorization.AgentName,
+				AgentStatus:         authorization.AgentStatus,
+				AuthorizationStatus: authorization.Status,
+			})
+		}
+	}
+
+	riskLevel := "low"
+	requiresConfirmation := false
+	recommendedActions := []string{}
+	confirmationMessage := ""
+	summary := "本次 publication 变更不会影响现有授权 agent。"
+
+	if preview.EnabledAuthorizationCount > 0 {
+		recommendedActions = append(recommendedActions, "先在控制台创建测试运行，确认目标版本行为和宿主 agent 兼容。")
+	}
+	if preview.CompatibilityMode {
+		recommendedActions = append(recommendedActions, "当前 capability 仍存在 compatibility bridge，发布完成后应继续推进 legacy binding/metadata alias 到 authorization 的迁移。")
+	}
+
+	switch preview.ChangeType {
+	case "initial_publish":
+		summary = fmt.Sprintf("即将首次发布 v%d，当前还没有正式 publication。", targetVersion.VersionNumber)
+		if preview.EnabledAuthorizationCount > 0 {
+			riskLevel = "medium"
+			requiresConfirmation = true
+			summary = fmt.Sprintf("即将首次发布 v%d，并立即作用于 %d 个已启用授权。", targetVersion.VersionNumber, preview.EnabledAuthorizationCount)
+		}
+	case "rollout":
+		summary = fmt.Sprintf("即将把 publication 从 v%d 切换到 v%d。", currentPublication.VersionNumber, targetVersion.VersionNumber)
+		if preview.EnabledAuthorizationCount > 0 {
+			riskLevel = "medium"
+			requiresConfirmation = true
+			summary = fmt.Sprintf("即将把 publication 从 v%d 切换到 v%d，影响 %d 个已启用授权。", currentPublication.VersionNumber, targetVersion.VersionNumber, preview.EnabledAuthorizationCount)
+		}
+	case "rollback":
+		riskLevel = "high"
+		requiresConfirmation = true
+		summary = fmt.Sprintf("即将把 publication 从 v%d 回滚到 v%d。", currentPublication.VersionNumber, targetVersion.VersionNumber)
+		if preview.EnabledAuthorizationCount > 0 {
+			summary = fmt.Sprintf("即将把 publication 从 v%d 回滚到 v%d，影响 %d 个已启用授权。", currentPublication.VersionNumber, targetVersion.VersionNumber, preview.EnabledAuthorizationCount)
+		}
+		recommendedActions = append(recommendedActions, "回滚前确认变更原因、已知回归点和后续重新发布计划。")
+	case "status_change":
+		summary = fmt.Sprintf("即将把 publication 状态从 %s 调整为 %s。", firstNonEmpty(currentPublication.Status, "active"), preview.Target.Status)
+		if strings.EqualFold(preview.Target.Status, "archived") || strings.EqualFold(preview.Target.Status, "disabled") {
+			riskLevel = "high"
+			requiresConfirmation = true
+			recommendedActions = append(recommendedActions, "归档或停用会影响现有授权与历史绑定兜底，请先确认影响面已完成收口。")
+			if preview.EnabledAuthorizationCount > 0 {
+				summary = fmt.Sprintf("即将把 publication 状态从 %s 调整为 %s，影响 %d 个已启用授权。", firstNonEmpty(currentPublication.Status, "active"), preview.Target.Status, preview.EnabledAuthorizationCount)
+			}
+		}
+	case "scope_change":
+		riskLevel = "medium"
+		requiresConfirmation = preview.EnabledAuthorizationCount > 0
+		summary = fmt.Sprintf("即将把 publication scope 从 %s 调整为 %s。", firstNonEmpty(currentPublication.PublicationScope, "tenant"), preview.Target.PublicationScope)
+		recommendedActions = append(recommendedActions, "调整 scope 前确认当前 tenant/全局可见性是否符合授权预期。")
+	default:
+		if preview.EnabledAuthorizationCount > 0 {
+			summary = fmt.Sprintf("即将更新当前 publication 元数据，当前有 %d 个已启用授权会继续沿用该 publication。", preview.EnabledAuthorizationCount)
+		} else {
+			summary = "即将更新当前 publication 元数据，不涉及版本切换。"
+		}
+	}
+
+	if preview.EnabledAuthorizationCount >= 3 && riskLevel == "medium" {
+		riskLevel = "high"
+	}
+	if preview.CompatibilityMode && riskLevel == "low" {
+		riskLevel = "medium"
+	}
+	if preview.ChangeType == "rollback" || strings.EqualFold(preview.Target.Status, "archived") {
+		confirmationMessage = "该操作属于高风险发布治理动作，必须确认已评估授权影响面、回滚后果和兼容层状态。"
+	} else if requiresConfirmation {
+		confirmationMessage = "该操作会影响现有授权 agent，确认前请先核对版本差异、测试运行结果和发布范围。"
+	}
+
+	if len(recommendedActions) == 0 {
+		recommendedActions = append(recommendedActions, "本次变更风险较低，但仍建议在发布后观察授权 agent 的运行结果与审计链路。")
+	}
+
+	preview.RiskLevel = riskLevel
+	preview.RequiresConfirmation = requiresConfirmation
+	preview.Summary = summary
+	preview.ConfirmationMessage = confirmationMessage
+	preview.RecommendedActions = recommendedActions
+	return preview
+}
+
+func trimJSONStringField(raw string) string {
+	return strings.TrimSpace(raw)
+}
+
+func normalizeSubagentPublicationGovernanceMetadata(raw json.RawMessage) json.RawMessage {
+	return database.NormalizeJSONRawForExport(raw, `{}`)
+}
+
+func validateSubagentPublicationGovernanceInputs(
+	preview *database.SubagentPublicationChangePreview,
+	req *SubagentPublicationUpdateRequest,
+) error {
+	if preview == nil || req == nil {
+		return nil
+	}
+	changeReason := trimJSONStringField(req.ChangeReason)
+	rollbackRecoveryPlan := trimJSONStringField(req.RollbackRecoveryPlan)
+	if preview.RequiresConfirmation && changeReason == "" {
+		return errors.New("change_reason is required for publication changes that require confirmation")
+	}
+	if (preview.ChangeType == "rollback" || strings.EqualFold(preview.Target.Status, "archived")) && rollbackRecoveryPlan == "" {
+		return errors.New("rollback_recovery_plan is required for rollback or archived publication changes")
+	}
+	return nil
+}
+
+func marshalJSONOrFallback(value any, fallback string) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(fallback)
+	}
+	return database.NormalizeJSONRawForExport(encoded, fallback)
+}
+
+func inferSubagentPublicationActionType(preview *database.SubagentPublicationChangePreview) string {
+	if preview == nil {
+		return "publication_change"
+	}
+	switch preview.ChangeType {
+	case "initial_publish":
+		return "publish"
+	case "rollout":
+		return "rollout"
+	case "rollback":
+		return "rollback"
+	case "status_change":
+		return "status_change"
+	case "scope_change":
+		return "scope_change"
+	default:
+		return "metadata_update"
+	}
+}
+
+func buildSubagentPublicationEvent(
+	tenantID string,
+	userID string,
+	definitionID string,
+	publicationID string,
+	eventStage string,
+	preview *database.SubagentPublicationChangePreview,
+	currentPublication *database.SubagentPublicationState,
+	req *SubagentPublicationUpdateRequest,
+) *database.SubagentPublicationEvent {
+	if preview == nil {
+		return nil
+	}
+	normalizedStage := strings.TrimSpace(eventStage)
+	if normalizedStage == "" {
+		normalizedStage = "executed"
+	}
+	event := &database.SubagentPublicationEvent{
+		TenantID:                   tenantID,
+		DefinitionID:               definitionID,
+		PublicationID:              strings.TrimSpace(publicationID),
+		EventStage:                 normalizedStage,
+		ActionType:                 inferSubagentPublicationActionType(preview),
+		ChangeType:                 preview.ChangeType,
+		RiskLevel:                  preview.RiskLevel,
+		RequiresConfirmation:       preview.RequiresConfirmation,
+		Confirmed:                  req != nil && req.Confirmed,
+		ImpactedAuthorizationCount: preview.ImpactedAuthorizationCount,
+		EnabledAuthorizationCount:  preview.EnabledAuthorizationCount,
+		InactiveAuthorizationCount: preview.InactiveAuthorizationCount,
+		CompatibilityMode:          preview.CompatibilityMode,
+		Summary:                    strings.TrimSpace(preview.Summary),
+		RecommendedActions:         marshalJSONOrFallback(preview.RecommendedActions, `[]`),
+		AffectedAgents:             marshalJSONOrFallback(preview.AffectedAgents, `[]`),
+		Metadata:                   normalizeSubagentPublicationGovernanceMetadata(nil),
+		ActorUserID:                stringPtr(strings.TrimSpace(userID)),
+	}
+	if preview.Target != nil {
+		event.VersionID = strings.TrimSpace(preview.Target.VersionID)
+		event.VersionNumber = preview.Target.VersionNumber
+		event.PublicationScope = strings.TrimSpace(preview.Target.PublicationScope)
+		event.Status = strings.TrimSpace(preview.Target.Status)
+	}
+	if preview.Current != nil {
+		event.PreviousVersionID = strings.TrimSpace(preview.Current.VersionID)
+		event.PreviousVersionNumber = preview.Current.VersionNumber
+		event.PreviousPublicationScope = strings.TrimSpace(preview.Current.PublicationScope)
+		event.PreviousStatus = strings.TrimSpace(preview.Current.Status)
+	}
+	if currentPublication != nil {
+		if event.PreviousVersionID == "" {
+			event.PreviousVersionID = strings.TrimSpace(currentPublication.VersionID)
+			event.PreviousVersionNumber = currentPublication.VersionNumber
+		}
+		if event.PreviousPublicationScope == "" {
+			event.PreviousPublicationScope = strings.TrimSpace(currentPublication.PublicationScope)
+		}
+		if event.PreviousStatus == "" {
+			event.PreviousStatus = strings.TrimSpace(currentPublication.Status)
+		}
+		if event.PublicationID == "" {
+			event.PublicationID = strings.TrimSpace(currentPublication.ID)
+		}
+	}
+	if req != nil {
+		event.ChangeReason = trimJSONStringField(req.ChangeReason)
+		event.ChangeNotes = trimJSONStringField(req.ChangeNotes)
+		event.RollbackRecoveryPlan = trimJSONStringField(req.RollbackRecoveryPlan)
+		event.Metadata = normalizeSubagentPublicationGovernanceMetadata(req.GovernanceMetadata)
+	}
+	if event.PublicationScope == "" {
+		event.PublicationScope = "tenant"
+	}
+	if event.PreviousPublicationScope == "" {
+		event.PreviousPublicationScope = event.PublicationScope
+	}
+	if event.Status == "" {
+		event.Status = "active"
+	}
+	if event.PreviousStatus == "" {
+		event.PreviousStatus = event.Status
+	}
+	return event
+}
+
+func buildSubagentMetadataAliasFreezeEvent(
+	tenantID string,
+	userID string,
+	preview *database.SubagentMetadataAliasFreezePreview,
+	candidate *database.SubagentMetadataAliasFreezeCandidate,
+	frozenCount int,
+	eventStage string,
+) *database.SubagentPublicationEvent {
+	if preview == nil || candidate == nil {
+		return nil
+	}
+	normalizedStage := strings.TrimSpace(eventStage)
+	if normalizedStage == "" {
+		normalizedStage = "executed"
+	}
+	riskLevel := "low"
+	if preview.EnabledAuthorizationCount > 0 {
+		riskLevel = "medium"
+	}
+	if preview.EnabledAuthorizationCount >= 3 || preview.ImpactedCapabilityCount >= 3 {
+		riskLevel = "high"
+	}
+	summary := strings.TrimSpace(preview.Summary)
+	if normalizedStage == "executed" {
+		summary = fmt.Sprintf("已冻结 %d 个 capability 的 metadata alias，legacy target/agent fallback 已收口到 canonical host_agent_definition_id。", frozenCount)
+	}
+	metadata := map[string]any{
+		"scope":                   preview.Scope,
+		"definition_ids":          preview.DefinitionIDs,
+		"frozen_capability_count": frozenCount,
+		"affected_capabilities":   preview.AffectedCapabilities,
+		"legacy_alias_key":        candidate.LegacyAliasKey,
+		"legacy_alias_value":      candidate.LegacyAliasValue,
+	}
+	if preview.BlockedReason != "" {
+		metadata["blocked_reason"] = preview.BlockedReason
+	}
+	return &database.SubagentPublicationEvent{
+		TenantID:                   tenantID,
+		DefinitionID:               candidate.DefinitionID,
+		EventStage:                 normalizedStage,
+		ActionType:                 "metadata_alias_freeze",
+		ChangeType:                 "metadata_alias_freeze",
+		RiskLevel:                  riskLevel,
+		RequiresConfirmation:       preview.RequiresConfirmation,
+		Confirmed:                  normalizedStage == "executed",
+		ImpactedAuthorizationCount: preview.AuthorizationCount,
+		EnabledAuthorizationCount:  preview.EnabledAuthorizationCount,
+		InactiveAuthorizationCount: preview.InactiveAuthorizationCount,
+		CompatibilityMode:          true,
+		Summary:                    summary,
+		ChangeReason:               "metadata alias freeze",
+		RecommendedActions:         marshalJSONOrFallback(preview.RecommendedActions, `[]`),
+		AffectedAgents:             marshalJSONOrFallback([]*database.SubagentPublicationImpactAgent{}, `[]`),
+		Metadata:                   marshalJSONOrFallback(metadata, `{}`),
+		ActorUserID:                stringPtr(strings.TrimSpace(userID)),
+	}
+}
+
+func prependSubagentPublicationEvent(controlPlane *database.SubagentControlPlane, event *database.SubagentPublicationEvent) *database.SubagentControlPlane {
+	if controlPlane == nil || event == nil {
+		return controlPlane
+	}
+	items := make([]*database.SubagentPublicationEvent, 0, len(controlPlane.Events)+1)
+	items = append(items, event)
+	for _, existing := range controlPlane.Events {
+		if existing == nil || existing.ID == event.ID {
+			continue
+		}
+		items = append(items, existing)
+		if len(items) >= 12 {
+			break
+		}
+	}
+	controlPlane.Events = items
+	return controlPlane
+}
+
+func (s *AgentService) recordSubagentPublicationEvent(
+	tenantID string,
+	userID string,
+	controlPlane *database.SubagentControlPlane,
+	currentPublication *database.SubagentPublicationState,
+	req *SubagentPublicationUpdateRequest,
+	preview *database.SubagentPublicationChangePreview,
+	eventStage string,
+) (*database.SubagentPublicationEvent, error) {
+	if s.subagentStore == nil || controlPlane == nil || controlPlane.Definition == nil {
+		return nil, nil
+	}
+	event := buildSubagentPublicationEvent(
+		tenantID,
+		userID,
+		controlPlane.Definition.ID,
+		func() string {
+			if controlPlane.Publication != nil {
+				return controlPlane.Publication.ID
+			}
+			if currentPublication != nil {
+				return currentPublication.ID
+			}
+			return ""
+		}(),
+		eventStage,
+		preview,
+		currentPublication,
+		req,
+	)
+	if event == nil {
+		return nil, nil
+	}
+	return s.subagentStore.AppendSubagentPublicationEvent(event)
+}
+
+func (s *AgentService) recordSubagentMetadataAliasFreezeEvent(
+	tenantID string,
+	userID string,
+	preview *database.SubagentMetadataAliasFreezePreview,
+	frozenCount int,
+	eventStage string,
+) ([]*database.SubagentPublicationEvent, error) {
+	if s.subagentStore == nil {
+		return nil, nil
+	}
+	events := make([]*database.SubagentPublicationEvent, 0, len(preview.AffectedCapabilities))
+	for _, candidate := range preview.AffectedCapabilities {
+		event := buildSubagentMetadataAliasFreezeEvent(tenantID, userID, preview, candidate, frozenCount, eventStage)
+		if event == nil {
+			continue
+		}
+		recorded, err := s.subagentStore.AppendSubagentPublicationEvent(event)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, recorded)
+	}
+	return events, nil
+}
+
+func (s *AgentService) loadTenantGovernanceEventsWithRecordedFreezeEvent(
+	tenantID string,
+	userID string,
+	controlPlanes []*database.SubagentControlPlane,
+	preview *database.SubagentMetadataAliasFreezePreview,
+) ([]*database.SubagentPublicationEvent, int, *database.SubagentPublicationEventFilters, error) {
+	filters := &database.SubagentPublicationEventFilters{Limit: 20, Offset: 0}
+	recordedEvents, eventErr := s.recordSubagentMetadataAliasFreezeEvent(tenantID, userID, preview, len(preview.DefinitionIDs), "executed")
+	page, err := s.subagentStore.ListTenantSubagentPublicationEvents(tenantID, filters)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	events := page.Items
+	if eventErr == nil && len(recordedEvents) > 0 {
+		for index := len(recordedEvents) - 1; index >= 0; index-- {
+			recordedEvent := recordedEvents[index]
+			found := false
+			for _, item := range events {
+				if item != nil && item.ID == recordedEvent.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				events = append([]*database.SubagentPublicationEvent{recordedEvent}, events...)
+			}
+		}
+	}
+	return events, page.Total, page.Filters, nil
+}
+
+func enrichSubagentControlPlaneGovernance(controlPlane *database.SubagentControlPlane) *database.SubagentControlPlane {
+	if controlPlane == nil {
+		return nil
+	}
+	controlPlane.Governance = buildSubagentGovernanceSummary(controlPlane)
+	if controlPlane.Governance == nil || controlPlane.Definition == nil || len(controlPlane.Versions) == 0 || controlPlane.Versions[0] == nil {
+		return controlPlane
+	}
+	targetVersion := controlPlane.Versions[0]
+	targetScope := controlPlane.Definition.PublicationScope
+	targetStatus := controlPlane.Definition.Status
+	if controlPlane.Publication != nil {
+		targetScope = firstNonEmpty(controlPlane.Publication.PublicationScope, targetScope)
+		targetStatus = firstNonEmpty(controlPlane.Publication.Status, targetStatus)
+	}
+	controlPlane.Governance.NextPublicationPreview = buildSubagentPublicationChangePreview(
+		controlPlane,
+		targetVersion,
+		targetScope,
+		targetStatus,
+	)
+	return controlPlane
 }
 
 func (s *AgentService) buildSubagentDefinitionForWrite(tenantID, userID, userRole, subagentID string, req *SubagentDefinitionUpsertRequest) (*database.SubagentDefinition, error) {
@@ -1723,7 +3749,6 @@ func (s *AgentService) buildSubagentDefinitionForWrite(tenantID, userID, userRol
 	}
 	def.PublicationTenantID = tenantID
 	def.HostAgentDefinitionID = hostAgentDefinitionID
-	def.TargetAgentDefinitionID = hostAgentDefinitionID
 	def.HandoffPrompt = handoffPrompt
 	return def, nil
 }
@@ -1737,7 +3762,6 @@ func (s *AgentService) hydrateSubagentDefinition(definition *database.SubagentDe
 		return nil, err
 	}
 	definition.HostAgentDefinitionID = hostAgentDefinitionID
-	definition.TargetAgentDefinitionID = hostAgentDefinitionID
 	definition.HandoffPrompt = handoffPrompt
 	definition.Slug = extractSubagentSlug(definition.Metadata)
 	if strings.TrimSpace(definition.PublicationScope) == "" {
@@ -2566,6 +4590,67 @@ func (s *AgentService) recordMCPServerEvent(
 	})
 }
 
+func (s *AgentService) recordMCPBulkActionAuditEvent(
+	tenantID string,
+	userID string,
+	stage string,
+	preview *MCPServerBulkActionPreview,
+	driftedServers []string,
+	failureMode string,
+	summary string,
+) (*database.MCPServerEvent, error) {
+	if s.mcpStore == nil || preview == nil {
+		return nil, nil
+	}
+	details := map[string]any{
+		"stage":                 stage,
+		"action":                preview.Action,
+		"ordered_by":            preview.OrderedBy,
+		"requires_confirmation": preview.RequiresConfirmation,
+		"selected_server_ids":   preview.SelectedServerIDs,
+		"risk_summary":          preview.RiskSummary,
+		"drifted_servers":       driftedServers,
+	}
+	if preview.GeneratedAt != nil {
+		details["generated_at"] = preview.GeneratedAt.Format(time.RFC3339Nano)
+	}
+	if preview.ExpiresAt != nil {
+		details["expires_at"] = preview.ExpiresAt.Format(time.RFC3339Nano)
+	}
+	if len(preview.Recommendations) > 0 {
+		details["recommendation_count"] = len(preview.Recommendations)
+		details["top_recommendations"] = preview.Recommendations[:minInt(len(preview.Recommendations), 5)]
+	}
+	if strings.TrimSpace(preview.PreviewToken) != "" {
+		details["preview_token_fingerprint"] = fingerprintSensitiveToken(preview.PreviewToken)
+	}
+	detailsRaw, err := json.Marshal(maskSensitiveObject(details, false))
+	if err != nil {
+		detailsRaw = json.RawMessage(`{}`)
+	}
+
+	status := "succeeded"
+	if strings.TrimSpace(failureMode) == "preview_state_drift" {
+		status = "failed"
+	}
+	var actorUserID *string
+	if strings.TrimSpace(userID) != "" {
+		actorUserID = stringPtr(userID)
+	}
+
+	return s.mcpStore.AppendServerEvent(&database.MCPServerEvent{
+		TenantID:    tenantID,
+		ServerName:  "tenant-wide MCP governance",
+		EventType:   "bulk.governance",
+		ActionType:  "bulk_" + strings.TrimSpace(stage),
+		Status:      status,
+		FailureMode: failureMode,
+		Summary:     summary,
+		Details:     detailsRaw,
+		ActorUserID: actorUserID,
+	})
+}
+
 func summarizeMCPBindingAgents(agents []*database.MCPBindingAgent) string {
 	names := make([]string, 0, len(agents))
 	for _, agent := range agents {
@@ -2592,6 +4677,15 @@ func minInt(left, right int) int {
 		return left
 	}
 	return right
+}
+
+func fingerprintSensitiveToken(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(trimmed))
+	return base64.RawURLEncoding.EncodeToString(sum[:8])
 }
 
 func mergeJSONRaw(current, incoming json.RawMessage, fallback string) json.RawMessage {
@@ -2698,10 +4792,87 @@ func maskSensitiveValue(value any, path []string, forceMaskStrings bool) any {
 		if forceMaskStrings || pathHasSensitiveKey(path) {
 			return maskedSecretValue
 		}
-		return typed
+		return maskSensitiveString(typed)
 	default:
 		return value
 	}
+}
+
+func maskSensitiveString(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return text
+	}
+
+	sanitized := sanitizeEmbeddedURLSecrets(text)
+	sanitized = bearerTokenPattern.ReplaceAllString(sanitized, "Bearer "+maskedSecretValue)
+	sanitized = basicAuthPattern.ReplaceAllString(sanitized, "Basic "+maskedSecretValue)
+	sanitized = sensitiveAssignmentPattern.ReplaceAllString(sanitized, "${1}"+maskedSecretValue)
+
+	if looksLikeJSONObject(trimmed) || looksLikeJSONArray(trimmed) {
+		var parsed any
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+			masked := maskSensitiveValue(parsed, nil, false)
+			if encoded, err := json.Marshal(masked); err == nil {
+				return string(encoded)
+			}
+		}
+	}
+	return sanitized
+}
+
+func sanitizeEmbeddedURLSecrets(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	var builder strings.Builder
+	lastIndex := 0
+	matches := regexp.MustCompile(`https?://[^\s"']+`).FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+	for _, match := range matches {
+		start := match[0]
+		end := match[1]
+		builder.WriteString(text[lastIndex:start])
+		builder.WriteString(sanitizeURLString(text[start:end]))
+		lastIndex = end
+	}
+	builder.WriteString(text[lastIndex:])
+	return builder.String()
+}
+
+func sanitizeURLString(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if parsed.User != nil {
+		username := parsed.User.Username()
+		if _, hasPassword := parsed.User.Password(); hasPassword || username != "" {
+			parsed.User = nil
+		}
+	}
+	query := parsed.Query()
+	for key, values := range query {
+		if !isSensitiveKey(key) {
+			continue
+		}
+		for index := range values {
+			values[index] = maskedSecretValue
+		}
+		query[key] = values
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func looksLikeJSONObject(text string) bool {
+	return strings.HasPrefix(text, "{") && strings.HasSuffix(text, "}")
+}
+
+func looksLikeJSONArray(text string) bool {
+	return strings.HasPrefix(text, "[") && strings.HasSuffix(text, "]")
 }
 
 func pathHasSensitiveKey(path []string) bool {
@@ -2724,6 +4895,9 @@ func isSensitiveContainerKey(key string) bool {
 
 func isSensitiveKey(key string) bool {
 	lowered := strings.ToLower(strings.TrimSpace(key))
+	if strings.Contains(lowered, "fingerprint") || strings.Contains(lowered, "hash") || strings.Contains(lowered, "checksum") {
+		return false
+	}
 	for _, token := range []string{
 		"secret",
 		"password",

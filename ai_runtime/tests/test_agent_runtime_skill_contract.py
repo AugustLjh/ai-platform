@@ -43,3 +43,19 @@ def test_derive_skill_contract_upgrades_invalid_role_prompt_to_capability_pack()
     assert contract.kind == "capability_pack"
     assert contract.has_output_schema is True
     assert any("role_prompt" in warning for warning in contract.governance_warnings)
+
+
+def test_derive_skill_contract_blocks_non_system_skill_without_explicit_contract_governance():
+    contract = derive_skill_contract(
+        slug="custom-review",
+        name="Custom Review",
+        system_prompt="review prompt",
+        output_schema=None,
+        tool_allowlist=[],
+        metadata={},
+    )
+
+    assert contract.governance_status == "blocked"
+    assert any("contract_kind" in error for error in contract.governance_errors)
+    assert any("activation_intents" in error for error in contract.governance_errors)
+    assert any("activation_phases" in error for error in contract.governance_errors)

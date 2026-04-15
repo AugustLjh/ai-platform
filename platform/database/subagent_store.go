@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -43,7 +44,6 @@ type SubagentDefinition struct {
 	VersionID               string          `json:"version_id,omitempty"`
 	VersionNumber           int             `json:"version_number,omitempty"`
 	HostAgentDefinitionID   string          `json:"host_agent_definition_id,omitempty"`
-	TargetAgentDefinitionID string          `json:"target_agent_definition_id,omitempty"`
 	HandoffPrompt           string          `json:"handoff_prompt,omitempty"`
 	CreatedBy               *string         `json:"created_by,omitempty"`
 	UpdatedBy               *string         `json:"updated_by,omitempty"`
@@ -122,11 +122,146 @@ type SubagentAuthorizedAgent struct {
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
+type SubagentPublicationChangeEndpoint struct {
+	VersionID           string `json:"version_id,omitempty"`
+	VersionNumber       int    `json:"version_number"`
+	Status              string `json:"status,omitempty"`
+	PublicationScope    string `json:"publication_scope,omitempty"`
+	PublicationTenantID string `json:"publication_tenant_id,omitempty"`
+}
+
+type SubagentPublicationImpactAgent struct {
+	AuthorizationID     string `json:"authorization_id,omitempty"`
+	AgentDefinitionID   string `json:"agent_definition_id"`
+	AgentName           string `json:"agent_name,omitempty"`
+	AgentStatus         string `json:"agent_status,omitempty"`
+	AuthorizationStatus string `json:"authorization_status,omitempty"`
+}
+
+type SubagentCompatibilityDetail struct {
+	Kind                  string                            `json:"kind"`
+	Summary               string                            `json:"summary"`
+	HostAgentDefinitionID string                            `json:"host_agent_definition_id,omitempty"`
+	ReferenceKey          string                            `json:"reference_key,omitempty"`
+	ImpactedAgentCount    int                               `json:"impacted_agent_count"`
+	ActiveAgentCount      int                               `json:"active_agent_count"`
+	Agents                []*SubagentPublicationImpactAgent `json:"agents,omitempty"`
+}
+
+type SubagentPublicationChangePreview struct {
+	ChangeType                 string                             `json:"change_type"`
+	RiskLevel                  string                             `json:"risk_level"`
+	RequiresConfirmation       bool                               `json:"requires_confirmation"`
+	Summary                    string                             `json:"summary"`
+	ConfirmationMessage        string                             `json:"confirmation_message,omitempty"`
+	Current                    *SubagentPublicationChangeEndpoint `json:"current,omitempty"`
+	Target                     *SubagentPublicationChangeEndpoint `json:"target"`
+	ImpactedAuthorizationCount int                                `json:"impacted_authorization_count"`
+	EnabledAuthorizationCount  int                                `json:"enabled_authorization_count"`
+	InactiveAuthorizationCount int                                `json:"inactive_authorization_count"`
+	CompatibilityMode          bool                               `json:"compatibility_mode"`
+	RecommendedActions         []string                           `json:"recommended_actions"`
+	AffectedAgents             []*SubagentPublicationImpactAgent  `json:"affected_agents"`
+}
+
+type SubagentMetadataAliasFreezeCandidate struct {
+	DefinitionID               string `json:"definition_id"`
+	DefinitionName             string `json:"definition_name,omitempty"`
+	DefinitionStatus           string `json:"definition_status,omitempty"`
+	HostAgentDefinitionID      string `json:"host_agent_definition_id,omitempty"`
+	LegacyAliasKey             string `json:"legacy_alias_key,omitempty"`
+	LegacyAliasValue           string `json:"legacy_alias_value,omitempty"`
+	AuthorizationCount         int    `json:"authorization_count"`
+	EnabledAuthorizationCount  int    `json:"enabled_authorization_count"`
+	InactiveAuthorizationCount int    `json:"inactive_authorization_count"`
+}
+
+type SubagentMetadataAliasFreezePreview struct {
+	Executable                 bool                                    `json:"executable"`
+	RequiresConfirmation       bool                                    `json:"requires_confirmation"`
+	Summary                    string                                  `json:"summary"`
+	ConfirmationMessage        string                                  `json:"confirmation_message,omitempty"`
+	BlockedReason              string                                  `json:"blocked_reason,omitempty"`
+	Scope                      string                                  `json:"scope"`
+	DefinitionIDs              []string                                `json:"definition_ids,omitempty"`
+	ImpactedCapabilityCount    int                                     `json:"impacted_capability_count"`
+	AuthorizationCount         int                                     `json:"authorization_count"`
+	EnabledAuthorizationCount  int                                     `json:"enabled_authorization_count"`
+	InactiveAuthorizationCount int                                     `json:"inactive_authorization_count"`
+	RecommendedActions         []string                                `json:"recommended_actions"`
+	AffectedCapabilities       []*SubagentMetadataAliasFreezeCandidate `json:"affected_capabilities"`
+}
+
+type SubagentMetadataAliasFreezeResult struct {
+	DefinitionID          string          `json:"definition_id"`
+	Metadata              json.RawMessage `json:"metadata"`
+	HostAgentDefinitionID string          `json:"host_agent_definition_id,omitempty"`
+	LegacyAliasKey        string          `json:"legacy_alias_key,omitempty"`
+	LegacyAliasValue      string          `json:"legacy_alias_value,omitempty"`
+}
+
+type SubagentPublicationEvent struct {
+	ID                         string                            `json:"id"`
+	TenantID                   string                            `json:"tenant_id"`
+	DefinitionID               string                            `json:"subagent_definition_id"`
+	DefinitionName             string                            `json:"subagent_definition_name,omitempty"`
+	DefinitionStatus           string                            `json:"subagent_definition_status,omitempty"`
+	PublicationID              string                            `json:"publication_id,omitempty"`
+	EventStage                 string                            `json:"event_stage"`
+	ActionType                 string                            `json:"action_type"`
+	ChangeType                 string                            `json:"change_type"`
+	RiskLevel                  string                            `json:"risk_level"`
+	RequiresConfirmation       bool                              `json:"requires_confirmation"`
+	Confirmed                  bool                              `json:"confirmed"`
+	VersionID                  string                            `json:"version_id,omitempty"`
+	VersionNumber              int                               `json:"version_number"`
+	PreviousVersionID          string                            `json:"previous_version_id,omitempty"`
+	PreviousVersionNumber      int                               `json:"previous_version_number"`
+	PublicationScope           string                            `json:"publication_scope,omitempty"`
+	PreviousPublicationScope   string                            `json:"previous_publication_scope,omitempty"`
+	Status                     string                            `json:"status,omitempty"`
+	PreviousStatus             string                            `json:"previous_status,omitempty"`
+	ImpactedAuthorizationCount int                               `json:"impacted_authorization_count"`
+	EnabledAuthorizationCount  int                               `json:"enabled_authorization_count"`
+	InactiveAuthorizationCount int                               `json:"inactive_authorization_count"`
+	CompatibilityMode          bool                              `json:"compatibility_mode"`
+	Summary                    string                            `json:"summary"`
+	ChangeReason               string                            `json:"change_reason,omitempty"`
+	ChangeNotes                string                            `json:"change_notes,omitempty"`
+	RollbackRecoveryPlan       string                            `json:"rollback_recovery_plan,omitempty"`
+	RecommendedActions         json.RawMessage                   `json:"recommended_actions"`
+	AffectedAgents             json.RawMessage                   `json:"affected_agents"`
+	Metadata                   json.RawMessage                   `json:"metadata"`
+	ActorUserID                *string                           `json:"actor_user_id,omitempty"`
+	ActorUserEmail             string                            `json:"actor_user_email,omitempty"`
+	CreatedAt                  time.Time                         `json:"created_at"`
+	RecommendedActionItems     []string                          `json:"-"`
+	AffectedAgentItems         []*SubagentPublicationImpactAgent `json:"-"`
+}
+
+type SubagentPublicationEventFilters struct {
+	DefinitionID      string `json:"definition_id,omitempty"`
+	ActionType        string `json:"action_type,omitempty"`
+	EventStage        string `json:"event_stage,omitempty"`
+	ChangeType        string `json:"change_type,omitempty"`
+	RiskLevel         string `json:"risk_level,omitempty"`
+	CompatibilityMode string `json:"compatibility_mode,omitempty"`
+	Limit             int    `json:"limit"`
+	Offset            int    `json:"offset"`
+}
+
+type SubagentPublicationEventPage struct {
+	Items   []*SubagentPublicationEvent      `json:"items"`
+	Total   int                              `json:"total"`
+	Filters *SubagentPublicationEventFilters `json:"filters"`
+}
+
 type SubagentControlPlane struct {
 	Definition     *SubagentDefinition          `json:"definition"`
 	Versions       []*SubagentDefinitionVersion `json:"versions"`
 	Publication    *SubagentPublicationState    `json:"publication,omitempty"`
 	Authorizations []*SubagentAuthorizedAgent   `json:"authorizations"`
+	Events         []*SubagentPublicationEvent  `json:"events,omitempty"`
 	Governance     *SubagentGovernanceSummary   `json:"governance,omitempty"`
 }
 
@@ -136,16 +271,42 @@ type SubagentGovernanceWarning struct {
 	Message  string `json:"message"`
 }
 
+type SubagentBridgeRemovalChecklistItem struct {
+	Key                string   `json:"key"`
+	Label              string   `json:"label"`
+	Status             string   `json:"status"`
+	Blocking           bool     `json:"blocking"`
+	Summary            string   `json:"summary"`
+	RecommendedActions []string `json:"recommended_actions,omitempty"`
+}
+
+type SubagentBridgeRemovalReadiness struct {
+	Status             string                                `json:"status"`
+	Ready              bool                                  `json:"ready"`
+	BlockingIssueCount int                                   `json:"blocking_issue_count"`
+	PendingIssueCount  int                                   `json:"pending_issue_count"`
+	Summary            string                                `json:"summary"`
+	RecommendedActions []string                              `json:"recommended_actions"`
+	Checklist          []*SubagentBridgeRemovalChecklistItem `json:"checklist,omitempty"`
+}
+
 type SubagentGovernanceSummary struct {
-	CompatibilityMode          bool                         `json:"compatibility_mode"`
-	HostAgentDefinitionID      string                       `json:"host_agent_definition_id,omitempty"`
-	LatestVersionNumber        int                          `json:"latest_version_number"`
-	PublishedVersionNumber     int                          `json:"published_version_number"`
-	IsPublishedVersionLatest   bool                         `json:"is_published_version_latest"`
-	AuthorizationCount         int                          `json:"authorization_count"`
-	EnabledAuthorizationCount  int                          `json:"enabled_authorization_count"`
-	InactiveAuthorizationCount int                          `json:"inactive_authorization_count"`
-	Warnings                   []*SubagentGovernanceWarning `json:"warnings"`
+	CompatibilityMode          bool                               `json:"compatibility_mode"`
+	HostAgentDefinitionID      string                             `json:"host_agent_definition_id,omitempty"`
+	CanFreezeMetadataAliases   bool                               `json:"can_freeze_metadata_aliases"`
+	CompatibilityDetails       []*SubagentCompatibilityDetail     `json:"compatibility_details,omitempty"`
+	LatestVersionNumber        int                                `json:"latest_version_number"`
+	PublishedVersionNumber     int                                `json:"published_version_number"`
+	IsPublishedVersionLatest   bool                               `json:"is_published_version_latest"`
+	AuthorizationCount         int                                `json:"authorization_count"`
+	EnabledAuthorizationCount  int                                `json:"enabled_authorization_count"`
+	InactiveAuthorizationCount int                                `json:"inactive_authorization_count"`
+	RollbackCandidateCount     int                                `json:"rollback_candidate_count"`
+	HasRollbackCandidate       bool                               `json:"has_rollback_candidate"`
+	NextPublicationPreview     *SubagentPublicationChangePreview  `json:"next_publication_preview,omitempty"`
+	MetadataAliasFreezePreview *SubagentMetadataAliasFreezePreview `json:"metadata_alias_freeze_preview,omitempty"`
+	BridgeRemovalReadiness     *SubagentBridgeRemovalReadiness    `json:"bridge_removal_readiness,omitempty"`
+	Warnings                   []*SubagentGovernanceWarning       `json:"warnings"`
 }
 
 type SubagentStore struct {
@@ -314,6 +475,55 @@ func scanSubagentAuthorizedAgent(row scanTarget) (*SubagentAuthorizedAgent, erro
 	return item, nil
 }
 
+func scanSubagentPublicationEvent(row scanTarget) (*SubagentPublicationEvent, error) {
+	item := &SubagentPublicationEvent{}
+	if err := row.Scan(
+		&item.ID,
+		&item.TenantID,
+		&item.DefinitionID,
+		&item.DefinitionName,
+		&item.DefinitionStatus,
+		&item.PublicationID,
+		&item.EventStage,
+		&item.ActionType,
+		&item.ChangeType,
+		&item.RiskLevel,
+		&item.RequiresConfirmation,
+		&item.Confirmed,
+		&item.VersionID,
+		&item.VersionNumber,
+		&item.PreviousVersionID,
+		&item.PreviousVersionNumber,
+		&item.PublicationScope,
+		&item.PreviousPublicationScope,
+		&item.Status,
+		&item.PreviousStatus,
+		&item.ImpactedAuthorizationCount,
+		&item.EnabledAuthorizationCount,
+		&item.InactiveAuthorizationCount,
+		&item.CompatibilityMode,
+		&item.Summary,
+		&item.ChangeReason,
+		&item.ChangeNotes,
+		&item.RollbackRecoveryPlan,
+		&item.RecommendedActions,
+		&item.AffectedAgents,
+		&item.Metadata,
+		&item.ActorUserID,
+		&item.ActorUserEmail,
+		&item.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if len(item.RecommendedActions) > 0 {
+		_ = json.Unmarshal(item.RecommendedActions, &item.RecommendedActionItems)
+	}
+	if len(item.AffectedAgents) > 0 {
+		_ = json.Unmarshal(item.AffectedAgents, &item.AffectedAgentItems)
+	}
+	return item, nil
+}
+
 func defaultSubagentDefinitionStatus(value string) string {
 	if value == "" {
 		return "active"
@@ -342,6 +552,13 @@ func defaultSubagentPublicationStatus(value string) string {
 	return value
 }
 
+func stringValueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 func publicationTenantValue(tenantID, scope string) any {
 	if defaultSubagentPublicationScope(scope) == "system_global" {
 		return nil
@@ -362,6 +579,75 @@ func parseJSONComparable(raw json.RawMessage, fallback string) any {
 
 func jsonRawEqual(left, right json.RawMessage, fallback string) bool {
 	return reflect.DeepEqual(parseJSONComparable(left, fallback), parseJSONComparable(right, fallback))
+}
+
+func normalizeSubagentMetadataAliases(raw json.RawMessage) (json.RawMessage, string, string, string, bool, error) {
+	payload := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, "", "", "", false, fmt.Errorf("invalid subagent metadata: %w", err)
+		}
+	}
+
+	hostAgentDefinitionID := strings.TrimSpace(stringValueFromAnyMap(payload, "host_agent_definition_id"))
+	legacyAliasKey := ""
+	legacyAliasValue := ""
+	if hostAgentDefinitionID == "" {
+		if value := strings.TrimSpace(stringValueFromAnyMap(payload, "target_agent_definition_id")); value != "" {
+			hostAgentDefinitionID = value
+			legacyAliasKey = "target_agent_definition_id"
+			legacyAliasValue = value
+		}
+	}
+	if hostAgentDefinitionID == "" {
+		if value := strings.TrimSpace(stringValueFromAnyMap(payload, "agent_definition_id")); value != "" {
+			hostAgentDefinitionID = value
+			legacyAliasKey = "agent_definition_id"
+			legacyAliasValue = value
+		}
+	}
+	if legacyAliasKey == "" {
+		if value := strings.TrimSpace(stringValueFromAnyMap(payload, "target_agent_definition_id")); value != "" {
+			legacyAliasKey = "target_agent_definition_id"
+			legacyAliasValue = value
+		} else if value := strings.TrimSpace(stringValueFromAnyMap(payload, "agent_definition_id")); value != "" {
+			legacyAliasKey = "agent_definition_id"
+			legacyAliasValue = value
+		}
+	}
+
+	beforeCanonicalHost := strings.TrimSpace(stringValueFromAnyMap(payload, "host_agent_definition_id"))
+	beforeLegacyTarget := strings.TrimSpace(stringValueFromAnyMap(payload, "target_agent_definition_id"))
+	beforeLegacyAgent := strings.TrimSpace(stringValueFromAnyMap(payload, "agent_definition_id"))
+
+	delete(payload, "target_agent_definition_id")
+	delete(payload, "agent_definition_id")
+	delete(payload, "host_agent_definition_id")
+	if hostAgentDefinitionID != "" {
+		payload["host_agent_definition_id"] = hostAgentDefinitionID
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, "", "", "", false, fmt.Errorf("failed to encode canonical subagent metadata: %w", err)
+	}
+
+	changed := beforeLegacyTarget != "" || beforeLegacyAgent != ""
+	if !changed && beforeCanonicalHost != hostAgentDefinitionID {
+		changed = true
+	}
+	return normalizeJSONRaw(encoded, `{}`), hostAgentDefinitionID, legacyAliasKey, legacyAliasValue, changed, nil
+}
+
+func stringValueFromAnyMap(payload map[string]any, key string) string {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
 }
 
 func versionEquivalent(left *SubagentDefinitionVersion, right *SubagentDefinition) bool {
@@ -666,16 +952,6 @@ func (s *SubagentStore) getPublicationStateTx(ctx context.Context, tx pgx.Tx, de
 	return item, nil
 }
 
-func (s *SubagentStore) disableSubagentBindingsTx(ctx context.Context, tx pgx.Tx, definitionID string) error {
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM agent_subagent_bindings
-		WHERE subagent_definition_id = $1
-	`, definitionID); err != nil {
-		return fmt.Errorf("failed to clear subagent bindings: %w", err)
-	}
-	return nil
-}
-
 func (s *SubagentStore) disableSubagentAuthorizationsTx(ctx context.Context, tx pgx.Tx, definitionID string) error {
 	if _, err := tx.Exec(ctx, `
 		UPDATE agent_subagent_authorizations
@@ -911,9 +1187,6 @@ func (s *SubagentStore) UpdateSubagentDefinition(def *SubagentDefinition) (*Suba
 
 	if defaultSubagentPublicationStatus(def.Status) == "archived" {
 		if err := s.disableSubagentAuthorizationsTx(ctx, tx, def.ID); err != nil {
-			return nil, err
-		}
-		if err := s.disableSubagentBindingsTx(ctx, tx, def.ID); err != nil {
 			return nil, err
 		}
 	}
@@ -1165,12 +1438,341 @@ func (s *SubagentStore) GetSubagentControlPlane(definitionID, tenantID string) (
 	if err != nil {
 		return nil, err
 	}
+	events, err := s.ListSubagentPublicationEvents(definitionID, tenantID, 12)
+	if err != nil {
+		return nil, err
+	}
 	return &SubagentControlPlane{
 		Definition:     definition,
 		Versions:       versions,
 		Publication:    publication,
 		Authorizations: authorizations,
+		Events:         events,
 	}, nil
+}
+
+func (s *SubagentStore) ListSubagentPublicationEvents(definitionID, tenantID string, limit int) ([]*SubagentPublicationEvent, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			e.id,
+			e.tenant_id,
+			e.subagent_definition_id,
+			d.name AS subagent_definition_name,
+			d.status AS subagent_definition_status,
+			COALESCE(e.publication_id::text, '') AS publication_id,
+			e.event_stage,
+			e.action_type,
+			e.change_type,
+			e.risk_level,
+			e.requires_confirmation,
+			e.confirmed,
+			COALESCE(e.version_id::text, '') AS version_id,
+			e.version_number,
+			COALESCE(e.previous_version_id::text, '') AS previous_version_id,
+			e.previous_version_number,
+			e.publication_scope,
+			e.previous_publication_scope,
+			e.status,
+			e.previous_status,
+			e.impacted_authorization_count,
+			e.enabled_authorization_count,
+			e.inactive_authorization_count,
+			e.compatibility_mode,
+			e.summary,
+			e.change_reason,
+			e.change_notes,
+			e.rollback_recovery_plan,
+			e.recommended_actions,
+			e.affected_agents,
+			e.metadata,
+			e.actor_user_id,
+			COALESCE(u.email, '') AS actor_user_email,
+			e.created_at
+		FROM subagent_publication_events e
+		INNER JOIN subagent_definitions d
+			ON d.id = e.subagent_definition_id
+		LEFT JOIN users u
+			ON u.id = e.actor_user_id
+		WHERE e.subagent_definition_id = $1
+		  AND d.tenant_id = $2
+		ORDER BY e.created_at DESC
+		LIMIT $3
+	`, definitionID, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list subagent publication events: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*SubagentPublicationEvent, 0, limit)
+	for rows.Next() {
+		item, err := scanSubagentPublicationEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan subagent publication event: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *SubagentStore) ListTenantSubagentPublicationEvents(tenantID string, filters *SubagentPublicationEventFilters) (*SubagentPublicationEventPage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	normalized := normalizeSubagentPublicationEventFilters(filters)
+	whereClauses := []string{"e.tenant_id = $1"}
+	args := []any{tenantID}
+	addStringFilter := func(column, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		args = append(args, strings.TrimSpace(value))
+		whereClauses = append(whereClauses, fmt.Sprintf("%s = $%d", column, len(args)))
+	}
+	addStringFilter("e.subagent_definition_id::text", normalized.DefinitionID)
+	addStringFilter("e.action_type", normalized.ActionType)
+	addStringFilter("e.event_stage", normalized.EventStage)
+	addStringFilter("e.change_type", normalized.ChangeType)
+	addStringFilter("e.risk_level", normalized.RiskLevel)
+	if strings.TrimSpace(normalized.CompatibilityMode) != "" {
+		args = append(args, strings.EqualFold(normalized.CompatibilityMode, "true"))
+		whereClauses = append(whereClauses, fmt.Sprintf("e.compatibility_mode = $%d", len(args)))
+	}
+	whereSQL := strings.Join(whereClauses, " AND ")
+
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM subagent_publication_events e
+		INNER JOIN subagent_definitions d
+			ON d.id = e.subagent_definition_id
+		WHERE %s
+		  AND d.tenant_id = $1
+	`, whereSQL)
+	var total int
+	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("failed to count tenant subagent publication events: %w", err)
+	}
+
+	queryArgs := append([]any{}, args...)
+	queryArgs = append(queryArgs, normalized.Limit, normalized.Offset)
+	limitPosition := len(queryArgs) - 1
+	offsetPosition := len(queryArgs)
+	query := fmt.Sprintf(`
+		SELECT
+			e.id,
+			e.tenant_id,
+			e.subagent_definition_id,
+			d.name AS subagent_definition_name,
+			d.status AS subagent_definition_status,
+			COALESCE(e.publication_id::text, '') AS publication_id,
+			e.event_stage,
+			e.action_type,
+			e.change_type,
+			e.risk_level,
+			e.requires_confirmation,
+			e.confirmed,
+			COALESCE(e.version_id::text, '') AS version_id,
+			e.version_number,
+			COALESCE(e.previous_version_id::text, '') AS previous_version_id,
+			e.previous_version_number,
+			e.publication_scope,
+			e.previous_publication_scope,
+			e.status,
+			e.previous_status,
+			e.impacted_authorization_count,
+			e.enabled_authorization_count,
+			e.inactive_authorization_count,
+			e.compatibility_mode,
+			e.summary,
+			e.change_reason,
+			e.change_notes,
+			e.rollback_recovery_plan,
+			e.recommended_actions,
+			e.affected_agents,
+			e.metadata,
+			e.actor_user_id,
+			COALESCE(u.email, '') AS actor_user_email,
+			e.created_at
+		FROM subagent_publication_events e
+		INNER JOIN subagent_definitions d
+			ON d.id = e.subagent_definition_id
+		LEFT JOIN users u
+			ON u.id = e.actor_user_id
+		WHERE %s
+		  AND d.tenant_id = $1
+		ORDER BY e.created_at DESC
+		LIMIT $%d OFFSET $%d
+	`, whereSQL, limitPosition, offsetPosition)
+
+	rows, err := s.pool.Query(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tenant subagent publication events: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*SubagentPublicationEvent, 0, normalized.Limit)
+	for rows.Next() {
+		item, err := scanSubagentPublicationEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan tenant subagent publication event: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &SubagentPublicationEventPage{
+		Items:   items,
+		Total:   total,
+		Filters: normalized,
+	}, nil
+}
+
+func normalizeSubagentPublicationEventFilters(filters *SubagentPublicationEventFilters) *SubagentPublicationEventFilters {
+	normalized := &SubagentPublicationEventFilters{}
+	if filters != nil {
+		normalized.DefinitionID = strings.TrimSpace(filters.DefinitionID)
+		normalized.ActionType = strings.TrimSpace(filters.ActionType)
+		normalized.EventStage = strings.TrimSpace(filters.EventStage)
+		normalized.ChangeType = strings.TrimSpace(filters.ChangeType)
+		normalized.RiskLevel = strings.TrimSpace(filters.RiskLevel)
+		compatibilityMode := strings.ToLower(strings.TrimSpace(filters.CompatibilityMode))
+		if compatibilityMode == "true" || compatibilityMode == "false" {
+			normalized.CompatibilityMode = compatibilityMode
+		}
+		normalized.Limit = filters.Limit
+		normalized.Offset = filters.Offset
+	}
+	if normalized.Limit <= 0 {
+		normalized.Limit = 20
+	}
+	if normalized.Limit > 100 {
+		normalized.Limit = 100
+	}
+	if normalized.Offset < 0 {
+		normalized.Offset = 0
+	}
+	return normalized
+}
+
+func (s *SubagentStore) AppendSubagentPublicationEvent(event *SubagentPublicationEvent) (*SubagentPublicationEvent, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	row := s.pool.QueryRow(ctx, `
+		INSERT INTO subagent_publication_events (
+			tenant_id,
+			subagent_definition_id,
+			publication_id,
+			event_stage,
+			action_type,
+			change_type,
+			risk_level,
+			requires_confirmation,
+			confirmed,
+			version_id,
+			version_number,
+			previous_version_id,
+			previous_version_number,
+			publication_scope,
+			previous_publication_scope,
+			status,
+			previous_status,
+			impacted_authorization_count,
+			enabled_authorization_count,
+			inactive_authorization_count,
+			compatibility_mode,
+			summary,
+			change_reason,
+			change_notes,
+			rollback_recovery_plan,
+			recommended_actions,
+			affected_agents,
+			metadata,
+			actor_user_id
+		)
+		VALUES (
+			$1, $2, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8, $9,
+			NULLIF($10, '')::uuid, $11, NULLIF($12, '')::uuid, $13, $14, $15, $16, $17,
+			$18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, NULLIF($29, '')::uuid
+		)
+		RETURNING
+			id,
+			tenant_id,
+			subagent_definition_id,
+			'' AS subagent_definition_name,
+			'' AS subagent_definition_status,
+			COALESCE(publication_id::text, '') AS publication_id,
+			event_stage,
+			action_type,
+			change_type,
+			risk_level,
+			requires_confirmation,
+			confirmed,
+			COALESCE(version_id::text, '') AS version_id,
+			version_number,
+			COALESCE(previous_version_id::text, '') AS previous_version_id,
+			previous_version_number,
+			publication_scope,
+			previous_publication_scope,
+			status,
+			previous_status,
+			impacted_authorization_count,
+			enabled_authorization_count,
+			inactive_authorization_count,
+			compatibility_mode,
+			summary,
+			change_reason,
+			change_notes,
+			rollback_recovery_plan,
+			recommended_actions,
+			affected_agents,
+			metadata,
+			actor_user_id,
+			'' AS actor_user_email,
+			created_at
+	`,
+		event.TenantID,
+		event.DefinitionID,
+		event.PublicationID,
+		event.EventStage,
+		event.ActionType,
+		event.ChangeType,
+		event.RiskLevel,
+		event.RequiresConfirmation,
+		event.Confirmed,
+		event.VersionID,
+		event.VersionNumber,
+		event.PreviousVersionID,
+		event.PreviousVersionNumber,
+		defaultSubagentPublicationScope(event.PublicationScope),
+		defaultSubagentPublicationScope(event.PreviousPublicationScope),
+		defaultSubagentPublicationStatus(event.Status),
+		defaultSubagentPublicationStatus(event.PreviousStatus),
+		event.ImpactedAuthorizationCount,
+		event.EnabledAuthorizationCount,
+		event.InactiveAuthorizationCount,
+		event.CompatibilityMode,
+		event.Summary,
+		event.ChangeReason,
+		event.ChangeNotes,
+		event.RollbackRecoveryPlan,
+		NormalizeJSONRawForExport(event.RecommendedActions, `[]`),
+		NormalizeJSONRawForExport(event.AffectedAgents, `[]`),
+		NormalizeJSONRawForExport(event.Metadata, `{}`),
+		stringValueOrEmpty(event.ActorUserID),
+	)
+	item, err := scanSubagentPublicationEvent(row)
+	if err != nil {
+		return nil, fmt.Errorf("failed to append subagent publication event: %w", err)
+	}
+	return item, nil
 }
 
 func (s *SubagentStore) CreateSubagentVersion(
@@ -1285,9 +1887,6 @@ func (s *SubagentStore) UpdateSubagentPublication(
 		if err := s.disableSubagentAuthorizationsTx(ctx, tx, definitionID); err != nil {
 			return nil, err
 		}
-		if err := s.disableSubagentBindingsTx(ctx, tx, definitionID); err != nil {
-			return nil, err
-		}
 	}
 
 	item, err := s.getPublicationStateTx(ctx, tx, definitionID, tenantID)
@@ -1346,13 +1945,6 @@ func (s *SubagentStore) DeleteSubagentDefinition(id, tenantID string) error {
 		)
 	`, id); err != nil {
 		return fmt.Errorf("failed to disable subagent authorizations: %w", err)
-	}
-
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM agent_subagent_bindings
-		WHERE subagent_definition_id = $1
-	`, id); err != nil {
-		return fmt.Errorf("failed to clear subagent bindings: %w", err)
 	}
 
 	return tx.Commit(ctx)
@@ -1417,89 +2009,81 @@ func (s *SubagentStore) ListAgentSubagentAuthorizationPublicationIDs(agentID str
 	return publicationIDs, rows.Err()
 }
 
-func (s *SubagentStore) ReplaceAgentSubagentBindings(agentID, tenantID string, subagentIDs []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *SubagentStore) CanonicalizeSubagentMetadataAliases(definitionIDs []string, tenantID string, updatedBy *string) ([]*SubagentMetadataAliasFreezeResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	normalizedIDs := normalizeStringIDs(subagentIDs)
+	normalizedIDs := normalizeStringIDs(definitionIDs)
+	if len(normalizedIDs) == 0 {
+		return []*SubagentMetadataAliasFreezeResult{}, nil
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	if len(normalizedIDs) > 0 {
-		rows, err := tx.Query(ctx, `
-			SELECT id
-			FROM subagent_definitions
-			WHERE tenant_id = $1
-			  AND status = 'active'
-			  AND id = ANY($2)
-		`, tenantID, normalizedIDs)
-		if err != nil {
-			return fmt.Errorf("failed to validate subagent bindings: %w", err)
-		}
-		defer rows.Close()
-
-		allowed := make(map[string]struct{}, len(normalizedIDs))
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				return fmt.Errorf("failed to scan allowed subagent id: %w", err)
-			}
-			allowed[id] = struct{}{}
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("failed to iterate allowed subagents: %w", err)
-		}
-		for _, id := range normalizedIDs {
-			if _, ok := allowed[id]; !ok {
-				return fmt.Errorf("subagent %s not found or inactive", id)
-			}
-		}
-	}
-
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM agent_subagent_bindings
-		WHERE agent_definition_id = $1
-	`, agentID); err != nil {
-		return fmt.Errorf("failed to clear agent subagent bindings: %w", err)
-	}
-
-	for _, subagentID := range normalizedIDs {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO agent_subagent_bindings (agent_definition_id, subagent_definition_id, metadata)
-			VALUES ($1, $2, '{}'::jsonb)
-		`, agentID, subagentID); err != nil {
-			return fmt.Errorf("failed to bind subagent %s: %w", subagentID, err)
-		}
-	}
-
-	return tx.Commit(ctx)
-}
-
-func (s *SubagentStore) ListAgentSubagentBindings(agentID string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx, `
-		SELECT subagent_definition_id
-		FROM agent_subagent_bindings
-		WHERE agent_definition_id = $1
-		ORDER BY created_at ASC
-	`, agentID)
+	rows, err := tx.Query(ctx, `
+		SELECT id, metadata
+		FROM subagent_definitions
+		WHERE tenant_id = $1
+		  AND status <> 'archived'
+		  AND id = ANY($2)
+		FOR UPDATE
+	`, tenantID, normalizedIDs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list agent subagent bindings: %w", err)
+		return nil, fmt.Errorf("failed to load subagent definitions for metadata alias freeze: %w", err)
 	}
 	defer rows.Close()
 
-	var subagentIDs []string
+	found := make(map[string]json.RawMessage, len(normalizedIDs))
 	for rows.Next() {
-		var subagentID string
-		if err := rows.Scan(&subagentID); err != nil {
-			return nil, fmt.Errorf("failed to scan agent subagent binding: %w", err)
+		var definitionID string
+		var metadata json.RawMessage
+		if err := rows.Scan(&definitionID, &metadata); err != nil {
+			return nil, fmt.Errorf("failed to scan subagent metadata candidate: %w", err)
 		}
-		subagentIDs = append(subagentIDs, subagentID)
+		found[definitionID] = metadata
 	}
-	return subagentIDs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate subagent metadata candidates: %w", err)
+	}
+
+	results := make([]*SubagentMetadataAliasFreezeResult, 0, len(normalizedIDs))
+	for _, definitionID := range normalizedIDs {
+		raw, ok := found[definitionID]
+		if !ok {
+			return nil, ErrSubagentDefinitionNotFound
+		}
+		metadata, hostAgentDefinitionID, legacyAliasKey, legacyAliasValue, changed, err := normalizeSubagentMetadataAliases(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !changed {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE subagent_definitions
+			SET
+				metadata = $3,
+				updated_by = $4,
+				updated_at = now()
+			WHERE id = $1 AND tenant_id = $2
+		`, definitionID, tenantID, metadata, nullIfPointer(updatedBy)); err != nil {
+			return nil, fmt.Errorf("failed to canonicalize subagent metadata aliases for %s: %w", definitionID, err)
+		}
+		results = append(results, &SubagentMetadataAliasFreezeResult{
+			DefinitionID:          definitionID,
+			Metadata:              metadata,
+			HostAgentDefinitionID: hostAgentDefinitionID,
+			LegacyAliasKey:        legacyAliasKey,
+			LegacyAliasValue:      legacyAliasValue,
+		})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to commit metadata alias freeze: %w", err)
+	}
+	return results, nil
 }

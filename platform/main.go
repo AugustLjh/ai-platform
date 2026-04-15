@@ -336,6 +336,22 @@ func main() {
 			guardMiddleware.Handler,
 		))
 
+	mux.Handle("/api/v1/subagents/governance",
+		chain(
+			http.HandlerFunc(subagentHandler.HandleSubagentGovernance),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/subagents/metadata-aliases/freeze",
+		chain(
+			http.HandlerFunc(subagentHandler.HandleFreezeSubagentMetadataAliases),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
 	mux.Handle("/api/v1/subagents",
 		chain(
 			http.HandlerFunc(subagentHandler.HandleSubagents),

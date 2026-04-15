@@ -171,6 +171,13 @@ async def test_subagent_registry_resolves_targets_from_agent_metadata():
                     "name": "Review Specialist",
                     "description": "Focused reviewer",
                     "status": "active",
+                },
+                "agent-other": {
+                    "id": "agent-other",
+                    "tenant_id": "tenant-1",
+                    "name": "Metadata Review Specialist",
+                    "description": "Metadata fallback reviewer",
+                    "status": "active",
                 }
             }
         )
@@ -203,7 +210,7 @@ async def test_subagent_registry_resolves_targets_from_agent_metadata():
     assert targets[0].handoff_prompt == "Perform a bounded review pass."
 
 
-async def test_subagent_registry_prefers_database_bindings_over_metadata_fallback():
+async def test_subagent_registry_ignores_legacy_database_bindings_and_uses_metadata_fallback():
     registry = SubagentRegistry(
         FakeDBPool(
             rows=[
@@ -226,6 +233,13 @@ async def test_subagent_registry_prefers_database_bindings_over_metadata_fallbac
                     "tenant_id": "tenant-1",
                     "name": "Review Specialist",
                     "description": "Focused reviewer",
+                    "status": "active",
+                },
+                "agent-other": {
+                    "id": "agent-other",
+                    "tenant_id": "tenant-1",
+                    "name": "Metadata Review Specialist",
+                    "description": "Metadata fallback reviewer",
                     "status": "active",
                 }
             }
@@ -253,9 +267,8 @@ async def test_subagent_registry_prefers_database_bindings_over_metadata_fallbac
     targets = await registry.resolve_for_definition(definition)
 
     assert len(targets) == 1
-    assert targets[0].slug == "db-reviewer"
-    assert targets[0].agent_definition_id == "agent-reviewer"
-    assert targets[0].handoff_prompt == "Review carefully."
+    assert targets[0].slug == "legacy-fallback"
+    assert targets[0].agent_definition_id == "agent-other"
 
 
 async def test_subagent_registry_resolves_authorized_managed_capability_without_target_bridge():
@@ -446,7 +459,7 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
     assert child_run["metadata"]["managed_subagent"]["tool_allowlist"] == ["calculator"]
     assert child_run["input"]["delegation"]["subagent_definition_id"] == "subagent-reviewer"
     assert "target_agent_definition_id" not in child_run["input"]["delegation"]
-    assert child_run["input"]["delegation"]["compatibility_target_agent_definition_id"] is None
+    assert "compatibility_target_agent_definition_id" not in child_run["input"]["delegation"]
     assert child_run["input"]["handoff_envelope"]["protocol_version"] == "managed-subagent.v1"
     assert child_run["input"]["handoff_envelope"]["policy_snapshot"]["target"]["publication_id"] == "pub-reviewer"
     assert child_run["input"]["handoff_envelope"]["policy_snapshot"]["review_policy"]["mode"] == "reviewer"

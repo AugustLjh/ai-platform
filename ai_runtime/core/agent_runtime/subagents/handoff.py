@@ -234,7 +234,6 @@ class SubagentHandoff:
                     "parent_run_id": parent_run.id,
                     "parent_agent_definition_id": parent_run.agent_definition_id,
                     "host_agent_definition_id": target.agent_definition_id,
-                    "compatibility_target_agent_definition_id": target.agent_definition_id,
                     "subagent_definition_id": target.subagent_definition_id,
                     "publication_id": target.publication_id,
                     "version_id": target.version_id,
@@ -306,7 +305,6 @@ class SubagentHandoff:
                 "budget_policy": target.budget_policy,
                 "metadata": target.metadata,
                 "host_agent_definition_id": target.agent_definition_id,
-                "compatibility_target_agent_definition_id": target.agent_definition_id,
             }
         return metadata
 

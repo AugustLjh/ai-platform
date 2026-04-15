@@ -353,6 +353,75 @@ test('buildArtifactsFromToolResult promotes embedded directory, document, and ar
   assert.ok(artifacts.every((artifact) => artifact.metadata.tool_call_id === 'tool-call-5'))
 })
 
+test('buildArtifactsFromToolResult supports single MCP content object with resource link metadata', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    content: {
+      type: 'resource',
+      title: 'Catalog Snapshot',
+      resource_link: 'https://example.com/catalog/snapshot.json',
+      mimeType: 'application/json',
+      text: '{"status":"ready"}',
+      annotations: { audience: ['admin'] },
+      _meta: { origin: 'catalog-refresh' }
+    }
+  }, {
+    id: 'tool-call-6',
+    stepId: 'step-6',
+    toolName: 'inspect_catalog',
+    toolKind: 'mcp'
+  }, {
+    includeAnswer: false
+  })
+
+  const codeFiles = artifacts.find((artifact) => artifact.artifactType === 'code_files')
+  assert.ok(codeFiles)
+  assert.equal(codeFiles.payload.files[0].metadata.source, 'https://example.com/catalog/snapshot.json')
+  assert.deepEqual(codeFiles.payload.files[0].metadata.annotations, { audience: ['admin'] })
+  assert.deepEqual(codeFiles.payload.files[0].metadata._meta, { origin: 'catalog-refresh' })
+})
+
+test('buildArtifactsFromToolResult promotes nested structured content from MCP content entries', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    content: [
+      {
+        type: 'resource',
+        title: 'Preview',
+        resourceLink: 'https://example.com/review/preview',
+        structuredContent: {
+          review_findings: [
+            {
+              title: 'Catalog drift',
+              severity: 'medium',
+              description: 'Tool output still exposes stale entries after refresh.'
+            }
+          ],
+          task_plan: {
+            summary: 'Tighten refresh path',
+            steps: [
+              { title: 'Invalidate stale catalog', status: 'pending' }
+            ]
+          }
+        },
+        annotations: { phase: 'post-refresh' }
+      }
+    ]
+  }, {
+    id: 'tool-call-7',
+    stepId: 'step-7',
+    toolName: 'review_catalog',
+    toolKind: 'mcp'
+  }, {
+    includeAnswer: false
+  })
+
+  const findings = artifacts.find((artifact) => artifact.artifactType === 'review_findings')
+  const plan = artifacts.find((artifact) => artifact.artifactType === 'task_plan')
+  assert.ok(findings)
+  assert.ok(plan)
+  assert.deepEqual(findings.metadata.content_metadata.annotations, { phase: 'post-refresh' })
+  assert.equal(findings.metadata.content_metadata.resourceLink, 'https://example.com/review/preview')
+})
+
 test('buildArtifactsFromToolResult parses JSON content items into task plan and findings artifacts', () => {
   const artifacts = buildArtifactsFromToolResult({
     content: [

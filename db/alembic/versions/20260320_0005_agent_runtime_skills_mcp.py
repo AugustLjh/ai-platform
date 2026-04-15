@@ -26,6 +26,7 @@ def upgrade() -> None:
             output_schema jsonb DEFAULT '{}'::jsonb NOT NULL,
             tool_allowlist jsonb DEFAULT '[]'::jsonb NOT NULL,
             metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+            contract jsonb DEFAULT '{}'::jsonb NOT NULL,
             created_at timestamp with time zone DEFAULT now() NOT NULL,
             updated_at timestamp with time zone DEFAULT now() NOT NULL,
             CONSTRAINT skills_pkey PRIMARY KEY (id),

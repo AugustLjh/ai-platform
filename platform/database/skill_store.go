@@ -69,10 +69,11 @@ func (s *SkillStore) UpsertSkill(skill *Skill) (*Skill, error) {
 				system_prompt = $6,
 				output_schema = $7,
 				tool_allowlist = $8,
-				metadata = $9
+				metadata = $9,
+				contract = $10
 			WHERE id = $1
 			RETURNING id, tenant_id, name, slug, version, description, root_path,
-			          system_prompt, output_schema, tool_allowlist, metadata, created_at, updated_at
+			          system_prompt, output_schema, tool_allowlist, metadata, contract, created_at, updated_at
 		`,
 			existingID,
 			skill.Name,
@@ -83,6 +84,7 @@ func (s *SkillStore) UpsertSkill(skill *Skill) (*Skill, error) {
 			normalizeJSONRaw(skill.OutputSchema, `{}`),
 			normalizeJSONRaw(skill.ToolAllowlist, `[]`),
 			normalizeJSONRaw(skill.Metadata, `{}`),
+			normalizeJSONRaw(skill.Contract, `{}`),
 		).Scan(
 			&row.ID,
 			&row.TenantID,
@@ -95,6 +97,7 @@ func (s *SkillStore) UpsertSkill(skill *Skill) (*Skill, error) {
 			&row.OutputSchema,
 			&row.ToolAllowlist,
 			&row.Metadata,
+			&row.Contract,
 			&row.CreatedAt,
 			&row.UpdatedAt,
 		)
@@ -102,11 +105,11 @@ func (s *SkillStore) UpsertSkill(skill *Skill) (*Skill, error) {
 		err = s.pool.QueryRow(ctx, `
 			INSERT INTO skills (
 				tenant_id, name, slug, version, description, root_path,
-				system_prompt, output_schema, tool_allowlist, metadata
+				system_prompt, output_schema, tool_allowlist, metadata, contract
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			RETURNING id, tenant_id, name, slug, version, description, root_path,
-			          system_prompt, output_schema, tool_allowlist, metadata, created_at, updated_at
+			          system_prompt, output_schema, tool_allowlist, metadata, contract, created_at, updated_at
 		`,
 			nullIfPointer(skill.TenantID),
 			skill.Name,
@@ -118,6 +121,7 @@ func (s *SkillStore) UpsertSkill(skill *Skill) (*Skill, error) {
 			normalizeJSONRaw(skill.OutputSchema, `{}`),
 			normalizeJSONRaw(skill.ToolAllowlist, `[]`),
 			normalizeJSONRaw(skill.Metadata, `{}`),
+			normalizeJSONRaw(skill.Contract, `{}`),
 		).Scan(
 			&row.ID,
 			&row.TenantID,
@@ -130,6 +134,7 @@ func (s *SkillStore) UpsertSkill(skill *Skill) (*Skill, error) {
 			&row.OutputSchema,
 			&row.ToolAllowlist,
 			&row.Metadata,
+			&row.Contract,
 			&row.CreatedAt,
 			&row.UpdatedAt,
 		)
@@ -146,7 +151,7 @@ func (s *SkillStore) ListSkills(tenantID string) ([]*Skill, error) {
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, tenant_id, name, slug, version, description, root_path,
-		       system_prompt, output_schema, tool_allowlist, metadata, created_at, updated_at
+		       system_prompt, output_schema, tool_allowlist, metadata, contract, created_at, updated_at
 		FROM skills
 		WHERE tenant_id IS NULL OR tenant_id = $1
 		ORDER BY slug ASC, version DESC
@@ -171,6 +176,7 @@ func (s *SkillStore) ListSkills(tenantID string) ([]*Skill, error) {
 			&item.OutputSchema,
 			&item.ToolAllowlist,
 			&item.Metadata,
+			&item.Contract,
 			&item.CreatedAt,
 			&item.UpdatedAt,
 		); err != nil {
@@ -188,7 +194,7 @@ func (s *SkillStore) GetSkill(id, tenantID string) (*Skill, error) {
 	item := &Skill{}
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, tenant_id, name, slug, version, description, root_path,
-		       system_prompt, output_schema, tool_allowlist, metadata, created_at, updated_at
+		       system_prompt, output_schema, tool_allowlist, metadata, contract, created_at, updated_at
 		FROM skills
 		WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2)
 	`, id, tenantID).Scan(
@@ -203,6 +209,7 @@ func (s *SkillStore) GetSkill(id, tenantID string) (*Skill, error) {
 		&item.OutputSchema,
 		&item.ToolAllowlist,
 		&item.Metadata,
+		&item.Contract,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	)

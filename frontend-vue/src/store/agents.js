@@ -11,6 +11,15 @@ import { normalizeMCPBindingUsage, normalizeMCPEvent, normalizeMCPGovernanceSumm
 import { collectRunTreeInvocations, normalizeRunTreeNode } from '@/utils/agentRunTree'
 
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
+const MCP_BULK_PREVIEW_STORAGE_KEY = 'mcp_bulk_preview_context'
+
+export const redactMCPBulkPreviewForStorage = (preview = null) => {
+  if (!preview || typeof preview !== 'object') return null
+  return {
+    ...preview,
+    previewToken: ''
+  }
+}
 
 const normalizeAgent = (raw = {}) => ({
   id: raw.id,
@@ -68,7 +77,6 @@ const normalizeSubagent = (raw = {}) => ({
   runtimePolicy: parseJSON(raw.runtime_policy || raw.runtimePolicy, {}),
   publicationMetadata: parseJSON(raw.publication_metadata || raw.publicationMetadata, {}),
   hostAgentDefinitionId: raw.host_agent_definition_id || raw.hostAgentDefinitionId || raw.target_agent_definition_id || raw.targetAgentDefinitionId || '',
-  targetAgentDefinitionId: raw.target_agent_definition_id || raw.targetAgentDefinitionId || '',
   handoffPrompt: raw.handoff_prompt || raw.handoffPrompt || '',
   createdAt: raw.created_at || raw.createdAt || null,
   updatedAt: raw.updated_at || raw.updatedAt || null,
@@ -197,7 +205,10 @@ const normalizeSkillContract = (raw = {}) => {
       ? [...contract.output_field_names]
       : fallbackOutputFields,
     surfaces,
-    governanceWarnings: Array.isArray(contract.governance_warnings) ? [...contract.governance_warnings] : []
+    governanceStatus: contract.governance_status || 'ready',
+    governanceErrors: Array.isArray(contract.governance_errors) ? [...contract.governance_errors] : [],
+    governanceWarnings: Array.isArray(contract.governance_warnings) ? [...contract.governance_warnings] : [],
+    governanceRequirements: Array.isArray(contract.governance_requirements) ? [...contract.governance_requirements] : []
   }
 }
 
@@ -308,6 +319,7 @@ export const useAgentsStore = defineStore('agents', {
     skills: [],
     mcpServers: [],
     mcpGovernanceSummary: null,
+    mcpBulkPreviewContext: parseJSON(typeof localStorage !== 'undefined' ? localStorage.getItem(MCP_BULK_PREVIEW_STORAGE_KEY) : null, null),
     subagents: [],
     loading: false,
     error: null,
@@ -877,6 +889,20 @@ export const useAgentsStore = defineStore('agents', {
         this.setError(error, 'Failed to fetch MCP servers')
         throw error
       }
+    },
+
+    setMCPBulkPreviewContext(preview = null) {
+      this.mcpBulkPreviewContext = preview || null
+      if (typeof localStorage === 'undefined') return
+      if (preview) {
+        localStorage.setItem(MCP_BULK_PREVIEW_STORAGE_KEY, JSON.stringify(redactMCPBulkPreviewForStorage(preview)))
+      } else {
+        localStorage.removeItem(MCP_BULK_PREVIEW_STORAGE_KEY)
+      }
+    },
+
+    clearMCPBulkPreviewContext() {
+      this.setMCPBulkPreviewContext(null)
     },
 
     async fetchTools(agentDefinitionId = '') {

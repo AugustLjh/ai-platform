@@ -12,7 +12,7 @@ def test_compose_for_non_plan_intent_filters_implementation_planner_from_output_
                 slug="implementation-planner",
                 name="Implementation Planner",
                 system_prompt="planner prompt",
-                metadata={"activation_intents": ["plan"], "activation_phases": ["planning", "synthesis", "output"]},
+                metadata={"system_skill": True, "contract_kind": "capability_pack", "activation_intents": ["plan"], "activation_phases": ["planning", "synthesis", "output"]},
                 output_schema={
                     "type": "object",
                     "properties": {"summary": {"type": "string"}, "steps": {"type": "array"}},
@@ -42,7 +42,7 @@ def test_compose_for_plan_intent_keeps_implementation_planner_in_output_phase():
                 slug="implementation-planner",
                 name="Implementation Planner",
                 system_prompt="planner prompt",
-                metadata={"activation_intents": ["plan"], "activation_phases": ["planning", "synthesis", "output"]},
+                metadata={"system_skill": True, "contract_kind": "capability_pack", "activation_intents": ["plan"], "activation_phases": ["planning", "synthesis", "output"]},
                 output_schema={
                     "type": "object",
                     "properties": {"summary": {"type": "string"}, "steps": {"type": "array"}},
@@ -66,13 +66,13 @@ def test_compose_for_review_intent_keeps_review_and_engineering_skills_in_synthe
                 slug="implementation-planner",
                 name="Implementation Planner",
                 system_prompt="planner prompt",
-                metadata={"activation_intents": ["plan"], "activation_phases": ["planning", "synthesis", "output"]},
+                metadata={"system_skill": True, "contract_kind": "capability_pack", "activation_intents": ["plan"], "activation_phases": ["planning", "synthesis", "output"]},
             ),
             SkillDefinition(
                 slug="code-review",
                 name="Code Review",
                 system_prompt="review prompt",
-                metadata={"activation_intents": ["review"], "activation_phases": ["planning", "synthesis", "output"]},
+                metadata={"contract_kind": "capability_pack", "activation_intents": ["review"], "activation_phases": ["planning", "synthesis", "output"]},
                 output_schema={
                     "type": "object",
                     "properties": {"summary": {"type": "string"}, "findings": {"type": "array"}},
@@ -82,7 +82,7 @@ def test_compose_for_review_intent_keeps_review_and_engineering_skills_in_synthe
                 slug="engineering",
                 name="Engineering",
                 system_prompt="engineering prompt",
-                metadata={"activation_intents": ["implement", "plan", "review"], "activation_phases": ["planning", "execution", "synthesis"]},
+                metadata={"system_skill": True, "contract_kind": "capability_pack", "activation_intents": ["implement", "plan", "review"], "activation_phases": ["planning", "execution", "synthesis"]},
             ),
         ],
         inferred_intent="review",
@@ -103,7 +103,7 @@ def test_compose_for_research_intent_keeps_kb_research_skill_in_output_phase():
                 slug="kb-research",
                 name="KB Research",
                 system_prompt="research prompt",
-                metadata={"activation_intents": ["research", "compare", "summarize"], "activation_phases": ["planning", "synthesis", "output"]},
+                metadata={"contract_kind": "capability_pack", "activation_intents": ["research", "compare", "summarize"], "activation_phases": ["planning", "synthesis", "output"]},
                 output_schema={
                     "type": "object",
                     "properties": {"summary": {"type": "string"}, "sources": {"type": "array"}},
@@ -113,7 +113,7 @@ def test_compose_for_research_intent_keeps_kb_research_skill_in_output_phase():
                 slug="code-review",
                 name="Code Review",
                 system_prompt="review prompt",
-                metadata={"activation_intents": ["review"], "activation_phases": ["planning", "synthesis", "output"]},
+                metadata={"contract_kind": "capability_pack", "activation_intents": ["review"], "activation_phases": ["planning", "synthesis", "output"]},
             ),
         ],
         inferred_intent="research",
@@ -134,14 +134,14 @@ def test_compose_for_execution_phase_only_uses_tool_allowlists():
                 name="Engineering",
                 system_prompt="engineering prompt",
                 tool_allowlist=["project_search_context"],
-                metadata={"activation_intents": ["implement"], "activation_phases": ["planning", "execution", "synthesis"]},
+                metadata={"system_skill": True, "contract_kind": "capability_pack", "activation_intents": ["implement"], "activation_phases": ["planning", "execution", "synthesis"]},
             ),
             SkillDefinition(
                 slug="code-review",
                 name="Code Review",
                 system_prompt="review prompt",
                 tool_allowlist=["knowledge_search"],
-                metadata={"activation_intents": ["review"], "activation_phases": ["planning", "synthesis", "output"]},
+                metadata={"contract_kind": "capability_pack", "activation_intents": ["review"], "activation_phases": ["planning", "synthesis", "output"]},
             ),
         ],
         inferred_intent="implement",
@@ -161,7 +161,7 @@ def test_compose_for_output_phase_merges_multiple_skill_output_schemas():
             SkillDefinition(
                 slug="implementation-planner",
                 name="Implementation Planner",
-                metadata={"activation_intents": ["plan"], "activation_phases": ["output"]},
+                metadata={"system_skill": True, "contract_kind": "capability_pack", "activation_intents": ["plan"], "activation_phases": ["output"]},
                 output_schema={
                     "type": "object",
                     "required": ["answer", "task_plan"],
@@ -179,7 +179,7 @@ def test_compose_for_output_phase_merges_multiple_skill_output_schemas():
             SkillDefinition(
                 slug="kb-research",
                 name="KB Research",
-                metadata={"activation_intents": ["plan"], "activation_phases": ["output"]},
+                metadata={"contract_kind": "capability_pack", "activation_intents": ["plan"], "activation_phases": ["output"]},
                 output_schema={
                     "type": "object",
                     "required": ["citations"],
@@ -242,7 +242,7 @@ def test_resolve_for_allowlist_keeps_fixed_bindings_and_selected_skills():
                     "system_prompt": "planner prompt",
                     "output_schema": {},
                     "tool_allowlist": [],
-                    "metadata": {"fixed_binding": True},
+                    "metadata": {"system_skill": True, "contract_kind": "capability_pack", "fixed_binding": True, "activation_intents": ["plan"], "activation_phases": ["planning", "synthesis", "output"]},
                 },
                 {
                     "id": "00000000-0000-0000-0000-000000000011",
@@ -255,7 +255,7 @@ def test_resolve_for_allowlist_keeps_fixed_bindings_and_selected_skills():
                     "system_prompt": "review prompt",
                     "output_schema": {},
                     "tool_allowlist": [],
-                    "metadata": {},
+                    "metadata": {"contract_kind": "capability_pack", "activation_intents": ["review"], "activation_phases": ["planning", "synthesis", "output"]},
                 },
                 {
                     "id": "00000000-0000-0000-0000-000000000012",
@@ -268,7 +268,7 @@ def test_resolve_for_allowlist_keeps_fixed_bindings_and_selected_skills():
                     "system_prompt": "research prompt",
                     "output_schema": {},
                     "tool_allowlist": [],
-                    "metadata": {},
+                    "metadata": {"contract_kind": "capability_pack", "activation_intents": ["research"], "activation_phases": ["planning", "synthesis", "output"]},
                 },
             ]
 
@@ -282,3 +282,34 @@ def test_resolve_for_allowlist_keeps_fixed_bindings_and_selected_skills():
     )
 
     assert [skill.slug for skill in context.skills] == ["implementation-planner", "code-review"]
+
+
+def test_compose_filters_governance_blocked_skills_and_keeps_blocked_metadata():
+    registry = SkillRegistry(db_pool=None)
+    context = registry.compose(
+        [
+            SkillDefinition(
+                slug="implementation-planner",
+                name="Implementation Planner",
+                metadata={
+                    "system_skill": True,
+                    "fixed_binding": True,
+                    "contract_kind": "capability_pack",
+                    "activation_intents": ["plan"],
+                    "activation_phases": ["planning"],
+                },
+                system_prompt="planner prompt",
+            ),
+            SkillDefinition(
+                slug="custom-review",
+                name="Custom Review",
+                system_prompt="review prompt",
+                metadata={},
+            ),
+        ]
+    )
+
+    assert [skill.slug for skill in context.skills] == ["implementation-planner"]
+    assert context.metadata["skill_slugs"] == ["implementation-planner"]
+    assert len(context.metadata["blocked_skill_contracts"]) == 1
+    assert context.metadata["blocked_skill_contracts"][0]["slug"] == "custom-review"

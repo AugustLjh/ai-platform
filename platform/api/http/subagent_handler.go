@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -54,6 +55,37 @@ func (h *SubagentHandler) HandleSubagents(w http.ResponseWriter, r *http.Request
 	default:
 		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (h *SubagentHandler) HandleSubagentGovernance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	result, err := h.agentService.GetSubagentGovernance(user.TenantID, user.Role, &database.SubagentPublicationEventFilters{
+		DefinitionID:      strings.TrimSpace(r.URL.Query().Get("definition_id")),
+		ActionType:        strings.TrimSpace(r.URL.Query().Get("action_type")),
+		EventStage:        strings.TrimSpace(r.URL.Query().Get("event_stage")),
+		ChangeType:        strings.TrimSpace(r.URL.Query().Get("change_type")),
+		RiskLevel:         strings.TrimSpace(r.URL.Query().Get("risk_level")),
+		CompatibilityMode: strings.TrimSpace(r.URL.Query().Get("compatibility_mode")),
+		Limit:             parseQueryInt(r, "limit", 20),
+		Offset:            parseQueryInt(r, "offset", 0),
+	})
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		if errors.Is(err, service.ErrAgentUnauthorized) {
+			statusCode = http.StatusForbidden
+		}
+		respondError(w, err.Error(), statusCode)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
 }
 
 func (h *SubagentHandler) HandleSubagentByID(w http.ResponseWriter, r *http.Request) {
@@ -206,6 +238,36 @@ func (h *SubagentHandler) HandleUpdateSubagentPublication(w http.ResponseWriter,
 		return
 	}
 	respondJSON(w, controlPlane, http.StatusOK)
+}
+
+func (h *SubagentHandler) HandleFreezeSubagentMetadataAliases(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req service.SubagentMetadataAliasFreezeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	result, err := h.agentService.FreezeSubagentMetadataAliases(user.TenantID, user.ID, user.Role, &req)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		switch {
+		case errors.Is(err, service.ErrAgentUnauthorized):
+			statusCode = http.StatusForbidden
+		case errors.Is(err, database.ErrSubagentDefinitionNotFound):
+			statusCode = http.StatusNotFound
+		}
+		respondError(w, err.Error(), statusCode)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
 }
 
 func (h *SubagentHandler) HandleSubagentTestRuns(w http.ResponseWriter, r *http.Request) {

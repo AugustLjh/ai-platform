@@ -394,6 +394,73 @@ def test_build_artifacts_from_tool_result_promotes_embedded_directory_document_a
     assert all(artifact["metadata"]["tool_call_id"] == "tool-call-5" for artifact in artifacts)
 
 
+def test_build_artifacts_from_tool_result_supports_single_content_object_with_resource_link_metadata():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "content": {
+                "type": "resource",
+                "title": "Catalog Snapshot",
+                "resource_link": "https://example.com/catalog/snapshot.json",
+                "mimeType": "application/json",
+                "text": '{"status":"ready"}',
+                "annotations": {"audience": ["admin"]},
+                "_meta": {"origin": "catalog-refresh"},
+            }
+        },
+        tool_name="inspect_catalog",
+        tool_kind="mcp",
+        step_id="step-6",
+        tool_call_id="tool-call-6",
+        include_answer=False,
+    )
+
+    code_files = next(artifact for artifact in artifacts if artifact["artifact_type"] == "code_files")
+    file_entry = code_files["payload"]["files"][0]
+    assert file_entry["metadata"]["source"] == "https://example.com/catalog/snapshot.json"
+    assert file_entry["metadata"]["annotations"]["audience"] == ["admin"]
+    assert file_entry["metadata"]["_meta"]["origin"] == "catalog-refresh"
+
+
+def test_build_artifacts_from_tool_result_promotes_nested_structured_content_from_mcp_entries():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "content": [
+                {
+                    "type": "resource",
+                    "title": "Preview",
+                    "resourceLink": "https://example.com/review/preview",
+                    "structuredContent": {
+                        "review_findings": [
+                            {
+                                "title": "Catalog drift",
+                                "severity": "medium",
+                                "description": "Tool output still exposes stale entries after refresh.",
+                            }
+                        ],
+                        "task_plan": {
+                            "summary": "Tighten refresh path",
+                            "steps": [{"title": "Invalidate stale catalog", "status": "pending"}],
+                        },
+                    },
+                    "annotations": {"phase": "post-refresh"},
+                }
+            ]
+        },
+        tool_name="review_catalog",
+        tool_kind="mcp",
+        step_id="step-7",
+        tool_call_id="tool-call-7",
+        include_answer=False,
+    )
+
+    artifact_types = [artifact["artifact_type"] for artifact in artifacts]
+    assert "review_findings" in artifact_types
+    assert "task_plan" in artifact_types
+    findings = next(artifact for artifact in artifacts if artifact["artifact_type"] == "review_findings")
+    assert findings["metadata"]["content_metadata"]["annotations"]["phase"] == "post-refresh"
+    assert findings["metadata"]["content_metadata"]["resourceLink"] == "https://example.com/review/preview"
+
+
 def test_build_artifacts_from_tool_result_parses_json_content_items_into_structured_artifacts():
     artifacts = build_artifacts_from_tool_result(
         {

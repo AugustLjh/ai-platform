@@ -418,6 +418,14 @@ def _normalize_inline_uri(source: str, mime_type: str = "", data: Any = None) ->
     return f"data:{str(mime_type or 'application/octet-stream').strip() or 'application/octet-stream'};base64,{data_text}"
 
 
+def _normalize_mcp_content_entries(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
 def _guess_media_kind(path: str, mime_type: str = "") -> str | None:
     normalized_mime = str(mime_type or "").strip().lower()
     if normalized_mime.startswith("image/"):
@@ -442,11 +450,16 @@ def _looks_like_resource_entry(value: Any) -> bool:
             value.get("uri"),
             value.get("url"),
             value.get("href"),
+            value.get("resource_link"),
+            value.get("resourceLink"),
             value.get("path"),
             value.get("file_path"),
             value.get("name"),
             resource_dict.get("uri"),
             resource_dict.get("url"),
+            resource_dict.get("href"),
+            resource_dict.get("resource_link"),
+            resource_dict.get("resourceLink"),
             resource_dict.get("path"),
             resource_dict.get("file_path"),
             resource_dict.get("name"),
@@ -542,8 +555,13 @@ def _normalize_media_entries(value: Any) -> list[dict[str, Any]]:
             entry.get("uri")
             or entry.get("url")
             or entry.get("href")
+            or entry.get("resource_link")
+            or entry.get("resourceLink")
             or resource_dict.get("uri")
             or resource_dict.get("url")
+            or resource_dict.get("href")
+            or resource_dict.get("resource_link")
+            or resource_dict.get("resourceLink")
             or ""
         ).strip()
         mime_type = str(
@@ -639,8 +657,13 @@ def _normalize_file_bundle_entries(value: Any) -> list[dict[str, Any]]:
             entry.get("uri")
             or entry.get("url")
             or entry.get("href")
+            or entry.get("resource_link")
+            or entry.get("resourceLink")
             or resource_dict.get("uri")
             or resource_dict.get("url")
+            or resource_dict.get("href")
+            or resource_dict.get("resource_link")
+            or resource_dict.get("resourceLink")
             or ""
         ).strip()
         mime_type = str(
@@ -1535,8 +1558,13 @@ def _extract_content_core(entry: Any, index: int) -> dict[str, Any]:
         entry.get("uri")
         or entry.get("url")
         or entry.get("href")
+        or entry.get("resource_link")
+        or entry.get("resourceLink")
         or resource_dict.get("uri")
         or resource_dict.get("url")
+        or resource_dict.get("href")
+        or resource_dict.get("resource_link")
+        or resource_dict.get("resourceLink")
         or ""
     ).strip()
     mime_type = str(
@@ -1600,6 +1628,34 @@ def _extract_content_core(entry: Any, index: int) -> dict[str, Any]:
             or resource_dict.get("sizeBytes")
             or resource_dict.get("bytes")
         ),
+        "metadata": _normalize_metadata(
+            {**resource_dict, **entry},
+            {
+                "resource",
+                "metadata",
+                "type",
+                "uri",
+                "url",
+                "href",
+                "mimeType",
+                "mime_type",
+                "path",
+                "file_path",
+                "name",
+                "title",
+                "text",
+                "content",
+                "excerpt",
+                "description",
+                "data",
+                "blob",
+                "size_bytes",
+                "sizeBytes",
+                "bytes",
+                "structured_content",
+                "structuredContent",
+            },
+        ),
     }
 
 
@@ -1612,6 +1668,7 @@ def _promote_structured_artifacts(
     tool_call_id: str | None,
     include_answer: bool,
     source: str,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     structured = build_structured_run_result(value)
     promoted: list[dict[str, Any]] = []
@@ -1629,6 +1686,7 @@ def _promote_structured_artifacts(
                     "tool_kind": tool_kind,
                     "tool_call_id": tool_call_id,
                     "promoted_to_run": True,
+                    **({"content_metadata": extra_metadata} if extra_metadata else {}),
                 },
                 "step_id": step_id or artifact.get("step_id"),
             }
@@ -1714,12 +1772,9 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
     return payload
 
 
-def _normalize_mcp_content_items(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list):
-        return []
-
-    items: list[dict[str, str]] = []
-    for index, entry in enumerate(value):
+def _normalize_mcp_content_items(value: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for index, entry in enumerate(_normalize_mcp_content_entries(value)):
         if not isinstance(entry, dict):
             text = str(entry or "").strip()
             if text:
@@ -1728,6 +1783,7 @@ def _normalize_mcp_content_items(value: Any) -> list[dict[str, str]]:
                         "title": f"Content {index + 1}",
                         "text": text,
                         "source": "",
+                        "metadata": {},
                     }
                 )
             continue
@@ -1745,7 +1801,35 @@ def _normalize_mcp_content_items(value: Any) -> list[dict[str, str]]:
             {
                 "title": str(entry.get("title") or entry.get("name") or f"Content {index + 1}").strip(),
                 "text": text,
-                "source": str(entry.get("uri") or entry.get("url") or entry.get("mimeType") or entry.get("mime_type") or "").strip(),
+                "source": str(
+                    entry.get("uri")
+                    or entry.get("url")
+                    or entry.get("href")
+                    or entry.get("resource_link")
+                    or entry.get("resourceLink")
+                    or entry.get("mimeType")
+                    or entry.get("mime_type")
+                    or ""
+                ).strip(),
+                "metadata": _normalize_metadata(
+                    entry,
+                    {
+                        "metadata",
+                        "type",
+                        "title",
+                        "name",
+                        "text",
+                        "content",
+                        "excerpt",
+                        "uri",
+                        "url",
+                        "href",
+                        "resource_link",
+                        "resourceLink",
+                        "mimeType",
+                        "mime_type",
+                    },
+                ),
             }
         )
     return items
@@ -1930,7 +2014,30 @@ def build_artifacts_from_tool_result(
     content_code_files: list[dict[str, Any]] = []
     content_media_items: list[dict[str, Any]] = []
     content_file_bundle: list[dict[str, Any]] = []
-    for index, entry in enumerate(payload.get("content") or []):
+    for index, entry in enumerate(_normalize_mcp_content_entries(payload.get("content"))):
+        core = _extract_content_core(entry, index)
+        resource_dict = entry.get("resource") if isinstance(entry, dict) and isinstance(entry.get("resource"), dict) else {}
+        for structured_candidate in (
+            entry.get("structured_content") if isinstance(entry, dict) else None,
+            entry.get("structuredContent") if isinstance(entry, dict) else None,
+            resource_dict.get("structured_content") if isinstance(resource_dict, dict) else None,
+            resource_dict.get("structuredContent") if isinstance(resource_dict, dict) else None,
+        ):
+            if structured_candidate in (None, ""):
+                continue
+            promoted.extend(
+                _promote_structured_artifacts(
+                    structured_candidate,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    step_id=step_id,
+                    tool_call_id=tool_call_id,
+                    include_answer=include_answer,
+                    source=source,
+                    extra_metadata=core.get("metadata") if isinstance(core.get("metadata"), dict) else None,
+                )
+            )
+
         embedded_artifacts = _build_embedded_resource_artifacts(
             entry,
             tool_name=tool_name,
@@ -1941,22 +2048,23 @@ def build_artifacts_from_tool_result(
         )
         if embedded_artifacts:
             promoted.extend(embedded_artifacts)
-            continue
-
-        core = _extract_content_core(entry, index)
         parsed_text = _maybe_parse_json_like(core["text"])
         if isinstance(parsed_text, (dict, list)):
-            promoted.extend(
-                _promote_structured_artifacts(
-                    parsed_text,
-                    tool_name=tool_name,
-                    tool_kind=tool_kind,
-                    step_id=step_id,
-                    tool_call_id=tool_call_id,
-                    include_answer=include_answer,
-                    source=source,
-                )
+            structured_artifacts = _promote_structured_artifacts(
+                parsed_text,
+                tool_name=tool_name,
+                tool_kind=tool_kind,
+                step_id=step_id,
+                tool_call_id=tool_call_id,
+                include_answer=include_answer,
+                source=source,
+                extra_metadata=core.get("metadata") if isinstance(core.get("metadata"), dict) else None,
             )
+            if structured_artifacts:
+                promoted.extend(structured_artifacts)
+                continue
+
+        if embedded_artifacts and not core["text"]:
             continue
 
         if core["kind"] in {"image", "video", "audio"} and core["uri"]:
@@ -1970,6 +2078,7 @@ def build_artifacts_from_tool_result(
                     "path": core["path"],
                     "source": core["source"],
                     "size_bytes": core["size_bytes"],
+                    "metadata": dict(core.get("metadata") or {}),
                 }
             )
             continue
@@ -1983,6 +2092,7 @@ def build_artifacts_from_tool_result(
                     "metadata": {
                         "source": core["source"],
                         "mime_type": core["mime_type"],
+                        **dict(core.get("metadata") or {}),
                     },
                 }
             )
@@ -1994,6 +2104,7 @@ def build_artifacts_from_tool_result(
                     "title": core["title"],
                     "text": core["text"],
                     "source": core["source"] or core["mime_type"],
+                    "metadata": dict(core.get("metadata") or {}),
                 }
             )
             continue
@@ -2009,6 +2120,7 @@ def build_artifacts_from_tool_result(
                     "description": core["description"],
                     "preview_text": "",
                     "source": core["source"],
+                    "metadata": dict(core.get("metadata") or {}),
                 }
             )
 

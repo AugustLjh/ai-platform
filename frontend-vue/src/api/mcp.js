@@ -37,6 +37,13 @@ export const mcpAPI = {
     return api.post('/api/v1/mcp/bulk-actions', payload)
   },
 
+  previewBulkAction(payload) {
+    return api.post('/api/v1/mcp/bulk-actions', {
+      ...payload,
+      preview_only: true
+    })
+  },
+
   updateAgentMCPServers(agentId, serverIds = []) {
     return api.put(`/api/v1/agents/${agentId}/mcp-servers`, {
       server_ids: serverIds

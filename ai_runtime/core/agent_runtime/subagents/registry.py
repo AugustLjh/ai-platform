@@ -192,101 +192,6 @@ class SubagentRegistry:
 
         return targets
 
-    async def _resolve_bound_targets(self, definition: AgentDefinition) -> list[SubagentTarget]:
-        if self.db_pool is None:
-            return []
-
-        rows = await self.db_pool.fetch(
-            """
-            SELECT
-                b.subagent_definition_id,
-                b.name_override,
-                b.description_override,
-                b.metadata AS binding_metadata,
-                s.name,
-                s.description,
-                s.system_prompt,
-                s.metadata
-            FROM agent_subagent_bindings b
-            INNER JOIN subagent_definitions s
-              ON s.id = b.subagent_definition_id
-            WHERE b.agent_definition_id = $1
-              AND s.tenant_id = $2
-              AND s.status = 'active'
-            ORDER BY b.created_at ASC
-            """,
-            _serialize_uuid(definition.id),
-            _serialize_uuid(definition.tenant_id),
-        )
-
-        targets: list[SubagentTarget] = []
-        seen_definition_ids: set[str] = set()
-        for row in rows:
-            subagent_metadata = row["metadata"] if isinstance(row["metadata"], dict) else {}
-            binding_metadata = row["binding_metadata"] if isinstance(row["binding_metadata"], dict) else {}
-
-            agent_definition_id = _string_metadata_value(
-                subagent_metadata,
-                "host_agent_definition_id",
-                "target_agent_definition_id",
-                "agent_definition_id",
-            )
-            if not agent_definition_id or agent_definition_id in seen_definition_ids or agent_definition_id == definition.id:
-                continue
-
-            child_definition = await self.agent_repository.get_definition(agent_definition_id, definition.tenant_id)
-            if child_definition is None or str(child_definition.get("status") or "active").strip().lower() == "archived":
-                continue
-
-            name = (
-                str(row["name_override"]).strip()
-                if row["name_override"]
-                else _string_metadata_value(binding_metadata, "name")
-                or str(row["name"] or child_definition.get("name") or agent_definition_id).strip()
-            )
-            slug = _normalize_slug(
-                _string_metadata_value(binding_metadata, "slug")
-                or _string_metadata_value(subagent_metadata, "slug")
-                or name
-                or str(row["subagent_definition_id"])
-            )
-            description = (
-                str(row["description_override"]).strip()
-                if row["description_override"]
-                else _string_metadata_value(binding_metadata, "description")
-                or str(row["description"] or child_definition.get("description") or "").strip()
-                or None
-            )
-            handoff_prompt = (
-                _string_metadata_value(binding_metadata, "handoff_prompt")
-                or _string_metadata_value(subagent_metadata, "handoff_prompt")
-                or str(row["system_prompt"] or "").strip()
-                or None
-            )
-            merged_metadata = {
-                **subagent_metadata,
-                **binding_metadata,
-                "subagent_definition_id": str(row["subagent_definition_id"]),
-            }
-            merged_metadata.pop("host_agent_definition_id", None)
-            merged_metadata.pop("target_agent_definition_id", None)
-            merged_metadata.pop("agent_definition_id", None)
-
-            targets.append(
-                SubagentTarget(
-                    slug=slug or agent_definition_id,
-                    name=name,
-                    agent_definition_id=agent_definition_id,
-                    subagent_definition_id=str(row["subagent_definition_id"]),
-                    description=description,
-                    handoff_prompt=handoff_prompt,
-                    metadata=merged_metadata,
-                )
-            )
-            seen_definition_ids.add(agent_definition_id)
-
-        return targets
-
     async def _resolve_metadata_targets(self, definition: AgentDefinition) -> list[SubagentTarget]:
         raw_items = definition.metadata.get("subagents")
         if not isinstance(raw_items, list) or not raw_items:
@@ -343,7 +248,4 @@ class SubagentRegistry:
         authorized_targets = await self._resolve_authorized_targets(definition)
         if authorized_targets:
             return authorized_targets
-        bound_targets = await self._resolve_bound_targets(definition)
-        if bound_targets:
-            return bound_targets
         return await self._resolve_metadata_targets(definition)

@@ -691,6 +691,12 @@ const normalizeMetadata = (value, excludedKeys = []) => {
   return metadata
 }
 
+const normalizeMCPContentEntries = (value) => {
+  if (Array.isArray(value)) return value
+  if (value && typeof value === 'object') return [value]
+  return []
+}
+
 const coerceInt = (value) => {
   if (value === null || value === undefined || value === '') {
     return null
@@ -816,7 +822,7 @@ const normalizeMediaItems = (value) => {
     const resource = entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)
       ? entry.resource
       : {}
-    const source = String(entry.uri || entry.url || entry.href || resource.uri || resource.url || '').trim()
+    const source = String(entry.uri || entry.url || entry.href || entry.resource_link || entry.resourceLink || resource.uri || resource.url || resource.href || resource.resource_link || resource.resourceLink || '').trim()
     const mimeType = String(entry.mimeType || entry.mime_type || resource.mimeType || resource.mime_type || '').trim()
     const path = String(entry.path || entry.file_path || resource.path || resource.file_path || resource.name || pathFromSource(source)).trim()
     const kind = guessMediaKind(path, mimeType)
@@ -851,7 +857,7 @@ const normalizeFileBundle = (value) => {
     const resource = entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)
       ? entry.resource
       : {}
-    const source = String(entry.uri || entry.url || entry.href || resource.uri || resource.url || '').trim()
+    const source = String(entry.uri || entry.url || entry.href || entry.resource_link || entry.resourceLink || resource.uri || resource.url || resource.href || resource.resource_link || resource.resourceLink || '').trim()
     const mimeType = String(entry.mimeType || entry.mime_type || resource.mimeType || resource.mime_type || '').trim()
     const path = String(entry.path || entry.file_path || resource.path || resource.file_path || resource.name || pathFromSource(source)).trim()
     if (!(source || mimeType || isNonEmptyString(entry.name) || isNonEmptyString(entry.title) || isNonEmptyString(resource.name) || isNonEmptyString(resource.title) || isNonEmptyString(entry.data) || isNonEmptyString(resource.data))) {
@@ -1527,15 +1533,15 @@ export const buildArtifactsFromStructuredResult = (value, fallbackText = '') => 
 }
 
 const normalizeMCPContentItems = (items = []) => {
-  if (!Array.isArray(items)) return []
-  return items
+  return normalizeMCPContentEntries(items)
     .map((item, index) => {
       if (!item || typeof item !== 'object') {
         return {
           kind: 'text',
           title: `Content ${index + 1}`,
           text: String(item || '').trim(),
-          source: ''
+          source: '',
+          metadata: {}
         }
       }
 
@@ -1545,7 +1551,11 @@ const normalizeMCPContentItems = (items = []) => {
           kind: 'text',
           title: item.title || '',
           text: String(item.text || '').trim(),
-          source: item.uri || item.url || ''
+          source: item.uri || item.url || item.href || item.resource_link || item.resourceLink || '',
+          metadata: normalizeMetadata(
+            item,
+            ['metadata', 'type', 'title', 'name', 'text', 'content', 'excerpt', 'uri', 'url', 'href', 'resource_link', 'resourceLink', 'mimeType', 'mime_type']
+          )
         }
       }
 
@@ -1554,7 +1564,11 @@ const normalizeMCPContentItems = (items = []) => {
         kind: itemType || 'json',
         title: item.title || item.name || `Content ${index + 1}`,
         text: payloadText.trim(),
-        source: item.uri || item.url || item.mimeType || item.mime_type || ''
+        source: item.uri || item.url || item.href || item.resource_link || item.resourceLink || item.mimeType || item.mime_type || '',
+        metadata: normalizeMetadata(
+          item,
+          ['metadata', 'type', 'title', 'name', 'text', 'content', 'excerpt', 'uri', 'url', 'href', 'resource_link', 'resourceLink', 'mimeType', 'mime_type']
+        )
       }
     })
     .filter((item) => item.text)
@@ -1649,7 +1663,7 @@ const extractContentCore = (entry, index) => {
   const resource = entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)
     ? entry.resource
     : {}
-  const source = String(entry.uri || entry.url || entry.href || resource.uri || resource.url || '').trim()
+  const source = String(entry.uri || entry.url || entry.href || entry.resource_link || entry.resourceLink || resource.uri || resource.url || resource.href || resource.resource_link || resource.resourceLink || '').trim()
   const mimeType = String(entry.mimeType || entry.mime_type || resource.mimeType || resource.mime_type || '').trim()
   const path = String(entry.path || entry.file_path || resource.path || resource.file_path || resource.name || pathFromSource(source)).trim()
 
@@ -1679,7 +1693,11 @@ const extractContentCore = (entry, index) => {
     path,
     kind: guessMediaKind(path, mimeType),
     description: String(entry.description || resource.description || '').trim(),
-    sizeBytes: coerceInt(entry.size_bytes ?? entry.sizeBytes ?? entry.bytes ?? resource.size_bytes ?? resource.sizeBytes ?? resource.bytes)
+    sizeBytes: coerceInt(entry.size_bytes ?? entry.sizeBytes ?? entry.bytes ?? resource.size_bytes ?? resource.sizeBytes ?? resource.bytes),
+    metadata: normalizeMetadata(
+      { ...resource, ...entry },
+      ['resource', 'metadata', 'type', 'uri', 'url', 'href', 'mimeType', 'mime_type', 'path', 'file_path', 'name', 'title', 'text', 'content', 'excerpt', 'description', 'data', 'blob', 'size_bytes', 'sizeBytes', 'bytes', 'structured_content', 'structuredContent']
+    )
   }
 }
 
@@ -1800,18 +1818,21 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
   const contentCodeFiles = []
   const contentMediaItems = []
   const contentFileBundle = []
-  if (Array.isArray(payload.content)) {
-    payload.content.forEach((entry, index) => {
-      const embeddedArtifacts = buildEmbeddedResourceArtifacts(entry, toolCall)
-      if (embeddedArtifacts.length > 0) {
-        promoted.push(...embeddedArtifacts)
-        return
-      }
-
+  normalizeMCPContentEntries(payload.content).forEach((entry, index) => {
       const core = extractContentCore(entry, index)
-      const parsedText = parseJSONLike(core.text)
-      if (parsedText && typeof parsedText === 'object') {
-        promoted.push(...buildArtifactsFromStructuredResult(parsedText)
+      const resource = entry && typeof entry === 'object' && !Array.isArray(entry) && entry.resource && typeof entry.resource === 'object' && !Array.isArray(entry.resource)
+        ? entry.resource
+        : {}
+      for (const structuredCandidate of [
+        entry?.structured_content,
+        entry?.structuredContent,
+        resource?.structured_content,
+        resource?.structuredContent
+      ]) {
+        if (structuredCandidate === null || structuredCandidate === undefined || structuredCandidate === '') {
+          continue
+        }
+        promoted.push(...buildArtifactsFromStructuredResult(structuredCandidate)
           .filter((artifact) => includeAnswer || artifact.artifactType !== 'answer')
           .map((artifact) => normalizeArtifact({
             ...artifact,
@@ -1823,9 +1844,42 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
               tool_name: toolName,
               tool_kind: toolKind,
               tool_call_id: toolCallId,
-              promoted_to_run: true
+              promoted_to_run: true,
+              ...(core.metadata && Object.keys(core.metadata).length > 0 ? { content_metadata: core.metadata } : {})
             }
           })))
+      }
+
+      const embeddedArtifacts = buildEmbeddedResourceArtifacts(entry, toolCall)
+      if (embeddedArtifacts.length > 0) {
+        promoted.push(...embeddedArtifacts)
+      }
+
+      const parsedText = parseJSONLike(core.text)
+      if (parsedText && typeof parsedText === 'object') {
+        const structuredArtifacts = buildArtifactsFromStructuredResult(parsedText)
+          .filter((artifact) => includeAnswer || artifact.artifactType !== 'answer')
+          .map((artifact) => normalizeArtifact({
+            ...artifact,
+            step_id: stepId || artifact.stepId || artifact.step_id || '',
+            name: buildToolArtifactName(toolName, artifact.name, 'Result'),
+            metadata: {
+              ...artifact.metadata,
+              source: 'tool_call',
+              tool_name: toolName,
+              tool_kind: toolKind,
+              tool_call_id: toolCallId,
+              promoted_to_run: true,
+              ...(core.metadata && Object.keys(core.metadata).length > 0 ? { content_metadata: core.metadata } : {})
+            }
+          }))
+        if (structuredArtifacts.length > 0) {
+          promoted.push(...structuredArtifacts)
+          return
+        }
+      }
+
+      if (embeddedArtifacts.length > 0 && !core.text) {
         return
       }
 
@@ -1838,7 +1892,8 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
           alt: core.description || core.title,
           path: core.path,
           source: core.source,
-          size_bytes: core.sizeBytes
+          size_bytes: core.sizeBytes,
+          metadata: core.metadata
         })
         return
       }
@@ -1850,7 +1905,8 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
           content: core.text,
           metadata: {
             source: core.source,
-            mime_type: core.mimeType
+            mime_type: core.mimeType,
+            ...core.metadata
           }
         })
         return
@@ -1860,7 +1916,8 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
         contentItems.push({
           title: core.title,
           text: core.text,
-          source: core.source || core.mimeType
+          source: core.source || core.mimeType,
+          metadata: core.metadata
         })
         return
       }
@@ -1874,11 +1931,11 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
           size_bytes: core.sizeBytes,
           description: core.description,
           preview_text: '',
-          source: core.source
+          source: core.source,
+          metadata: core.metadata
         })
       }
     })
-  }
 
   if (contentCodeFiles.length > 0) {
     promoted.push(normalizeArtifact({
@@ -1967,7 +2024,8 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
           items: fallbackContentItems.map((item) => ({
             title: item.title,
             text: item.text,
-            source: item.source
+            source: item.source,
+            metadata: item.metadata || {}
           }))
         },
         metadata: {

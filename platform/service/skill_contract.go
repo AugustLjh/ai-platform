@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -13,6 +15,11 @@ var allowedSkillPhases = map[string]struct{}{
 	"execution": {},
 	"synthesis": {},
 	"output":    {},
+}
+
+var allowedSkillContractKinds = map[string]struct{}{
+	"capability_pack": {},
+	"role_prompt":     {},
 }
 
 func hydrateSkillContract(skill *database.Skill) (*database.Skill, error) {
@@ -54,9 +61,10 @@ func buildSkillContract(skill *database.Skill, metadata map[string]any) map[stri
 	toolAllowlist := normalizeToolAllowlist(skill.ToolAllowlist)
 	outputFieldNames, hasOutputSchema := outputSchemaFieldNames(skill.OutputSchema)
 	hasSystemPrompt := strings.TrimSpace(skill.SystemPrompt) != ""
+	isSystemSkill := boolValue(metadata["system_skill"])
 
 	requestedKind := normalizeString(metadata["contract_kind"])
-	if requestedKind != "capability_pack" && requestedKind != "role_prompt" {
+	if _, ok := allowedSkillContractKinds[requestedKind]; !ok {
 		requestedKind = ""
 	}
 	derivedKind := requestedKind
@@ -86,6 +94,8 @@ func buildSkillContract(skill *database.Skill, metadata map[string]any) map[stri
 	}
 
 	warnings := make([]string, 0, 4)
+	errors := make([]string, 0, 6)
+	requirements := make([]string, 0, 6)
 	if requestedKind == "role_prompt" && derivedKind != requestedKind {
 		warnings = append(warnings, "role_prompt 不能同时声明 tool_allowlist、managed_tool_kinds 或 output_schema，已按 capability_pack 解释。")
 	}
@@ -94,12 +104,34 @@ func buildSkillContract(skill *database.Skill, metadata map[string]any) map[stri
 	}
 	if derivedKind == "capability_pack" && len(surfaces) == 0 {
 		warnings = append(warnings, "capability_pack 没有声明 prompt、tools 或 output surface，契约为空。")
+		errors = append(errors, "skill contract 必须至少声明一个执行 surface，当前缺少 prompt、tools 和 output_schema。")
+		requirements = append(requirements, "为 capability_pack 至少补一个 surface：system_prompt、tool_allowlist/managed_tool_kinds 或 output_schema。")
 	}
 	if len(activationIntents) == 0 {
 		warnings = append(warnings, "未声明 activation_intents，当前将按所有意图生效。")
+		if !isSystemSkill {
+			errors = append(errors, "非系统 skill 必须显式声明 activation_intents，避免默认对所有意图生效。")
+			requirements = append(requirements, "在 metadata 中声明 activation_intents，限定 skill 的适用意图。")
+		}
 	}
 	if len(activationPhases) == 0 {
 		warnings = append(warnings, "未声明 activation_phases，当前将按所有阶段生效。")
+		if !isSystemSkill {
+			errors = append(errors, "非系统 skill 必须显式声明 activation_phases，避免默认对所有执行阶段生效。")
+			requirements = append(requirements, "在 metadata 中声明 activation_phases，限定 skill 的生效阶段。")
+		}
+	}
+	if requestedKind == "" && !isSystemSkill {
+		errors = append(errors, "非系统 skill 必须显式声明 contract_kind。")
+		requirements = append(requirements, "在 metadata 中声明 contract_kind，明确该 skill 是 capability_pack 还是 role_prompt。")
+	}
+	if len(managedToolKinds) > 0 && len(toolAllowlist) > 0 {
+		errors = append(errors, "skill contract 不能同时声明 managed_tool_kinds 和 tool_allowlist。")
+		requirements = append(requirements, "二选一：由 provider 托管工具种类，或显式声明 tool_allowlist。")
+	}
+	if skillBindingMode(skill, metadata) == "fixed" && !isSystemSkill && !strings.EqualFold(strings.TrimSpace(skill.Slug), fallbackFixedSkillSlug) {
+		errors = append(errors, "只有系统 skill 才允许 fixed binding。")
+		requirements = append(requirements, "移除 fixed_binding，或把该 skill 明确纳入系统固定能力。")
 	}
 
 	capabilityType := strings.TrimSpace(stringValue(metadata["capability_type"]))
@@ -111,24 +143,67 @@ func buildSkillContract(skill *database.Skill, metadata map[string]any) map[stri
 		displayName = strings.TrimSpace(skill.Slug)
 	}
 
-	return map[string]any{
-		"kind":                derivedKind,
-		"capability_type":     strings.ToLower(capabilityType),
-		"display_name":        displayName,
-		"binding_mode":        skillBindingMode(skill, metadata),
-		"system_skill":        boolValue(metadata["system_skill"]),
-		"activation_intents":  activationIntents,
-		"activation_phases":   activationPhases,
-		"intent_policy":       ternaryString(len(activationIntents) > 0, "explicit", "all"),
-		"phase_policy":        ternaryString(len(activationPhases) > 0, "explicit", "all"),
-		"has_system_prompt":   hasSystemPrompt,
-		"tool_policy_mode":    toolPolicyMode,
-		"managed_tool_kinds":  managedToolKinds,
-		"has_output_schema":   hasOutputSchema,
-		"output_field_names":  outputFieldNames,
-		"surfaces":            surfaces,
-		"governance_warnings": warnings,
+	governanceStatus := "ready"
+	if len(errors) > 0 {
+		governanceStatus = "blocked"
+	} else if len(warnings) > 0 {
+		governanceStatus = "warning"
 	}
+
+	return map[string]any{
+		"kind":                    derivedKind,
+		"capability_type":         strings.ToLower(capabilityType),
+		"display_name":            displayName,
+		"binding_mode":            skillBindingMode(skill, metadata),
+		"system_skill":            isSystemSkill,
+		"activation_intents":      activationIntents,
+		"activation_phases":       activationPhases,
+		"intent_policy":           ternaryString(len(activationIntents) > 0, "explicit", "all"),
+		"phase_policy":            ternaryString(len(activationPhases) > 0, "explicit", "all"),
+		"has_system_prompt":       hasSystemPrompt,
+		"tool_policy_mode":        toolPolicyMode,
+		"managed_tool_kinds":      managedToolKinds,
+		"has_output_schema":       hasOutputSchema,
+		"output_field_names":      outputFieldNames,
+		"surfaces":                surfaces,
+		"governance_status":       governanceStatus,
+		"governance_errors":       uniqueNonEmptyStrings(errors),
+		"governance_warnings":     warnings,
+		"governance_requirements": uniqueNonEmptyStrings(requirements),
+	}
+}
+
+func skillGovernanceStatus(skill *database.Skill) string {
+	if skill == nil {
+		return ""
+	}
+	contract, ok := parseJSONRaw(skill.Contract, `{}`).(map[string]any)
+	if !ok {
+		return ""
+	}
+	return normalizeString(contract["governance_status"])
+}
+
+func validateSkillGovernance(skill *database.Skill) error {
+	if skill == nil {
+		return errors.New("skill is required")
+	}
+	hydrated, err := hydrateSkillContract(skill)
+	if err != nil {
+		return err
+	}
+	if skillGovernanceStatus(hydrated) != "blocked" {
+		return nil
+	}
+	contract, ok := parseJSONRaw(hydrated.Contract, `{}`).(map[string]any)
+	if !ok {
+		return errors.New("skill contract governance blocked")
+	}
+	errorsList := normalizeStringMessages(contract["governance_errors"])
+	if len(errorsList) == 0 {
+		return fmt.Errorf("skill %s governance blocked", firstNonEmpty(hydrated.Slug, hydrated.Name))
+	}
+	return fmt.Errorf("skill %s governance blocked: %s", firstNonEmpty(hydrated.Slug, hydrated.Name), strings.Join(errorsList, "；"))
 }
 
 func normalizeToolAllowlist(raw json.RawMessage) []string {
@@ -174,6 +249,27 @@ func normalizeStringList(value any, allowed map[string]struct{}) []string {
 		}
 		seen[normalized] = struct{}{}
 		result = append(result, normalized)
+	}
+	return result
+}
+
+func normalizeStringMessages(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		message := strings.TrimSpace(stringValue(item))
+		if message == "" {
+			continue
+		}
+		if _, exists := seen[message]; exists {
+			continue
+		}
+		seen[message] = struct{}{}
+		result = append(result, message)
 	}
 	return result
 }
