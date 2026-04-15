@@ -26,6 +26,7 @@ from core.agent_runtime.orchestrator import AgentOrchestrator
 from core.agent_runtime.skills.registry import SkillRegistry
 from core.agent_runtime.planner import AgentPlanner
 from core.agent_runtime.result_contract import hydrate_legacy_result, merge_artifacts
+from core.agent_runtime.subagents.governance import prune_runtime_governance_ledger_for_resume
 from core.agent_runtime.summarizer import AgentSummarizer
 from core.agent_runtime.repositories.agent_repository import AgentRepository
 from core.agent_runtime.repositories.run_repository import RunRepository
@@ -139,6 +140,7 @@ class AgentRuntime:
 
         for key in (
             "pending_question",
+            "pending_subagent_clarification",
             "ask_user_guard",
             "last_plan",
             "last_result_contract",
@@ -151,6 +153,7 @@ class AgentRuntime:
         ):
             context.pop(key, None)
 
+        context = prune_runtime_governance_ledger_for_resume(context)
         context["tool_failures"] = 0
         context["execution_count"] = 0
         return context

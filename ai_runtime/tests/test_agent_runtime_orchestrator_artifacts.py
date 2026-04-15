@@ -306,3 +306,154 @@ async def test_orchestrator_persists_partial_artifacts_and_terminal_payload_when
     assert terminal_event["event_type"] == "run.failed"
     assert terminal_event["payload"]["error"] == "Synthesis failed"
     assert terminal_event["payload"]["artifacts"][0]["artifact_type"] == "citations"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_run_waiting_user_event_includes_subagent_context_patch():
+    run_repository = FakeRunRepository(
+        {
+            "id": "run-parent",
+            "agent_definition_id": "agent-parent",
+            "tenant_id": "tenant-1",
+            "user_id": "user-1",
+            "session_id": "session-1",
+            "status": "running",
+            "input": {"message": "Review the rollout plan"},
+            "plan": {},
+            "context": {},
+            "created_at": _timestamp(),
+            "updated_at": _timestamp(),
+        }
+    )
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=FakeAgentRepository(_build_definition().model_dump(mode="json")),
+        run_repository=run_repository,
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+
+    async def fake_execute_run(definition, run):
+        return {
+            "status": "waiting_user",
+            "plan": {
+                "action": {"type": "delegate", "title": "Ask review specialist"},
+                "reasoning": "Need rollout confirmation.",
+            },
+            "final_output": "Need the migration rollout window.",
+            "final_output_text": "Need the migration rollout window.",
+            "final_output_json": {
+                "source": "subagent_waiting_user",
+                "question": "Need the migration rollout window.",
+            },
+            "artifacts": [],
+            "context": {
+                "conversation": [{"role": "user", "content": "Review the rollout plan"}],
+                "pending_question": "Need the migration rollout window.",
+                "pending_subagent_clarification": {
+                    "child_run_id": "child-run-1",
+                    "question": "Need the migration rollout window.",
+                    "target": {
+                        "slug": "review-specialist",
+                        "name": "Review Specialist",
+                    },
+                    "clarification": {
+                        "protocol_version": "managed-subagent.clarification.v1",
+                        "state": "required",
+                        "required_fields": ["migration rollout window"],
+                    },
+                    "waiting_user_path": [
+                        {"run_id": "run-parent", "role": "parent", "status": "running"},
+                        {"run_id": "child-run-1", "role": "child", "status": "waiting_user"},
+                    ],
+                },
+                "subagent_governance_ledger": {
+                    "protocol_version": "managed-subagent.governance.v1",
+                    "targets": {
+                        "review-specialist": {
+                            "history": {
+                                "target_slug": "review-specialist",
+                                "attempt_count": 1,
+                                "failed_attempt_count": 0,
+                                "active_child_count": 1,
+                                "waiting_user_count": 1,
+                                "bubble_to_parent_count": 1,
+                                "continue_parent_count": 0,
+                                "child_only_count": 0,
+                                "statuses": ["waiting_user"],
+                                "waiting_user_strategies": ["bubble_to_parent"],
+                            },
+                        }
+                    },
+                },
+            },
+        }
+
+    orchestrator._execute_run = fake_execute_run
+
+    result = await orchestrator.start_run("run-parent")
+
+    assert result.status == "waiting_user"
+    terminal_event = tracer.events[-1]
+    assert terminal_event["event_type"] == "run.waiting_user"
+    assert terminal_event["payload"]["final_output_json"]["source"] == "subagent_waiting_user"
+    assert terminal_event["payload"]["context_patch"]["pending_question"] == "Need the migration rollout window."
+    assert terminal_event["payload"]["context_patch"]["pending_subagent_clarification"]["child_run_id"] == "child-run-1"
+    assert terminal_event["payload"]["context_patch"]["pending_subagent_clarification"]["waiting_user_path"][1]["run_id"] == "child-run-1"
+    assert terminal_event["payload"]["context_patch"]["subagent_governance_ledger"]["targets"]["review-specialist"]["history"]["waiting_user_count"] == 1
+    assert "conversation" not in terminal_event["payload"]["context_patch"]
+
+
+def test_prepare_runtime_context_clears_stale_subagent_clarification_when_new_user_input_arrives():
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=FakeTracer(),
+        agent_repository=FakeAgentRepository(_build_definition().model_dump(mode="json")),
+        run_repository=FakeRunRepository(),
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+
+    run = AgentRun.model_validate(
+        {
+            "id": "run-parent",
+            "agent_definition_id": "agent-parent",
+            "tenant_id": "tenant-1",
+            "user_id": "user-1",
+            "session_id": "session-1",
+            "status": "running",
+            "input": {"message": "Production only"},
+            "plan": {},
+            "context": {
+                "conversation": [
+                    {"role": "user", "content": "Review the rollout plan"},
+                    {"role": "assistant", "content": "Need the migration rollout window."},
+                ],
+                "last_user_message": "Review the rollout plan",
+                "pending_question": "Need the migration rollout window.",
+                "pending_subagent_clarification": {
+                    "child_run_id": "child-run-1",
+                    "question": "Need the migration rollout window.",
+                },
+                "ask_user_guard": {"attempt": 1},
+            },
+            "created_at": _timestamp(),
+            "updated_at": _timestamp(),
+        }
+    )
+
+    runtime_context = orchestrator._prepare_runtime_context(run)
+
+    assert runtime_context["last_user_message"] == "Production only"
+    assert runtime_context["conversation"][-1] == {"role": "user", "content": "Production only"}
+    assert "pending_question" not in runtime_context
+    assert "pending_subagent_clarification" not in runtime_context
+    assert "ask_user_guard" not in runtime_context

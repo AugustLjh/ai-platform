@@ -6,6 +6,13 @@ from typing import Any, Awaitable, Callable
 from core.agent_runtime.models import PlannerAction
 from core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
 from core.agent_runtime.result_contract import hydrate_legacy_result
+from core.agent_runtime.subagents.governance import (
+    annotate_governance_policy,
+    build_governance_policy,
+    extract_governance_usage,
+    merge_governance_usage_snapshots,
+    resolve_timeout_seconds,
+)
 from core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
 from core.agent_runtime.subagents.protocol import (
     build_partial_result_payload,
@@ -155,6 +162,8 @@ class SubagentHandoff:
             "knowledge_policy": dict(target.knowledge_policy or {}),
             "review_policy": target.normalized_review_policy(),
             "runtime_policy": dict(target.runtime_policy or {}),
+            "budget_policy": dict(target.budget_policy or {}),
+            "governance_policy": build_governance_policy(target),
             "delegation_mode": target.delegation_mode(),
             "allows_nested_delegation": target.allows_nested_delegation(),
             "metadata": dict(target.metadata or {}),
@@ -225,7 +234,7 @@ class SubagentHandoff:
                     "parent_run_id": parent_run.id,
                     "parent_agent_definition_id": parent_run.agent_definition_id,
                     "host_agent_definition_id": target.agent_definition_id,
-                    "target_agent_definition_id": target.agent_definition_id,
+                    "compatibility_target_agent_definition_id": target.agent_definition_id,
                     "subagent_definition_id": target.subagent_definition_id,
                     "publication_id": target.publication_id,
                     "version_id": target.version_id,
@@ -294,6 +303,7 @@ class SubagentHandoff:
                 "knowledge_policy": target.knowledge_policy,
                 "review_policy": target.normalized_review_policy(),
                 "runtime_policy": target.runtime_policy,
+                "budget_policy": target.budget_policy,
                 "metadata": target.metadata,
                 "host_agent_definition_id": target.agent_definition_id,
                 "compatibility_target_agent_definition_id": target.agent_definition_id,
@@ -349,6 +359,7 @@ class SubagentHandoff:
         summary: str,
         hydrated: dict[str, Any],
         review_result: dict[str, Any],
+        governance_policy: dict[str, Any],
         error_message: str | None = None,
     ) -> dict[str, Any]:
         result_status = str(status or "").strip().lower()
@@ -377,6 +388,7 @@ class SubagentHandoff:
             "protocol_version": "managed-subagent.v1",
             "status": result_status,
             "review_result": review_result,
+            "governance_policy": governance_policy,
             "partial_result": partial_result,
             "final_result": {
                 "summary": summary,
@@ -405,6 +417,17 @@ class SubagentHandoff:
                 await asyncio.wait({task}, timeout=0.2)
             else:
                 await asyncio.sleep(0.2)
+
+    async def _wait_for_terminal_status_with_policy(
+        self,
+        child_run_id: str,
+        *,
+        target: SubagentTarget,
+    ) -> dict[str, Any]:
+        timeout_seconds = resolve_timeout_seconds(target)
+        if timeout_seconds is None:
+            return await self._wait_for_terminal_status(child_run_id)
+        return await asyncio.wait_for(self._wait_for_terminal_status(child_run_id), timeout=timeout_seconds)
 
     async def delegate(
         self,
@@ -454,7 +477,7 @@ class SubagentHandoff:
         )
         child_agent_definition_id = target.agent_definition_id or parent_run.agent_definition_id
         if not child_agent_definition_id:
-            raise ValueError("managed subagent handoff requires either a compatibility target or a parent agent definition")
+            raise ValueError("managed subagent handoff requires either a host capability target or a parent agent definition")
         try:
             child_run = await self.run_repository.create_run(
                 {
@@ -489,7 +512,10 @@ class SubagentHandoff:
             )
             await self.start_run(child_run["id"])
 
-            completed = await self._wait_for_terminal_status(child_run["id"])
+            completed = await self._wait_for_terminal_status_with_policy(
+                child_run["id"],
+                target=target,
+            )
             artifacts = await self.run_repository.list_artifacts(child_run["id"])
             hydrated = hydrate_legacy_result(
                 final_output=completed.get("final_output"),
@@ -506,6 +532,13 @@ class SubagentHandoff:
                 hydrated=hydrated,
                 error_message=completed.get("error_message"),
                 child_run_id=child_run["id"],
+            )
+            governance_policy = annotate_governance_policy(
+                build_governance_policy(target),
+                last_invocation_usage=extract_governance_usage(
+                    child_run=completed,
+                    hydrated=hydrated,
+                ),
             )
             progress = build_progress_payload(
                 status=completed["status"],
@@ -530,6 +563,7 @@ class SubagentHandoff:
                     summary=summary,
                     hydrated=hydrated,
                     review_result=review_result,
+                    governance_policy=governance_policy,
                     error_message=completed.get("error_message"),
                 ),
                 error_message=completed.get("error_message"),
@@ -553,8 +587,33 @@ class SubagentHandoff:
                     "protocol_version": handoff_envelope.get("protocol_version"),
                     "handoff_envelope": handoff_envelope,
                     "review_result": review_result,
+                    "governance_policy": governance_policy,
                 },
             )
+        except asyncio.TimeoutError:
+            timeout_seconds = resolve_timeout_seconds(target)
+            message = f"Subagent execution exceeded timeout of {timeout_seconds:g}s" if timeout_seconds else "Subagent execution timed out"
+            review_result = build_review_result(
+                target=target,
+                status="failed",
+                hydrated={},
+                error_message=message,
+            )
+            await self._update_invocation(
+                invocation_id,
+                status="failed",
+                error_message=message,
+                result_payload={
+                    "protocol_version": "managed-subagent.v1",
+                    "status": "failed",
+                    "review_result": review_result,
+                    "partial_result": None,
+                    "final_result": None,
+                    "error": message,
+                    "governance_policy": annotate_governance_policy(build_governance_policy(target)),
+                },
+            )
+            raise TimeoutError(message) from None
         except asyncio.CancelledError:
             review_result = build_review_result(
                 target=target,
@@ -573,6 +632,7 @@ class SubagentHandoff:
                     "partial_result": None,
                     "final_result": None,
                     "error": "Run cancelled",
+                    "governance_policy": annotate_governance_policy(build_governance_policy(target)),
                 },
             )
             raise
@@ -594,6 +654,7 @@ class SubagentHandoff:
                     "partial_result": None,
                     "final_result": None,
                     "error": str(exc),
+                    "governance_policy": annotate_governance_policy(build_governance_policy(target)),
                 },
             )
             raise

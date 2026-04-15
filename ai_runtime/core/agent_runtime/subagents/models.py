@@ -31,6 +31,7 @@ class SubagentTarget(BaseModel):
     knowledge_policy: Dict[str, Any] = Field(default_factory=dict)
     review_policy: Dict[str, Any] = Field(default_factory=dict)
     runtime_policy: Dict[str, Any] = Field(default_factory=dict)
+    budget_policy: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")
@@ -61,6 +62,7 @@ class SubagentTarget(BaseModel):
             or self.knowledge_policy
             or self.review_policy
             or self.runtime_policy
+            or self.budget_policy
         )
 
     def allows_nested_delegation(self) -> bool:

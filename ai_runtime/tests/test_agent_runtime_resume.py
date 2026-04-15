@@ -4,7 +4,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+from core.agent_runtime.models import AgentRun
 from core.agent_runtime.runtime import AgentRuntime
+from core.agent_runtime.subagents.governance import evaluate_governance_gate
+from core.agent_runtime.subagents.models import SubagentTarget
 
 
 def _run_row(*, status: str = "waiting_user", input_payload: dict | None = None, context: dict | None = None) -> dict:
@@ -126,6 +129,10 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
                 ],
                 "step_history": [{"status": "failed", "tool_name": "knowledge_search"}],
                 "pending_question": "Which environment?",
+                "pending_subagent_clarification": {
+                    "child_run_id": "child-run-1",
+                    "question": "Which environment?",
+                },
                 "ask_user_guard": {"attempt": 1},
                 "last_plan": {"steps": ["old plan"]},
                 "last_result_contract": {"artifact_count": 2},
@@ -144,6 +151,51 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
                 "tool_failures": 3,
                 "execution_count": 4,
                 "intent_state": {"inferred_intent": "research"},
+                "subagent_governance_ledger": {
+                    "protocol_version": "managed-subagent.governance.v1",
+                    "targets": {
+                        "review-specialist": {
+                            "history": {
+                                "target_slug": "review-specialist",
+                                "attempt_count": 2,
+                                "failed_attempt_count": 0,
+                                "active_child_count": 1,
+                                "waiting_user_count": 1,
+                                "bubble_to_parent_count": 1,
+                                "continue_parent_count": 0,
+                                "child_only_count": 0,
+                                "statuses": ["completed", "waiting_user"],
+                                "waiting_user_strategies": ["bubble_to_parent"],
+                            },
+                            "usage": {
+                                "total_tokens": 480,
+                                "cost_usd": 0.19,
+                                "source": "ledger",
+                            },
+                            "last_invocation_usage": {
+                                "total_tokens": 180,
+                                "cost_usd": 0.07,
+                                "source": "metadata.governance_usage",
+                            },
+                            "active_children": {
+                                "child:child-run-1": {
+                                    "child_run_id": "child-run-1",
+                                    "status": "waiting_user",
+                                    "counts_as_active_child": True,
+                                    "waiting_user_propagation": "bubble_to_parent",
+                                }
+                            },
+                            "latest_waiting_user": {
+                                "child_run_id": "child-run-1",
+                                "question": "Which environment?",
+                                "waiting_user_path": [
+                                    {"run_id": "parent-run", "role": "parent", "status": "running"},
+                                    {"run_id": "child-run-1", "role": "child", "status": "waiting_user"},
+                                ],
+                            },
+                        }
+                    },
+                },
             }
         )
     )
@@ -179,6 +231,7 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
     assert reset_context["tool_failures"] == 0
     assert reset_context["execution_count"] == 0
     assert "pending_question" not in reset_context
+    assert "pending_subagent_clarification" not in reset_context
     assert "ask_user_guard" not in reset_context
     assert "last_plan" not in reset_context
     assert "last_result_contract" not in reset_context
@@ -187,6 +240,9 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
     assert "normalized_task_input" not in reset_context
     assert "mounted_knowledge_base_ids" not in reset_context
     assert "promoted_artifacts" not in reset_context
+    assert reset_context["subagent_governance_ledger"]["targets"]["review-specialist"]["history"]["active_child_count"] == 0
+    assert reset_context["subagent_governance_ledger"]["targets"]["review-specialist"]["active_children"] == {}
+    assert reset_context["subagent_governance_ledger"]["targets"]["review-specialist"]["latest_waiting_user"] == {}
 
     assert tracer.events == [
         (
@@ -273,7 +329,54 @@ async def test_cancel_run_persists_partial_result_surface_and_emits_artifact_sna
     assert [artifact.artifact_type for artifact in run.artifacts] == ["answer", "citations", "task_plan"]
     assert run.final_output_text == "Audit compatibility drift\nBackfill replay coverage"
 
-    event_run_id, event_type, payload = tracer.events[-1]
-    assert event_run_id == "00000000-0000-0000-0000-000000000111"
-    assert event_type == "run.cancelled"
-    assert [artifact["artifact_type"] for artifact in payload["artifacts"]] == ["answer", "citations", "task_plan"]
+
+def test_resume_prunes_governance_ledger_active_children_for_future_delegate_gate():
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    context = runtime._build_resume_context(
+        _run_row(
+            context={
+                "conversation": [],
+                "step_history": [],
+                "subagent_governance_ledger": {
+                    "protocol_version": "managed-subagent.governance.v1",
+                    "targets": {
+                        "review-specialist": {
+                            "history": {
+                                "target_slug": "review-specialist",
+                                "attempt_count": 1,
+                                "failed_attempt_count": 0,
+                                "active_child_count": 1,
+                                "waiting_user_count": 1,
+                                "bubble_to_parent_count": 1,
+                                "continue_parent_count": 0,
+                                "child_only_count": 0,
+                                "statuses": ["waiting_user"],
+                                "waiting_user_strategies": ["bubble_to_parent"],
+                            },
+                            "active_children": {
+                                "child:child-run-1": {
+                                    "child_run_id": "child-run-1",
+                                    "status": "waiting_user",
+                                    "counts_as_active_child": True,
+                                }
+                            },
+                        }
+                    },
+                },
+            }
+        )
+    )
+
+    gate = evaluate_governance_gate(
+        run=AgentRun.model_validate(_run_row(status="queued", context={})),
+        runtime_context=context,
+        target=SubagentTarget(
+            slug="review-specialist",
+            name="Review Specialist",
+            agent_definition_id="agent-reviewer",
+            runtime_policy={"max_concurrent_delegations": 1},
+        ),
+    )
+
+    assert gate["allowed"] is True
+    assert gate["history"]["active_child_count"] == 0

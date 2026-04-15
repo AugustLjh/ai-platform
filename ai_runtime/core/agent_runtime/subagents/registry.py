@@ -163,19 +163,11 @@ class SubagentRegistry:
                 or str(row_data.get("system_prompt") or "").strip()
                 or None
             )
-            compatibility_target = _string_metadata_value(
-                merged_metadata,
-                "host_agent_definition_id",
-                "target_agent_definition_id",
-                "agent_definition_id",
-            )
-
             targets.append(
                 SubagentTarget(
                     slug=slug or publication_id,
                     name=str(row_data.get("name") or publication_id).strip(),
                     description=str(row_data.get("description") or "").strip() or None,
-                    agent_definition_id=compatibility_target or None,
                     subagent_definition_id=subagent_definition_id,
                     publication_id=publication_id,
                     version_id=version_id,
@@ -192,6 +184,7 @@ class SubagentRegistry:
                     knowledge_policy=_json_object(row_data.get("knowledge_policy")),
                     review_policy=_json_object(row_data.get("review_policy")),
                     runtime_policy=_json_object(row_data.get("runtime_policy")),
+                    budget_policy=_json_object(row_data.get("budget_policy")),
                     metadata=merged_metadata,
                 )
             )

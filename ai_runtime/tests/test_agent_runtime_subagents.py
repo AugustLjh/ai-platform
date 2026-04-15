@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
 from core.agent_runtime.orchestrator import AgentOrchestrator
+from core.agent_runtime.subagents.governance import record_delegation_outcome
 from core.agent_runtime.subagents.handoff import SubagentHandoff
 from core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
 from core.agent_runtime.subagents.registry import SubagentRegistry
@@ -114,12 +116,16 @@ class FakeTracer:
 class FakeStateStore:
     def __init__(self):
         self.cancelled = set()
+        self.tasks = {}
 
     def is_cancelled(self, run_id):
         return run_id in self.cancelled
 
     def get_task(self, run_id):
-        return None
+        return self.tasks.get(run_id)
+
+    def register_task(self, run_id, task):
+        self.tasks[run_id] = task
 
 
 class FakeHandoff:
@@ -311,6 +317,7 @@ async def test_subagent_registry_resolves_authorized_managed_capability_without_
     assert targets[0].tool_allowlist == ["calculator"]
     assert targets[0].skill_allowlist == ["code-review"]
     assert targets[0].runtime_policy["allow_delegation"] is False
+    assert targets[0].budget_policy["max_tokens"] == 1200
     assert targets[0].handoff_prompt == "Review only the delegated diff."
 
 
@@ -369,6 +376,15 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
 
     async def start_run(run_id):
         run_repository.rows[run_id]["status"] = "completed"
+        run_repository.rows[run_id]["metadata"] = {
+            **run_repository.rows[run_id].get("metadata", {}),
+            "governance_usage": {
+                "prompt_tokens": 180,
+                "completion_tokens": 420,
+                "total_tokens": 600,
+                "cost_usd": 0.24,
+            },
+        }
         run_repository.rows[run_id]["final_output_text"] = "Managed review complete."
         run_repository.rows[run_id]["final_output_json"] = {
             "answer": "Managed review complete.",
@@ -407,6 +423,7 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
         skill_allowlist=["code-review"],
         review_policy={"required": True},
         runtime_policy={"allow_delegation": False},
+        budget_policy={"max_tokens": 1200, "max_cost_usd": 0.5},
     )
 
     result = await handoff.delegate(
@@ -428,10 +445,14 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
     assert child_run["metadata"]["managed_subagent"]["authorization_id"] == "auth-reviewer"
     assert child_run["metadata"]["managed_subagent"]["tool_allowlist"] == ["calculator"]
     assert child_run["input"]["delegation"]["subagent_definition_id"] == "subagent-reviewer"
+    assert "target_agent_definition_id" not in child_run["input"]["delegation"]
+    assert child_run["input"]["delegation"]["compatibility_target_agent_definition_id"] is None
     assert child_run["input"]["handoff_envelope"]["protocol_version"] == "managed-subagent.v1"
     assert child_run["input"]["handoff_envelope"]["policy_snapshot"]["target"]["publication_id"] == "pub-reviewer"
     assert child_run["input"]["handoff_envelope"]["policy_snapshot"]["review_policy"]["mode"] == "reviewer"
+    assert child_run["input"]["handoff_envelope"]["policy_snapshot"]["governance_policy"]["limits"]["allow_nested_delegation"] is False
     assert child_run["metadata"]["delegation"]["invocation_id"] == "invocation-1"
+    assert child_run["metadata"]["managed_subagent"]["budget_policy"] == {"max_tokens": 1200, "max_cost_usd": 0.5}
     assert invocation_repository.creates[0]["request_payload"]["status"] == "requested"
     assert invocation_repository.updates[0]["status"] == "running"
     assert invocation_repository.updates[-1]["status"] == "completed"
@@ -441,11 +462,64 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
         "Inspected migration plan",
         "Validated review findings",
     ]
+    assert invocation_repository.updates[-1]["result_payload"]["governance_policy"]["budget"]["usage"]["total_tokens"] == 600
+    assert invocation_repository.updates[-1]["result_payload"]["governance_policy"]["budget"]["usage"]["cost_usd"] == 0.24
+    assert invocation_repository.updates[-1]["result_payload"]["governance_policy"]["budget"]["last_invocation_usage"]["total_tokens"] == 600
+    assert invocation_repository.updates[-1]["result_payload"]["governance_policy"]["budget"]["prior_usage"]["total_tokens"] is None
+    assert invocation_repository.updates[-1]["result_payload"]["governance_policy"]["budget"]["usage_status"] == "within_limits"
     assert invocation_repository.updates[-1]["result_payload"]["review_result"]["mode"] == "reviewer"
     assert invocation_repository.updates[-1]["result_payload"]["review_result"]["decision"] == "changes_requested"
     assert invocation_repository.updates[-1]["result_payload"]["review_result"]["blocking_finding_count"] == 1
     assert result.progress["state"] == "completed"
     assert result.metadata["review_result"]["decision"] == "changes_requested"
+    assert result.metadata["governance_policy"]["budget"]["usage"]["total_tokens"] == 600
+    assert result.metadata["governance_policy"]["budget"]["last_invocation_usage"]["total_tokens"] == 600
+
+
+async def test_subagent_handoff_enforces_timeout_policy():
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    state_store = FakeStateStore()
+
+    async def start_run(run_id):
+        async def _complete_later():
+            await asyncio.sleep(0.3)
+            run_repository.rows[run_id]["status"] = "completed"
+            run_repository.rows[run_id]["final_output_text"] = "Late completion."
+
+        task = asyncio.create_task(_complete_later())
+        state_store.register_task(run_id, task)
+
+    handoff = SubagentHandoff(
+        run_repository,
+        tracer,
+        state_store,
+        start_run=start_run,
+    )
+    target = SubagentTarget(
+        slug="managed-reviewer",
+        name="Managed Reviewer",
+        subagent_definition_id="subagent-reviewer",
+        runtime_policy={"timeout_seconds": 0.05},
+    )
+
+    try:
+        await handoff.delegate(
+            parent_run=_build_run(),
+            parent_step_id="step-parent",
+            planner_action=PlannerAction(
+                type="delegate",
+                title="Ask managed reviewer",
+                delegate_target="managed-reviewer",
+                delegate_task="Review the migration patch",
+            ),
+            runtime_context={"step_history": [{"title": "Collected patch context"}]},
+            target=target,
+        )
+    except TimeoutError as exc:
+        assert "timeout of 0.05s" in str(exc)
+    else:
+        raise AssertionError("Expected timeout enforcement to raise TimeoutError")
 
 
 async def test_orchestrator_execute_delegate_action_records_step_and_subagent_events():
@@ -504,6 +578,15 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
                 },
                 "policy_snapshot": {"target": {"slug": "review-specialist"}},
             },
+            "governance_policy": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "target_slug": "review-specialist",
+                "budget": {
+                    "max_tokens": 1200,
+                    "usage": {"total_tokens": 640, "source": "metadata.governance_usage"},
+                    "usage_status": "within_limits",
+                },
+            },
         },
     )
     run_repository = FakeRunRepository()
@@ -522,7 +605,7 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
         subagent_handoff=handoff,
     )
 
-    observation = await orchestrator._execute_delegate_action(
+    observation, delegated_result = await orchestrator._execute_delegate_action(
         run=_build_run(),
         runtime_context={"step_history": []},
         planner_result=PlannerResult(
@@ -540,11 +623,15 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
     )
 
     assert observation["status"] == "completed"
+    assert delegated_result is None
     assert observation["delegate_target"] == "review-specialist"
     assert observation["result"]["child_run_id"] == "child-run-1"
     assert run_repository.updated_steps[0]["output_payload"]["delegate_result"]["summary"] == "Child review complete."
     assert run_repository.updated_steps[0]["output_payload"]["handoff"]["protocol_version"] == "managed-subagent.v1"
     assert run_repository.updated_steps[0]["output_payload"]["review_result"]["decision"] == "approved_with_findings"
+    assert run_repository.updated_steps[0]["output_payload"]["governance_policy"]["protocol_version"] == "managed-subagent.governance.v1"
+    assert run_repository.updated_steps[0]["output_payload"]["governance_policy"]["budget"]["usage"]["total_tokens"] == 640
+    assert run_repository.updated_steps[0]["output_payload"]["governance_policy"]["history"]["attempt_count"] == 1
     assert run_repository.updated_steps[0]["output_payload"]["progress"]["state"] == "completed"
     event_types = [event["event_type"] for event in tracer.events]
     assert "subagent.started" in event_types
@@ -552,6 +639,10 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
     completed_event = next(event for event in tracer.events if event["event_type"] == "subagent.completed")
     assert completed_event["payload"]["review_result"]["mode"] == "reviewer"
     assert completed_event["payload"]["progress"]["completed_items"] == ["Reviewed the patch"]
+    assert completed_event["payload"]["governance_policy"]["target_slug"] == "review-specialist"
+    assert completed_event["payload"]["governance_policy"]["budget"]["usage"]["total_tokens"] == 640
+    assert completed_event["payload"]["governance_policy"]["budget"]["last_invocation_usage"]["total_tokens"] == 640
+    assert run_repository.updated_steps[0]["output_payload"]["governance_policy"]["history"]["active_child_count"] == 0
 
 
 async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_question():
@@ -616,7 +707,7 @@ async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_questio
         subagent_handoff=FakeHandoff(delegation),
     )
 
-    observation = await orchestrator._execute_delegate_action(
+    observation, delegated_result = await orchestrator._execute_delegate_action(
         run=_build_run(),
         runtime_context={"step_history": [{"title": "Collected rollout context"}]},
         planner_result=PlannerResult(
@@ -634,6 +725,7 @@ async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_questio
     )
 
     assert observation["status"] == "completed"
+    assert delegated_result is not None
     waiting_event = next(event for event in tracer.events if event["event_type"] == "subagent.waiting_user")
     assert waiting_event["payload"]["question"] == "Need the migration rollout window."
     assert waiting_event["payload"]["partial_result"]["question"] == "Need the migration rollout window."
@@ -641,6 +733,393 @@ async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_questio
     assert waiting_event["payload"]["partial_result"]["clarification"]["required_fields"] == ["migration rollout window"]
     assert waiting_event["payload"]["clarification"]["response_hint"] == "Provide the approved rollout window and any blackout constraints."
     assert waiting_event["payload"]["handoff_envelope"]["protocol_version"] == "managed-subagent.v1"
+    assert waiting_event["payload"]["governance_policy"]["protocol_version"] == "managed-subagent.governance.v1"
+    assert waiting_event["payload"]["governance_policy"]["history"]["waiting_user_count"] == 1
+
+
+async def test_orchestrator_bubbles_waiting_user_to_parent_run_by_default():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+    )
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-1",
+        status="waiting_user",
+        target=target,
+        summary="Need the migration rollout window.",
+        final_output="Need the migration rollout window.",
+        final_output_text="Need the migration rollout window.",
+        artifacts=[{"artifact_type": "answer", "name": "Question", "payload": {"text": "Need the migration rollout window."}}],
+        progress={
+            "protocol_version": "managed-subagent.progress.v1",
+            "state": "blocked",
+            "summary": "Review is blocked pending rollout details.",
+            "completed_items": ["Checked the current rollout plan"],
+            "pending_items": ["Need the migration rollout window."],
+            "next_action": "Answer the clarification so the child run can continue.",
+            "artifact_count": 1,
+        },
+        clarification={
+            "protocol_version": "managed-subagent.clarification.v1",
+            "state": "required",
+            "question": "Need the migration rollout window.",
+            "reason": "The rollout plan cannot be approved without a concrete window.",
+            "required_fields": ["migration rollout window"],
+            "response_hint": "Provide the approved rollout window and any blackout constraints.",
+            "blocking": True,
+        },
+        metadata={
+            "invocation_id": "invocation-1",
+            "review_result": {
+                "protocol_version": "managed-subagent.review-result.v1",
+                "required": False,
+                "mode": "none",
+                "decision": "needs_input",
+            },
+            "handoff_envelope": {
+                "protocol_version": "managed-subagent.v1",
+                "task": {"message": "Review the rollout plan"},
+                "constraints": ["focus_paths: db/alembic/versions/example.py"],
+                "policy_snapshot": {"target": {"slug": "review-specialist"}},
+            },
+            "governance_policy": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "target_slug": "review-specialist",
+                "waiting_user": {
+                    "propagation": "bubble_to_parent",
+                    "counts_as_active_child": True,
+                },
+            },
+        },
+    )
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=FakeRunRepository(),
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=FakeHandoff(delegation),
+    )
+    runtime_context = {"step_history": [{"title": "Collected rollout context"}]}
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context=runtime_context,
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist",
+                delegate_target="review-specialist",
+                delegate_task="Review the rollout plan",
+            ),
+            reasoning="Need a bounded follow-up review.",
+            iteration=2,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert observation["status"] == "completed"
+    assert delegated_result is not None
+    assert delegated_result["status"] == "waiting_user"
+    assert delegated_result["final_output_text"] == "Need the migration rollout window."
+    assert delegated_result["context"]["pending_question"] == "Need the migration rollout window."
+    assert delegated_result["context"]["pending_subagent_clarification"]["child_run_id"] == "child-run-1"
+    assert delegated_result["context"]["pending_subagent_clarification"]["governance_policy"]["waiting_user"]["propagation"] == "bubble_to_parent"
+    assert delegated_result["context"]["pending_subagent_clarification"]["waiting_user_policy"]["propagation"] == "bubble_to_parent"
+    assert delegated_result["context"]["pending_subagent_clarification"]["governance_policy"]["history"]["waiting_user_count"] == 1
+    assert delegated_result["context"]["pending_subagent_clarification"]["waiting_user_path"][1]["run_id"] == "child-run-1"
+    assert delegated_result["context"]["subagent_governance_ledger"]["targets"]["review-specialist"]["history"]["active_child_count"] == 1
+    assert delegated_result["final_output_json"]["source"] == "subagent_waiting_user"
+    assert delegated_result["final_output_json"]["clarification"]["required_fields"] == ["migration rollout window"]
+    assert delegated_result["final_output_json"]["governance_policy"]["target_slug"] == "review-specialist"
+    assert delegated_result["final_output_json"]["waiting_user_policy"]["propagation"] == "bubble_to_parent"
+    assert delegated_result["final_output_json"]["waiting_user_path"][1]["status"] == "waiting_user"
+    assert delegated_result["artifacts"][0]["artifact_type"] == "answer"
+
+
+async def test_orchestrator_preserves_nested_waiting_user_path_when_child_returns_multihop_path():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+    )
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-1",
+        status="waiting_user",
+        target=target,
+        summary="Need final production rollout window.",
+        final_output="Need final production rollout window.",
+        final_output_text="Need final production rollout window.",
+        artifacts=[],
+        progress={
+            "protocol_version": "managed-subagent.progress.v1",
+            "state": "blocked",
+            "summary": "Nested review is blocked on deployment timing.",
+            "waiting_user_path": [
+                {"run_id": "child-run-1", "role": "parent", "status": "running"},
+                {"run_id": "grandchild-run-1", "role": "child", "status": "waiting_user"},
+            ],
+        },
+        clarification={
+            "protocol_version": "managed-subagent.clarification.v1",
+            "state": "required",
+            "question": "Need final production rollout window.",
+            "waiting_user_path": [
+                {"run_id": "child-run-1", "role": "parent", "status": "running"},
+                {"run_id": "grandchild-run-1", "role": "child", "status": "waiting_user"},
+            ],
+        },
+        metadata={
+            "invocation_id": "invocation-1",
+            "review_result": {
+                "protocol_version": "managed-subagent.review-result.v1",
+                "required": False,
+                "mode": "none",
+                "decision": "needs_input",
+            },
+            "handoff_envelope": {
+                "protocol_version": "managed-subagent.v1",
+                "task": {"message": "Review the rollout plan"},
+                "policy_snapshot": {"target": {"slug": "review-specialist"}},
+            },
+            "governance_policy": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "target_slug": "review-specialist",
+                "waiting_user": {
+                    "propagation": "bubble_to_parent",
+                    "counts_as_active_child": True,
+                },
+            },
+        },
+    )
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=FakeTracer(),
+        agent_repository=None,
+        run_repository=FakeRunRepository(),
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=FakeHandoff(delegation),
+    )
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={"step_history": [{"title": "Collected rollout context"}]},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist",
+                delegate_target="review-specialist",
+                delegate_task="Review the rollout plan",
+            ),
+            reasoning="Need a bounded follow-up review.",
+            iteration=2,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert observation["status"] == "completed"
+    assert delegated_result is not None
+    waiting_user_path = delegated_result["final_output_json"]["waiting_user_path"]
+    assert waiting_user_path == [
+        {"run_id": "run-parent", "role": "parent", "status": "running"},
+        {"run_id": "child-run-1", "role": "parent", "status": "running"},
+        {"run_id": "grandchild-run-1", "role": "child", "status": "waiting_user"},
+    ]
+    assert delegated_result["context"]["pending_subagent_clarification"]["waiting_user_path"] == waiting_user_path
+
+
+async def test_orchestrator_keeps_parent_running_when_waiting_user_propagation_is_continue_parent():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+        runtime_policy={"waiting_user_propagation": "continue_parent"},
+    )
+    handoff = FakeHandoff(
+        SubagentDelegationResult(
+            child_run_id="child-run-2",
+            status="completed",
+            target=target,
+            summary="Second review completed.",
+            final_output_text="Second review completed.",
+            metadata={
+                "protocol_version": "managed-subagent.v1",
+                "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+                "review_result": {"mode": "none", "required": False, "decision": "not_required"},
+            },
+        )
+    )
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=handoff,
+    )
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={
+            "step_history": [
+                {
+                    "delegate_target": "review-specialist",
+                    "status": "completed",
+                    "result": {"status": "waiting_user"},
+                }
+            ]
+        },
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist again",
+                delegate_target="review-specialist",
+                delegate_task="Resume with fresh details",
+            ),
+            reasoning="Waiting-user should not bubble to parent for this capability.",
+            iteration=4,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert observation["status"] == "completed"
+    assert delegated_result is None
+
+
+async def test_orchestrator_accumulates_governance_usage_from_history_and_current_invocation():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+        budget_policy={"max_tokens": 1000, "max_cost_usd": 0.5},
+    )
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-3",
+        status="completed",
+        target=target,
+        summary="Third review completed.",
+        final_output_text="Third review completed.",
+        metadata={
+            "invocation_id": "invocation-3",
+            "review_result": {"mode": "none", "required": False, "decision": "not_required"},
+            "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+            "governance_policy": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "target_slug": "review-specialist",
+                "budget": {
+                    "max_tokens": 1000,
+                    "max_cost_usd": 0.5,
+                    "last_invocation_usage": {
+                        "total_tokens": 220,
+                        "cost_usd": 0.08,
+                        "source": "metadata.governance_usage",
+                    },
+                },
+                "waiting_user": {
+                    "propagation": "continue_parent",
+                    "counts_as_active_child": False,
+                },
+            },
+        },
+    )
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=FakeHandoff(delegation),
+    )
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={
+            "step_history": [
+                {
+                    "delegate_target": "review-specialist",
+                    "status": "completed",
+                    "result": {
+                        "status": "waiting_user",
+                        "waiting_user_policy": {"propagation": "continue_parent"},
+                        "governance_policy": {
+                            "budget": {
+                                "last_invocation_usage": {
+                                    "total_tokens": 180,
+                                    "cost_usd": 0.05,
+                                    "source": "step_history",
+                                }
+                            }
+                        },
+                    },
+                },
+                {
+                    "delegate_target": "review-specialist",
+                    "status": "completed",
+                    "result": {
+                        "status": "completed",
+                        "governance_policy": {
+                            "budget": {
+                                "last_invocation_usage": {
+                                    "total_tokens": 140,
+                                    "cost_usd": 0.04,
+                                    "source": "step_history",
+                                }
+                            }
+                        },
+                    },
+                },
+            ]
+        },
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist",
+                delegate_target="review-specialist",
+                delegate_task="Review another change",
+            ),
+            reasoning="Need another bounded review.",
+            iteration=5,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert observation["status"] == "completed"
+    assert delegated_result is None
+    budget = run_repository.updated_steps[0]["output_payload"]["governance_policy"]["budget"]
+    history = run_repository.updated_steps[0]["output_payload"]["governance_policy"]["history"]
+    assert budget["prior_usage"]["total_tokens"] == 320
+    assert budget["last_invocation_usage"]["total_tokens"] == 220
+    assert budget["usage"]["total_tokens"] == 540
+    assert budget["remaining_tokens"] == 460
+    assert history["attempt_count"] == 3
+    assert history["waiting_user_count"] == 1
+    assert history["continue_parent_count"] == 1
+    assert history["active_child_count"] == 0
 
 
 async def test_orchestrator_rejects_delegate_when_single_agent_gate_is_not_satisfied():
@@ -671,7 +1150,7 @@ async def test_orchestrator_rejects_delegate_when_single_agent_gate_is_not_satis
         subagent_handoff=handoff,
     )
 
-    observation = await orchestrator._execute_delegate_action(
+    observation, delegated_result = await orchestrator._execute_delegate_action(
         run=_build_run(),
         runtime_context={"step_history": [], "tool_failures": 0},
         planner_result=PlannerResult(
@@ -689,12 +1168,276 @@ async def test_orchestrator_rejects_delegate_when_single_agent_gate_is_not_satis
     )
 
     assert observation["status"] == "failed"
+    assert delegated_result is None
     assert "Delegation gate rejected" in observation["error"]
     assert handoff.calls == []
     assert run_repository.updated_steps[0]["status"] == "failed"
     assert run_repository.updated_steps[0]["metadata"]["delegation_gate"]["allowed"] is False
+    assert run_repository.updated_steps[0]["metadata"]["delegation_gate"]["governance"]["protocol_version"] == "managed-subagent.governance.v1"
     event_types = [event["event_type"] for event in tracer.events]
     assert "subagent.rejected" in event_types
+
+
+async def test_orchestrator_rejects_delegate_when_retry_limit_exceeded():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+        runtime_policy={"max_retry_attempts": 1},
+    )
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=FakeHandoff(
+            SubagentDelegationResult(
+                child_run_id="child-run-1",
+                status="completed",
+                target=target,
+            )
+        ),
+    )
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={
+            "step_history": [
+                {
+                    "delegate_target": "review-specialist",
+                    "status": "completed",
+                    "result": {"status": "failed"},
+                },
+                {
+                    "delegate_target": "review-specialist",
+                    "status": "completed",
+                    "result": {"status": "failed"},
+                },
+            ]
+        },
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist",
+                delegate_target="review-specialist",
+                delegate_task="Try the review again",
+            ),
+            reasoning="Retry the specialist review.",
+            iteration=3,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert observation["status"] == "failed"
+    assert delegated_result is None
+    assert "retry limit 1" in observation["error"]
+
+
+async def test_orchestrator_rejects_delegate_when_active_child_limit_exceeded():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+        runtime_policy={"max_concurrent_delegations": 1},
+    )
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=FakeHandoff(
+            SubagentDelegationResult(
+                child_run_id="child-run-1",
+                status="completed",
+                target=target,
+            )
+        ),
+    )
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={
+            "step_history": [
+                {
+                    "delegate_target": "review-specialist",
+                    "status": "completed",
+                    "result": {"status": "waiting_user"},
+                }
+            ]
+        },
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist",
+                delegate_target="review-specialist",
+                delegate_task="Start another review",
+            ),
+            reasoning="Parallelize another review pass.",
+            iteration=3,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert observation["status"] == "failed"
+    assert delegated_result is None
+    assert "concurrency limit 1" in observation["error"]
+
+
+async def test_orchestrator_allows_delegate_when_waiting_user_does_not_hold_concurrency_slot():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+        runtime_policy={
+            "max_concurrent_delegations": 1,
+            "waiting_user_counts_as_active_child": False,
+        },
+    )
+    handoff = FakeHandoff(
+        SubagentDelegationResult(
+            child_run_id="child-run-2",
+            status="completed",
+            target=target,
+            summary="Second review completed.",
+            final_output_text="Second review completed.",
+            metadata={
+                "protocol_version": "managed-subagent.v1",
+                "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+                "review_result": {"mode": "none", "required": False, "decision": "not_required"},
+                "governance_policy": {
+                    "protocol_version": "managed-subagent.governance.v1",
+                    "waiting_user": {"counts_as_active_child": False},
+                },
+            },
+        )
+    )
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=handoff,
+    )
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={
+            "step_history": [
+                {
+                    "delegate_target": "review-specialist",
+                    "status": "completed",
+                    "result": {"status": "waiting_user"},
+                }
+            ]
+        },
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist again",
+                delegate_target="review-specialist",
+                delegate_task="Resume with fresh details",
+            ),
+            reasoning="Waiting-user should not block another bounded delegation.",
+            iteration=4,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert observation["status"] == "completed"
+    assert delegated_result is None
+    assert handoff.calls
+
+
+def test_record_delegation_outcome_keeps_latest_waiting_user_from_other_active_child():
+    runtime_context = {
+        "subagent_governance_ledger": {
+            "protocol_version": "managed-subagent.governance.v1",
+            "targets": {
+                "review-specialist": {
+                    "history": {
+                        "target_slug": "review-specialist",
+                        "attempt_count": 2,
+                        "failed_attempt_count": 0,
+                        "active_child_count": 2,
+                        "waiting_user_count": 1,
+                        "bubble_to_parent_count": 1,
+                        "continue_parent_count": 0,
+                        "child_only_count": 0,
+                        "statuses": ["waiting_user", "running"],
+                        "waiting_user_strategies": ["bubble_to_parent"],
+                    },
+                    "active_children": {
+                        "child:child-run-1": {
+                            "child_run_id": "child-run-1",
+                            "invocation_id": "invocation-1",
+                            "status": "waiting_user",
+                            "counts_as_active_child": True,
+                            "waiting_user_propagation": "bubble_to_parent",
+                            "question": "Need rollout window.",
+                            "waiting_user_path": [
+                                {"run_id": "run-parent", "role": "parent", "status": "running"},
+                                {"run_id": "child-run-1", "role": "child", "status": "waiting_user"},
+                            ],
+                        },
+                        "child:child-run-2": {
+                            "child_run_id": "child-run-2",
+                            "invocation_id": "invocation-2",
+                            "status": "running",
+                            "counts_as_active_child": True,
+                        },
+                    },
+                    "latest_waiting_user": {
+                        "child_run_id": "child-run-1",
+                        "invocation_id": "invocation-1",
+                        "question": "Need rollout window.",
+                        "waiting_user_path": [
+                            {"run_id": "run-parent", "role": "parent", "status": "running"},
+                            {"run_id": "child-run-1", "role": "child", "status": "waiting_user"},
+                        ],
+                        "waiting_user_propagation": "bubble_to_parent",
+                    },
+                }
+            },
+        }
+    }
+
+    entry = record_delegation_outcome(
+        runtime_context,
+        target_slug="review-specialist",
+        status="completed",
+        child_run_id="child-run-2",
+        invocation_id="invocation-2",
+        usage={},
+    )
+
+    assert entry["history"]["active_child_count"] == 1
+    assert entry["latest_waiting_user"]["child_run_id"] == "child-run-1"
+    assert entry["latest_waiting_user"]["question"] == "Need rollout window."
+    assert runtime_context["subagent_governance_ledger"]["targets"]["review-specialist"]["latest_waiting_user"]["child_run_id"] == "child-run-1"
 
 
 async def test_orchestrator_managed_subagent_definition_and_gates():

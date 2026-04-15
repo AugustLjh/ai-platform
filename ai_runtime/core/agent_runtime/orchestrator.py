@@ -18,6 +18,15 @@ from core.agent_runtime.result_contract import (
 )
 from core.agent_runtime.schema_utils import merge_output_schema
 from core.agent_runtime.skills.models import SkillRuntimeContext
+from core.agent_runtime.subagents.governance import (
+    annotate_governance_policy,
+    append_delegation_outcome,
+    build_waiting_user_path,
+    evaluate_governance_gate,
+    merge_governance_usage_snapshots,
+    record_delegation_outcome,
+    should_bubble_waiting_user_to_parent,
+)
 from core.agent_runtime.subagents.handoff import SubagentHandoff
 from core.agent_runtime.subagents.models import SubagentTarget
 from core.agent_runtime.subagents.registry import SubagentRegistry
@@ -307,6 +316,11 @@ class AgentOrchestrator:
             runtime_context["conversation"] = []
         if not isinstance(runtime_context.get("step_history"), list):
             runtime_context["step_history"] = []
+        if not isinstance(runtime_context.get("subagent_governance_ledger"), dict):
+            runtime_context["subagent_governance_ledger"] = {
+                "protocol_version": "managed-subagent.governance.v1",
+                "targets": {},
+            }
 
         current_message = str(run.input.get("message") or run.input.get("prompt") or "").strip()
         last_user_message = str(runtime_context.get("last_user_message") or "").strip()
@@ -314,6 +328,7 @@ class AgentOrchestrator:
             self._append_conversation_message(runtime_context, role="user", content=current_message)
             runtime_context["last_user_message"] = current_message
             runtime_context.pop("pending_question", None)
+            runtime_context.pop("pending_subagent_clarification", None)
             runtime_context.pop("ask_user_guard", None)
 
         runtime_context.setdefault("execution_count", 0)
@@ -573,6 +588,88 @@ class AgentOrchestrator:
                 "mounted_knowledge_base_ids": context_slice.get("mounted_knowledge_base_ids") or [],
             },
             "policy_snapshot": envelope.get("policy_snapshot") or {},
+            "governance_policy": (
+                envelope.get("policy_snapshot", {}).get("governance_policy")
+                if isinstance(envelope.get("policy_snapshot"), dict)
+                else {}
+            ),
+        }
+
+    def _build_waiting_user_context_patch(self, context: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(context, dict):
+            return {}
+        patch: dict[str, Any] = {}
+        for key in ("pending_question", "pending_subagent_clarification", "subagent_governance_ledger"):
+            if key in context:
+                patch[key] = context[key]
+        return patch
+
+    def _build_parent_waiting_user_result(
+        self,
+        *,
+        planner_result: PlannerResult,
+        runtime_context: Dict[str, Any],
+        delegation: Any,
+        handoff_summary: dict[str, Any],
+        review_result: dict[str, Any] | None,
+        governance_policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        question = str(delegation.final_output or delegation.final_output_text or "").strip() or None
+        clarification = delegation.clarification or None
+        progress = delegation.progress or {}
+        waiting_user_policy = governance_policy.get("waiting_user") if isinstance(governance_policy, dict) else {}
+        promoted_artifacts = merge_artifacts(
+            runtime_context.get("promoted_artifacts"),
+            delegation.artifacts,
+        )
+        runtime_context["pending_question"] = question
+        runtime_context["pending_subagent_clarification"] = {
+            "child_run_id": delegation.child_run_id,
+            "invocation_id": delegation.metadata.get("invocation_id") if isinstance(delegation.metadata, dict) else None,
+            "target": delegation.target.model_dump(mode="json"),
+            "question": question,
+            "progress": progress,
+            "clarification": clarification,
+            "review_result": review_result,
+            "governance_policy": governance_policy,
+            "waiting_user_policy": waiting_user_policy if isinstance(waiting_user_policy, dict) else {},
+            "waiting_user_path": (
+                governance_policy.get("latest_waiting_user", {}).get("waiting_user_path")
+                if isinstance(governance_policy.get("latest_waiting_user"), dict)
+                else []
+            ),
+            "handoff": handoff_summary,
+            "artifacts": delegation.artifacts,
+        }
+        self._append_conversation_message(runtime_context, role="assistant", content=question or delegation.summary or "")
+        return {
+            "status": "waiting_user",
+            "plan": planner_result.model_dump(mode="json"),
+            "final_output": question,
+            "final_output_text": question,
+            "final_output_json": {
+                "source": "subagent_waiting_user",
+                "child_run_id": delegation.child_run_id,
+                "invocation_id": delegation.metadata.get("invocation_id") if isinstance(delegation.metadata, dict) else None,
+                "target": {
+                    "slug": delegation.target.slug,
+                    "name": delegation.target.name,
+                },
+                "question": question,
+                "progress": progress,
+                "clarification": clarification,
+                "review_result": review_result,
+                "governance_policy": governance_policy,
+                "waiting_user_policy": waiting_user_policy if isinstance(waiting_user_policy, dict) else {},
+                "waiting_user_path": (
+                    governance_policy.get("latest_waiting_user", {}).get("waiting_user_path")
+                    if isinstance(governance_policy.get("latest_waiting_user"), dict)
+                    else []
+                ),
+                "handoff": handoff_summary,
+            },
+            "artifacts": promoted_artifacts,
+            "context": runtime_context,
         }
 
     def _evaluate_delegation_gate(
@@ -589,6 +686,11 @@ class AgentOrchestrator:
         step_history = runtime_context.get("step_history")
         if not isinstance(step_history, list):
             step_history = []
+        governance = evaluate_governance_gate(
+            run=run,
+            runtime_context=runtime_context,
+            target=target,
+        )
 
         scope_counts = {
             "focus_paths": len(delegate_input.get("focus_paths") or []) if isinstance(delegate_input.get("focus_paths"), list) else 0,
@@ -627,14 +729,17 @@ class AgentOrchestrator:
         if target.output_schema:
             signals.append("the capability has a structured output contract that justifies isolated execution")
 
-        if max_depth is not None and current_depth >= max_depth:
-            blockers.append(f"delegation depth {current_depth} already reached the target limit {max_depth}")
-        if current_depth > 0 and not target.allows_nested_delegation():
-            blockers.append("nested delegation is disabled for this capability")
         if available_tools and not step_history and not target.requires_review() and not any(scope_counts.values()):
             blockers.append("single-agent-first gate rejected delegation before any parent execution evidence was gathered")
         if not signals and available_tools:
             blockers.append("no concrete isolation, complexity, parallelism, or quality signal justifies delegation")
+
+        for blocker in governance.get("blockers") or []:
+            if blocker not in blockers:
+                blockers.append(blocker)
+        for warning in governance.get("warnings") or []:
+            if warning not in signals:
+                signals.append(warning)
 
         return {
             "allowed": not blockers,
@@ -651,6 +756,7 @@ class AgentOrchestrator:
             "target_name": target.name,
             "target_mode": mode or None,
             "review_required": target.requires_review(),
+            "governance": governance,
         }
 
     def _build_tool_lookup_context(
@@ -759,13 +865,16 @@ class AgentOrchestrator:
                     artifacts=result.get("artifacts") or [],
                 )
             elif result["status"] == "waiting_user":
+                waiting_context_patch = self._build_waiting_user_context_patch(result.get("context"))
                 await self.tracer.emit_event(
                     run.id,
                     "run.waiting_user",
                     status=result["status"],
                     question=result.get("final_output"),
                     final_output_text=result.get("final_output_text"),
+                    final_output_json=result.get("final_output_json"),
                     artifacts=result.get("artifacts") or [],
+                    context_patch=waiting_context_patch,
                 )
             return AgentRun.model_validate(updated)
         except asyncio.CancelledError:
@@ -1014,7 +1123,7 @@ class AgentOrchestrator:
         planner_result: PlannerResult,
         available_subagents: list[SubagentTarget],
         available_tools: list[dict[str, Any]],
-    ) -> Dict[str, Any]:
+    ) -> tuple[Dict[str, Any], dict[str, Any] | None]:
         if self.subagent_handoff is None:
             raise ValueError("delegate requested but subagent handoff is not configured")
 
@@ -1082,12 +1191,15 @@ class AgentOrchestrator:
                 delegation_gate=gate,
             )
             runtime_context["tool_failures"] = int(runtime_context.get("tool_failures", 0)) + 1
-            return self._build_observation(
-                step=step,
-                planner_result=planner_result,
-                status="failed",
-                error=error_message,
-                delegate_target=target.slug,
+            return (
+                self._build_observation(
+                    step=step,
+                    planner_result=planner_result,
+                    status="failed",
+                    error=error_message,
+                    delegate_target=target.slug,
+                ),
+                None,
             )
 
         await self.tracer.emit_event(
@@ -1153,12 +1265,15 @@ class AgentOrchestrator:
                 delegate_target=target.slug,
             )
             runtime_context["tool_failures"] = int(runtime_context.get("tool_failures", 0)) + 1
-            return self._build_observation(
-                step=step,
-                planner_result=planner_result,
-                status="failed",
-                error=error_message,
-                delegate_target=target.slug,
+            return (
+                self._build_observation(
+                    step=step,
+                    planner_result=planner_result,
+                    status="failed",
+                    error=error_message,
+                    delegate_target=target.slug,
+                ),
+                None,
             )
 
         handoff_envelope = delegation.metadata.get("handoff_envelope") if isinstance(delegation.metadata, dict) else None
@@ -1166,6 +1281,91 @@ class AgentOrchestrator:
         handoff_summary = self._summarize_handoff_envelope(handoff_envelope)
         partial_result = None
         child_question = None
+        resolved_governance_policy = (
+            delegation.metadata.get("governance_policy")
+            if isinstance(delegation.metadata, dict)
+            else None
+        )
+        if not isinstance(resolved_governance_policy, dict):
+            resolved_governance_policy = (
+                handoff_summary.get("governance_policy")
+                or gate.get("governance", {}).get("policy")
+                or {}
+            )
+        waiting_user_policy = resolved_governance_policy.get("waiting_user") if isinstance(resolved_governance_policy, dict) else {}
+        if not isinstance(waiting_user_policy, dict):
+            waiting_user_policy = {}
+        prior_usage = gate.get("governance", {}).get("prior_usage") if isinstance(gate.get("governance"), dict) else {}
+        last_invocation_usage = {}
+        budget_payload = resolved_governance_policy.get("budget") if isinstance(resolved_governance_policy.get("budget"), dict) else {}
+        if isinstance(budget_payload, dict):
+            candidate = budget_payload.get("last_invocation_usage")
+            if not isinstance(candidate, dict) or not candidate:
+                candidate = budget_payload.get("usage")
+            if isinstance(candidate, dict):
+                last_invocation_usage = candidate
+        cumulative_usage = merge_governance_usage_snapshots(
+            prior_usage if isinstance(prior_usage, dict) else {},
+            last_invocation_usage if isinstance(last_invocation_usage, dict) else {},
+            source="step_history + last_invocation",
+        )
+        waiting_user_path = []
+        if delegation.status == "waiting_user":
+            clarification_path = (
+                delegation.clarification.get("waiting_user_path")
+                if isinstance(delegation.clarification, dict)
+                else None
+            )
+            progress_path = (
+                delegation.progress.get("waiting_user_path")
+                if isinstance(delegation.progress, dict)
+                else None
+            )
+            metadata_path = (
+                delegation.metadata.get("waiting_user_path")
+                if isinstance(delegation.metadata, dict)
+                else None
+            )
+            child_waiting_user_path = None
+            for candidate in (metadata_path, clarification_path, progress_path):
+                if isinstance(candidate, list) and candidate:
+                    child_waiting_user_path = candidate
+                    break
+            waiting_user_path = build_waiting_user_path(
+                parent_run_id=run.id,
+                child_run_id=delegation.child_run_id,
+                child_waiting_user_path=child_waiting_user_path,
+            )
+        ledger_entry = record_delegation_outcome(
+            runtime_context,
+            target_slug=target.slug,
+            status=delegation.status,
+            child_run_id=delegation.child_run_id,
+            invocation_id=delegation.metadata.get("invocation_id") if isinstance(delegation.metadata, dict) else None,
+            usage=last_invocation_usage if isinstance(last_invocation_usage, dict) else {},
+            waiting_user_propagation=waiting_user_policy.get("propagation"),
+            waiting_user_counts_as_active_child=bool(waiting_user_policy.get("counts_as_active_child", True)),
+            question=delegation.final_output or delegation.final_output_text,
+            waiting_user_path=waiting_user_path,
+        )
+        history = ledger_entry.get("history") or append_delegation_outcome(
+            gate.get("governance", {}).get("history") if isinstance(gate.get("governance"), dict) else {},
+            status=delegation.status,
+            waiting_user_propagation=waiting_user_policy.get("propagation"),
+            waiting_user_counts_as_active_child=bool(waiting_user_policy.get("counts_as_active_child", True)),
+        )
+        cumulative_usage = ledger_entry.get("usage") or cumulative_usage
+        last_invocation_usage = ledger_entry.get("last_invocation_usage") or last_invocation_usage
+        resolved_governance_policy = annotate_governance_policy(
+            {
+                **dict(resolved_governance_policy or {}),
+                "latest_waiting_user": dict(ledger_entry.get("latest_waiting_user") or {}),
+            },
+            history=history,
+            usage=cumulative_usage,
+            prior_usage=prior_usage if isinstance(prior_usage, dict) else {},
+            last_invocation_usage=last_invocation_usage if isinstance(last_invocation_usage, dict) else {},
+        )
         if delegation.status == "waiting_user":
             partial_result = {
                 "question": delegation.final_output or delegation.final_output_text,
@@ -1179,6 +1379,7 @@ class AgentOrchestrator:
             "delegation_gate": gate,
             "handoff": handoff_summary,
             "review_result": review_result,
+            "governance_policy": resolved_governance_policy,
             "progress": delegation.progress,
             "clarification": delegation.clarification or None,
         }
@@ -1216,6 +1417,7 @@ class AgentOrchestrator:
             delegation_gate=gate,
             handoff=handoff_summary,
             handoff_envelope=handoff_envelope,
+            governance_policy=resolved_governance_policy,
             partial_result=partial_result,
             progress=delegation.progress,
             clarification=delegation.clarification or None,
@@ -1230,7 +1432,7 @@ class AgentOrchestrator:
             delegation_gate=gate,
         )
         runtime_context["tool_failures"] = 0
-        return self._build_observation(
+        observation = self._build_observation(
             step=step,
             planner_result=planner_result,
             status="completed",
@@ -1240,9 +1442,29 @@ class AgentOrchestrator:
                 "summary": delegation.summary,
                 "final_output_text": delegation.final_output_text,
                 "review_result": review_result,
+                "governance_policy": resolved_governance_policy,
+                "governance_usage": cumulative_usage,
+                "waiting_user_policy": waiting_user_policy,
             },
             delegate_target=target.slug,
         )
+        if delegation.status != "waiting_user":
+            return observation, None
+
+        propagation = ""
+        waiting_user_policy = resolved_governance_policy.get("waiting_user")
+        if isinstance(waiting_user_policy, dict):
+            propagation = str(waiting_user_policy.get("propagation") or "").strip()
+        if should_bubble_waiting_user_to_parent(propagation):
+            return observation, self._build_parent_waiting_user_result(
+                planner_result=planner_result,
+                runtime_context=runtime_context,
+                delegation=delegation,
+                handoff_summary=handoff_summary,
+                review_result=review_result,
+                governance_policy=resolved_governance_policy,
+            )
+        return observation, None
 
     async def _execute_final_answer(
         self,
@@ -1393,6 +1615,7 @@ class AgentOrchestrator:
             output={"question": action.question},
         )
         runtime_context["pending_question"] = action.question
+        runtime_context.pop("pending_subagent_clarification", None)
         self._append_conversation_message(runtime_context, role="assistant", content=action.question or "")
         promoted_artifacts = merge_artifacts(runtime_context.get("promoted_artifacts"))
         return {
@@ -1577,7 +1800,7 @@ class AgentOrchestrator:
                 )
 
             if action.type == "delegate":
-                observation = await self._execute_delegate_action(
+                observation, delegated_result = await self._execute_delegate_action(
                     run=run,
                     runtime_context=runtime_context,
                     planner_result=planner_result,
@@ -1591,6 +1814,8 @@ class AgentOrchestrator:
                     runtime_context=runtime_context,
                     plan=last_plan,
                 )
+                if delegated_result is not None:
+                    return delegated_result
                 continue
 
             observation = await self._execute_tool_action(
