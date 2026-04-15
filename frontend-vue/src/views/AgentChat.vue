@@ -132,6 +132,10 @@
           </button>
         </div>
 
+        <div v-if="showSubagentClarification" class="message-row assistant">
+          <AgentSubagentClarificationCard :run="currentRun" />
+        </div>
+
         <div v-if="showStructuredSurface" class="message-row assistant detail-row">
           <button
             type="button"
@@ -314,6 +318,7 @@ import AgentTimeline from '@/components/agent/AgentTimeline.vue'
 import AgentRunTree from '@/components/agent/AgentRunTree.vue'
 import AgentSubagentProtocolPanel from '@/components/agent/AgentSubagentProtocolPanel.vue'
 import AgentSubagentInvocationPanel from '@/components/agent/AgentSubagentInvocationPanel.vue'
+import AgentSubagentClarificationCard from '@/components/agent/AgentSubagentClarificationCard.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
 import { getRunAnswerText } from '@/utils/agentArtifacts'
@@ -408,6 +413,11 @@ const surfaceArtifacts = computed(() => artifacts.value.filter((artifact) => art
 const surfaceOutputJson = computed(() => surfaceArtifacts.value.length > 0 ? null : currentRun.value?.finalOutputJson || null)
 const showStructuredSurface = computed(() => surfaceArtifacts.value.length > 0 || Boolean(surfaceOutputJson.value))
 const structuredResultCount = computed(() => surfaceArtifacts.value.length + (surfaceOutputJson.value ? 1 : 0))
+const showSubagentClarification = computed(() => Boolean(
+  currentRun.value?.status === 'waiting_user' &&
+  currentRun.value?.context &&
+  (currentRun.value.context.pending_subagent_clarification || currentRun.value.context.pendingSubagentClarification)
+))
 const requestedSessionId = computed(() => {
   const value = String(route.query.session || '').trim()
   return value || ''

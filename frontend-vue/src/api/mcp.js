@@ -5,6 +5,10 @@ export const mcpAPI = {
     return api.get('/api/v1/mcp/servers')
   },
 
+  getGovernance(params = {}) {
+    return api.get('/api/v1/mcp/governance', { params })
+  },
+
   getServer(serverId) {
     return api.get(`/api/v1/mcp/servers/${serverId}`)
   },
@@ -27,6 +31,10 @@ export const mcpAPI = {
 
   refreshTools(serverId) {
     return api.post(`/api/v1/mcp/servers/${serverId}/refresh-tools`)
+  },
+
+  bulkAction(payload) {
+    return api.post('/api/v1/mcp/bulk-actions', payload)
   },
 
   updateAgentMCPServers(agentId, serverIds = []) {

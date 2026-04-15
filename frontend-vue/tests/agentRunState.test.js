@@ -194,6 +194,7 @@ test('buildRunEventPatch for waiting_user keeps question text and promoted artif
     finalOutput: '',
     finalOutputText: '',
     finalOutputJson: null,
+    context: {},
     toolCalls: [],
     artifacts: []
   }, {
@@ -220,6 +221,138 @@ test('buildRunEventPatch for waiting_user keeps question text and promoted artif
     patch.artifacts.map((artifact) => artifact.artifactType),
     ['answer', 'document_excerpt']
   )
+})
+
+test('buildRunEventPatch for subagent waiting_user preserves clarification context from event stream', () => {
+  const patch = buildRunEventPatch({
+    id: 'run-3b',
+    finalOutput: '',
+    finalOutputText: '',
+    finalOutputJson: null,
+    context: {
+      conversation: [{ role: 'user', content: 'Review the rollout plan' }]
+    },
+    toolCalls: [],
+    artifacts: []
+  }, {
+    runId: 'run-3b',
+    eventType: 'run.waiting_user',
+    createdAt: '2026-04-01T10:03:30.000Z',
+    payload: {
+      status: 'waiting_user',
+      question: 'Need the migration rollout window.',
+      final_output_json: {
+        source: 'subagent_waiting_user',
+        question: 'Need the migration rollout window.'
+      },
+      context_patch: {
+        pending_question: 'Need the migration rollout window.',
+        pending_subagent_clarification: {
+          child_run_id: 'child-run-1',
+          question: 'Need the migration rollout window.',
+          target: {
+            slug: 'review-specialist',
+            name: 'Review Specialist'
+          },
+          clarification: {
+            protocol_version: 'managed-subagent.clarification.v1',
+            state: 'required',
+            required_fields: ['migration rollout window']
+          }
+        }
+      },
+      artifacts: []
+    }
+  })
+
+  assert.equal(patch.finalOutputText, 'Need the migration rollout window.')
+  assert.equal(patch.finalOutputJson.source, 'subagent_waiting_user')
+  assert.equal(patch.context.pending_question, 'Need the migration rollout window.')
+  assert.equal(patch.context.pending_subagent_clarification.child_run_id, 'child-run-1')
+  assert.equal(patch.context.conversation[0].content, 'Review the rollout plan')
+})
+
+test('buildRunEventPatch for run.resumed clears stale waiting-user context', () => {
+  const patch = buildRunEventPatch({
+    id: 'run-3c',
+    finalOutput: 'Need the migration rollout window.',
+    finalOutputText: 'Need the migration rollout window.',
+    finalOutputJson: {
+      source: 'subagent_waiting_user',
+      question: 'Need the migration rollout window.'
+    },
+    context: {
+      conversation: [{ role: 'user', content: 'Review the rollout plan' }],
+      pending_question: 'Need the migration rollout window.',
+      pending_subagent_clarification: {
+        child_run_id: 'child-run-1',
+        question: 'Need the migration rollout window.'
+      },
+      ask_user_guard: { attempt: 1 }
+    },
+    toolCalls: [],
+    artifacts: []
+  }, {
+    runId: 'run-3c',
+    eventType: 'run.resumed',
+    createdAt: '2026-04-01T10:04:00.000Z',
+    payload: { status: 'queued' }
+  })
+
+  assert.equal(patch.finalOutputText, '')
+  assert.deepEqual(patch.context, {
+    conversation: [{ role: 'user', content: 'Review the rollout plan' }]
+  })
+})
+
+test('deriveRunState preserves pending subagent clarification context from persisted snapshot', () => {
+  const derived = deriveRunState({
+    id: 'run-subagent-waiting',
+    status: 'waiting_user',
+    context: {
+      pending_subagent_clarification: {
+        child_run_id: 'child-run-1',
+        target: {
+          slug: 'review-specialist',
+          name: 'Review Specialist'
+        },
+        question: 'Need the migration rollout window.',
+        progress: {
+          protocol_version: 'managed-subagent.progress.v1',
+          state: 'blocked',
+          summary: 'Review is blocked pending rollout details.'
+        },
+        clarification: {
+          protocol_version: 'managed-subagent.clarification.v1',
+          state: 'required',
+          question: 'Need the migration rollout window.',
+          required_fields: ['migration rollout window'],
+          response_hint: 'Provide the approved rollout window and blackout constraints.'
+        },
+        governance_policy: {
+          protocol_version: 'managed-subagent.governance.v1',
+          target_slug: 'review-specialist',
+          waiting_user: {
+            propagation: 'bubble_to_parent'
+          },
+          limits: {
+            timeout_seconds: 45
+          }
+        }
+      }
+    },
+    finalOutputText: 'Need the migration rollout window.',
+    finalOutputJson: {
+      source: 'subagent_waiting_user',
+      question: 'Need the migration rollout window.'
+    },
+    artifacts: [],
+    steps: [],
+    toolCalls: []
+  }, [])
+
+  assert.equal(derived.runPatch.finalOutputText, 'Need the migration rollout window.')
+  assert.equal(derived.surfaceMeta.source, 'persisted_snapshot')
 })
 
 test('buildRunEventPatch rebuilds structured result surfaces for failed terminal snapshots', () => {

@@ -272,6 +272,15 @@ export const buildRunEventPatch = (currentRun, event) => {
     patch.finishedAt = null
     patch.cancelledAt = null
     patch.plan = {}
+    patch.context = {
+      ...(currentRun?.context || {})
+    }
+    delete patch.context.pending_question
+    delete patch.context.pendingQuestion
+    delete patch.context.pending_subagent_clarification
+    delete patch.context.pendingSubagentClarification
+    delete patch.context.ask_user_guard
+    delete patch.context.askUserGuard
   }
 
   if (event.eventType === 'run.resumed') {
@@ -347,6 +356,13 @@ export const buildRunEventPatch = (currentRun, event) => {
     patch.input = {
       ...(currentRun?.input || {}),
       ...payload.input_patch
+    }
+  }
+
+  if (payload.context_patch && currentRun?.id === event.runId) {
+    patch.context = {
+      ...(currentRun?.context || {}),
+      ...payload.context_patch
     }
   }
 

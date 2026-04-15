@@ -51,11 +51,20 @@
       当前选择还没有保存，生效能力预览仍然基于最近一次已保存配置。
     </div>
 
+    <div v-if="agentsStore.mcpGovernanceSummary" class="info-banner">
+      MCP 治理概况：待治理 {{ agentsStore.mcpGovernanceSummary.recoveringServers || 0 }} 个，
+      阻塞 {{ agentsStore.mcpGovernanceSummary.blockedServers || 0 }} 个，
+      长期 stale {{ agentsStore.mcpGovernanceSummary.longStaleServers?.length || 0 }} 个。
+    </div>
+
     <div v-if="selectedMCPWarnings.length > 0" class="warning-banner">
       <strong>当前选中的 MCP 绑定需要关注：</strong>
       <ul class="tips-list compact warning-action-list">
         <li v-for="warning in selectedMCPWarnings" :key="warning.id" class="warning-action-item">
-          <span>{{ warning.message }}</span>
+          <span>
+            {{ warning.message }}
+            <template v-if="warning.impactSummary"> {{ warning.impactSummary }}</template>
+          </span>
           <button
             v-if="warning.action"
             type="button"
@@ -470,6 +479,22 @@ const handleMCPWarningAction = async (warning) => {
     } else if (warning.action.type === 'refresh') {
       const { data } = await mcpAPI.refreshTools(warning.serverId)
       toastStore.showToast({ type: 'success', message: `已刷新 ${data?.total || 0} 个 MCP 工具` })
+    } else if (warning.action.type === 'enable') {
+      const server = mcpServers.value.find((item) => item.id === warning.serverId)
+      if (!server) {
+        throw new Error('未找到 MCP server')
+      }
+      await mcpAPI.updateServer(warning.serverId, {
+        name: server.name,
+        transport: server.transport,
+        endpoint: server.endpoint,
+        command: server.command,
+        args: server.args || [],
+        env: server.env || {},
+        metadata: server.metadata || {},
+        status: 'active'
+      })
+      toastStore.showToast({ type: 'success', message: 'MCP server 已重新启用' })
     }
 
     await agentsStore.fetchMCPServers()

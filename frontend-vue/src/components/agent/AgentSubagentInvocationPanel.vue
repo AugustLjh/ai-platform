@@ -3,83 +3,142 @@
     <div class="panel-head">
       <div>
         <h3>委派明细</h3>
-        <p>聚合展示 handoff、policy snapshot、child run 状态和最终结果摘要。</p>
+        <p>聚合展示 handoff、policy snapshot、child run 状态、恢复语义与最终结果摘要。</p>
       </div>
-      <span class="panel-count">{{ items.length }}</span>
+      <span class="panel-count">{{ entries.length }}</span>
     </div>
 
-    <div v-if="items.length === 0" class="empty-state">
+    <div v-if="entries.length === 0" class="empty-state">
       当前没有发生 subagent 委派。
     </div>
 
     <div v-else class="invocation-list">
-      <article v-for="item in items" :key="item.invocation.id" class="invocation-card">
+      <article
+        v-for="entry in entries"
+        :key="entry.id"
+        :class="['invocation-card', { attention: entry.needsAttention, danger: entry.attentionTone === 'danger' }]"
+      >
         <div class="invocation-head">
           <div>
-            <div class="invocation-title">{{ summarizeInvocationTarget(item.invocation) }}</div>
+            <div class="invocation-title">{{ entry.target }}</div>
             <div class="invocation-subtitle">
-              <span v-if="item.parentRun?.id" class="mono">parent {{ item.parentRun.id.slice(0, 8) }}</span>
-              <span v-if="item.childRun?.run?.id" class="mono">child {{ item.childRun.run.id.slice(0, 8) }}</span>
-              <span v-if="item.invocation.publicationId" class="mono">pub {{ item.invocation.publicationId.slice(0, 8) }}</span>
+              <span v-if="entry.parentRunId" class="mono">parent {{ entry.parentRunId.slice(0, 8) }}</span>
+              <span v-if="entry.childRunId" class="mono">child {{ entry.childRunId.slice(0, 8) }}</span>
+              <span v-if="entry.publicationId" class="mono">pub {{ entry.publicationId.slice(0, 8) }}</span>
             </div>
           </div>
-          <span :class="['status-pill', item.invocation.status]">{{ item.invocation.status }}</span>
+          <span :class="['status-pill', entry.status, entry.attentionTone]">{{ entry.statusLabel }}</span>
         </div>
 
-        <p v-if="summarizeInvocationTask(item.invocation)" class="invocation-task">
-          {{ summarizeInvocationTask(item.invocation) }}
-        </p>
+        <p v-if="entry.attentionSummary" class="invocation-attention">{{ entry.attentionSummary }}</p>
+        <p v-if="entry.taskMessage" class="invocation-task">{{ entry.taskMessage }}</p>
 
         <div class="fact-grid">
-          <div v-if="constraintCount(item.invocation)" class="fact-card">
+          <div v-if="entry.constraints.length > 0" class="fact-card">
             <span>约束</span>
-            <strong>{{ constraintCount(item.invocation) }} 条</strong>
+            <strong>{{ entry.constraints.length }} 条</strong>
           </div>
-          <div v-if="reviewRequirement(item.invocation)" class="fact-card">
+          <div v-if="entry.reviewRequirement" class="fact-card">
             <span>评审要求</span>
-            <strong>{{ reviewRequirement(item.invocation) }}</strong>
+            <strong>{{ entry.reviewRequirement }}</strong>
           </div>
-          <div v-if="summarizeInvocationReview(item.invocation)" class="fact-card">
+          <div v-if="entry.reviewSummary" class="fact-card">
             <span>评审结论</span>
-            <strong>{{ summarizeInvocationReview(item.invocation) }}</strong>
+            <strong>{{ entry.reviewSummary }}</strong>
           </div>
-          <div v-if="knowledgeSummary(item.invocation)" class="fact-card">
+          <div v-if="entry.knowledgeSummary" class="fact-card">
             <span>知识权限</span>
-            <strong>{{ knowledgeSummary(item.invocation) }}</strong>
+            <strong>{{ entry.knowledgeSummary }}</strong>
           </div>
-          <div v-if="childStatusSummary(item)" class="fact-card">
-            <span>Child 状态</span>
-            <strong>{{ childStatusSummary(item) }}</strong>
+          <div v-if="entry.governanceSummary" class="fact-card">
+            <span>治理限制</span>
+            <strong>{{ entry.governanceSummary }}</strong>
           </div>
+          <div v-if="entry.recoverySummary" class="fact-card">
+            <span>恢复语义</span>
+            <strong>{{ entry.recoverySummary }}</strong>
+          </div>
+        </div>
+
+        <div v-if="entry.governance.warnings.length > 0" class="warning-list">
+          <div
+            v-for="warning in entry.governance.warnings"
+            :key="warning"
+            class="warning-chip"
+          >
+            {{ warning }}
+          </div>
+        </div>
+
+        <div v-if="entry.constraints.length > 0" class="meta-section">
+          <span class="meta-label">Constraints</span>
+          <div class="meta-chip-list">
+            <span v-for="itemText in entry.constraints" :key="itemText" class="meta-chip">
+              {{ itemText }}
+            </span>
+          </div>
+        </div>
+
+        <div v-if="entry.governance.enforcement.hardLimits.length > 0" class="meta-section">
+          <span class="meta-label">硬限制</span>
+          <div class="meta-chip-list">
+            <span v-for="itemText in entry.governance.enforcement.hardLimits" :key="itemText" class="meta-chip">
+              {{ itemText }}
+            </span>
+          </div>
+        </div>
+
+        <div v-if="entry.governanceBudgetLines.length > 0" class="meta-section">
+          <span class="meta-label">Budget</span>
+          <div class="meta-chip-list">
+            <span v-for="itemText in entry.governanceBudgetLines" :key="itemText" class="meta-chip budget">
+              {{ itemText }}
+            </span>
+          </div>
+        </div>
+
+        <div v-if="entry.waitingUserPathSummary" class="meta-note">
+          waiting-user 链路：{{ entry.waitingUserPathSummary }}
+        </div>
+
+        <div v-if="entry.governance.enforcement.note" class="meta-note">
+          {{ entry.governance.enforcement.note }}
         </div>
 
         <div class="meta-line">
-          <span v-if="item.invocation.startedAt">开始于 {{ formatTime(item.invocation.startedAt) }}</span>
-          <span v-if="item.invocation.completedAt">结束于 {{ formatTime(item.invocation.completedAt) }}</span>
+          <span v-if="entry.startedAt">开始于 {{ formatTime(entry.startedAt) }}</span>
+          <span v-if="entry.completedAt">结束于 {{ formatTime(entry.completedAt) }}</span>
         </div>
 
-        <AgentSubagentReviewCard :review-result="getInvocationReviewResult(item.invocation)" />
-        <pre v-if="resultSummary(item.invocation)" class="result-preview">{{ resultSummary(item.invocation) }}</pre>
+        <AgentSubagentReviewCard :review-result="entry.reviewResult" />
+        <pre v-if="entry.resultSummary" class="result-preview">{{ entry.resultSummary }}</pre>
       </article>
     </div>
   </section>
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import AgentSubagentReviewCard from './AgentSubagentReviewCard.vue'
-import {
-  getInvocationReviewResult,
-  summarizeInvocationReview,
-  summarizeInvocationTarget,
-  summarizeInvocationTask
-} from '@/utils/agentRunTree'
+import { buildInvocationProtocolEntry } from '@/utils/agentRunTree'
 
-defineProps({
+const props = defineProps({
   items: {
     type: Array,
     default: () => []
   }
 })
+
+const entries = computed(() => (
+  props.items.map((item) => {
+    const entry = buildInvocationProtocolEntry(item)
+    return {
+      ...entry,
+      parentRunId: item.parentRun?.id || '',
+      publicationId: item.invocation?.publicationId || ''
+    }
+  })
+))
 
 const formatTime = (value) => {
   if (!value) return '未知时间'
@@ -90,53 +149,6 @@ const formatTime = (value) => {
     hour: '2-digit',
     minute: '2-digit'
   })
-}
-
-const getPolicySnapshot = (invocation) => {
-  const requestPayload = invocation?.requestPayload || {}
-  return requestPayload.policy_snapshot || requestPayload.policySnapshot || {}
-}
-
-const constraintCount = (invocation) => {
-  const requestPayload = invocation?.requestPayload || {}
-  const constraints = Array.isArray(requestPayload.constraints) ? requestPayload.constraints : []
-  return constraints.length
-}
-
-const reviewRequirement = (invocation) => {
-  const reviewPolicy = getPolicySnapshot(invocation).review_policy || {}
-  if (reviewPolicy.requires_judge) return '需要 judge'
-  if (reviewPolicy.requires_reviewer || reviewPolicy.required) return '需要 reviewer'
-  if (reviewPolicy.mode === 'judge') return 'Judge 能力'
-  if (reviewPolicy.mode === 'reviewer') return 'Reviewer 能力'
-  return ''
-}
-
-const knowledgeSummary = (invocation) => {
-  const policy = getPolicySnapshot(invocation).knowledge_policy || {}
-  const mode = String(policy.mode || policy.access || '').trim()
-  if (!mode) return ''
-  return mode
-}
-
-const childStatusSummary = (item) => {
-  if (item?.childRun?.run?.status) return item.childRun.run.status
-  const resultPayload = item?.invocation?.resultPayload || {}
-  return resultPayload.status || ''
-}
-
-const resultSummary = (invocation) => {
-  const resultPayload = invocation?.resultPayload || {}
-  const finalResult = resultPayload.final_result || resultPayload.finalResult || {}
-  const reviewResult = getInvocationReviewResult(invocation)
-  const textualSummary = finalResult.summary || finalResult.final_output_text || finalResult.final_output || ''
-  if (reviewResult.required || ['reviewer', 'judge'].includes(reviewResult.mode)) {
-    if (textualSummary && textualSummary !== reviewResult.conclusion && textualSummary !== reviewResult.summary) {
-      return textualSummary
-    }
-    return resultPayload.error || invocation?.errorMessage || ''
-  }
-  return reviewResult.conclusion || textualSummary || resultPayload.error || invocation?.errorMessage || ''
 }
 </script>
 
@@ -204,8 +216,17 @@ const resultSummary = (invocation) => {
   border-radius: 18px;
   padding: 16px;
   background: linear-gradient(180deg, #fffef8 0%, #fffbeb 100%);
-  max-height: 420px;
+  max-height: 480px;
   overflow: auto;
+}
+
+.invocation-card.attention {
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.invocation-card.danger {
+  border-color: rgba(239, 68, 68, 0.22);
+  background: linear-gradient(180deg, #fffafa 0%, #fff5f5 100%);
 }
 
 .invocation-head {
@@ -222,10 +243,10 @@ const resultSummary = (invocation) => {
 
 .invocation-subtitle,
 .meta-line {
-  margin-top: 8px;
   display: flex;
   flex-wrap: wrap;
   gap: 8px 12px;
+  margin-top: 8px;
   color: #64748b;
   font-size: 12px;
 }
@@ -234,48 +255,18 @@ const resultSummary = (invocation) => {
   font-family: var(--font-mono);
 }
 
-.invocation-task {
-  margin-top: 12px;
-  color: #475569;
-  line-height: 1.6;
-}
-
-.fact-grid {
-  margin-top: 12px;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
-}
-
-.fact-card {
-  border-radius: 14px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(15, 23, 42, 0.06);
-}
-
-.fact-card span {
-  display: block;
-  font-size: 12px;
-  color: #64748b;
-  margin-bottom: 4px;
-}
-
-.fact-card strong {
-  color: #0f172a;
-}
-
 .status-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  white-space: nowrap;
   border-radius: 999px;
+  padding: 6px 10px;
   font-size: 12px;
   font-weight: 700;
-  padding: 6px 10px;
+  white-space: nowrap;
 }
 
+.status-pill.pending,
 .status-pill.queued {
   background: rgba(148, 163, 184, 0.16);
   color: #475569;
@@ -286,7 +277,8 @@ const resultSummary = (invocation) => {
   color: #1d4ed8;
 }
 
-.status-pill.waiting_user {
+.status-pill.waiting_user,
+.status-pill.warning {
   background: rgba(245, 158, 11, 0.14);
   color: #92400e;
 }
@@ -297,19 +289,116 @@ const resultSummary = (invocation) => {
 }
 
 .status-pill.failed,
-.status-pill.cancelled {
+.status-pill.cancelled,
+.status-pill.danger {
   background: rgba(239, 68, 68, 0.12);
   color: #b91c1c;
 }
 
+.invocation-attention,
+.invocation-task {
+  margin-top: 10px;
+  line-height: 1.6;
+  color: #475569;
+  white-space: pre-wrap;
+}
+
+.invocation-attention {
+  color: #92400e;
+  font-weight: 600;
+}
+
+.fact-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.fact-card {
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  padding: 12px;
+}
+
+.fact-card span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.fact-card strong {
+  color: #0f172a;
+  line-height: 1.5;
+}
+
+.warning-list {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.warning-chip,
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.warning-chip {
+  background: rgba(245, 158, 11, 0.14);
+  color: #92400e;
+}
+
+.meta-section {
+  margin-top: 12px;
+}
+
+.meta-label {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.meta-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.meta-chip {
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+}
+
+.meta-chip.budget {
+  background: rgba(59, 130, 246, 0.1);
+  color: #1d4ed8;
+}
+
+.meta-note {
+  margin-top: 12px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .result-preview {
   margin-top: 12px;
+  border-radius: 16px;
   padding: 12px;
-  border-radius: 14px;
   background: rgba(15, 23, 42, 0.04);
-  color: #334155;
-  max-height: 220px;
-  overflow: auto;
+  color: #1e293b;
   white-space: pre-wrap;
   word-break: break-word;
 }

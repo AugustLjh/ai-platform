@@ -19,6 +19,148 @@
       {{ errorMessage }}
     </div>
 
+    <section class="governance-strip card">
+      <div class="section-head">
+        <div>
+          <h2>治理巡检</h2>
+          <p>统一查看失败趋势、长期 stale catalog 和可批量恢复的 MCP server。</p>
+        </div>
+        <div class="hero-actions">
+          <select v-model="governanceFilter" class="input compact-select">
+            <option value="all">全部</option>
+            <option value="recoverable">待恢复</option>
+            <option value="blocked">阻塞</option>
+            <option value="stale">长期 stale</option>
+            <option value="untested">待验证</option>
+          </select>
+          <select v-model="eventActionFilter" class="input compact-select">
+            <option value="">全部动作</option>
+            <option value="test">test</option>
+            <option value="refresh">refresh</option>
+            <option value="enable">enable</option>
+            <option value="update">update</option>
+            <option value="delete">delete</option>
+            <option value="create">create</option>
+          </select>
+          <select v-model="eventStatusFilter" class="input compact-select">
+            <option value="">全部状态</option>
+            <option value="succeeded">succeeded</option>
+            <option value="failed">failed</option>
+          </select>
+          <select v-model="eventFailureModeFilter" class="input compact-select">
+            <option value="">全部故障</option>
+            <option value="connection_failed">connection_failed</option>
+            <option value="catalog_stale">catalog_stale</option>
+            <option value="catalog_empty">catalog_empty</option>
+            <option value="connection_untested">connection_untested</option>
+            <option value="refresh_failed">refresh_failed</option>
+            <option value="server_disabled">server_disabled</option>
+          </select>
+          <select v-model="bulkGroupBy" class="input compact-select">
+            <option value="none">不分组</option>
+            <option value="status">按状态</option>
+            <option value="transport">按 transport</option>
+            <option value="failure_mode">按故障模式</option>
+          </select>
+          <select v-model.number="bulkMaxBatchSize" class="input compact-select">
+            <option :value="1000">整批</option>
+            <option :value="1">1 个一组</option>
+            <option :value="3">3 个一组</option>
+            <option :value="5">5 个一组</option>
+          </select>
+          <select v-model.number="bulkRetryFailed" class="input compact-select">
+            <option :value="0">失败不重试</option>
+            <option :value="1">失败重试 1 次</option>
+            <option :value="2">失败重试 2 次</option>
+          </select>
+          <button
+            type="button"
+            class="btn btn-secondary"
+            :disabled="busyAction === 'bulk-test' || bulkActionServerIds.length === 0"
+            @click="runBulkAction('test')"
+          >
+            {{ busyAction === 'bulk-test' ? '批量测试中...' : '批量测试' }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary"
+            :disabled="busyAction === 'bulk-refresh' || bulkActionServerIds.length === 0"
+            @click="runBulkAction('refresh')"
+          >
+            {{ busyAction === 'bulk-refresh' ? '批量刷新中...' : '批量刷新 Catalog' }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary"
+            :disabled="busyAction === 'bulk-enable' || bulkEnableServerIds.length === 0"
+            @click="runBulkAction('enable')"
+          >
+            {{ busyAction === 'bulk-enable' ? '批量启用中...' : '批量启用' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="summary-grid governance-summary-grid">
+        <article class="summary-card">
+          <div class="summary-head">
+            <span class="summary-kicker">Recoverable</span>
+          </div>
+          <strong>{{ governanceSummary?.recoveringServers || 0 }} 个 server 待治理</strong>
+          <p>其中阻塞 {{ governanceSummary?.blockedServers || 0 }} 个。</p>
+        </article>
+        <article class="summary-card">
+          <div class="summary-head">
+            <span class="summary-kicker">Stale</span>
+          </div>
+          <strong>{{ governanceSummary?.staleServers || 0 }} 个 catalog 已过期</strong>
+          <p>长期 stale {{ governanceSummary?.longStaleServers?.length || 0 }} 个。</p>
+        </article>
+        <article class="summary-card">
+          <div class="summary-head">
+            <span class="summary-kicker">Verify</span>
+          </div>
+          <strong>{{ governanceSummary?.untestedServers || 0 }} 个 server 待验证</strong>
+          <p>当前影响 active agent {{ governanceSummary?.activeImpactedAgents || 0 }} 个。</p>
+        </article>
+        <article class="summary-card">
+          <div class="summary-head">
+            <span class="summary-kicker">Trend</span>
+          </div>
+          <strong>{{ governanceTopFailureMode }}</strong>
+          <p>{{ governanceTopActionType }}</p>
+        </article>
+        <article class="summary-card">
+          <div class="summary-head">
+            <span class="summary-kicker">Audit</span>
+          </div>
+          <strong>最近事件 {{ governanceSummary?.recentEventCount || 0 }} 条</strong>
+          <p>{{ governanceTopEventStatus }}</p>
+        </article>
+      </div>
+
+      <div v-if="bulkExecutionSummary" class="info-banner">
+        {{ bulkExecutionSummary }}
+      </div>
+
+      <div v-if="governanceSummary?.recentEvents?.length" class="governance-events">
+        <article
+          v-for="event in governanceSummary.recentEvents.slice(0, 8)"
+          :key="event.id"
+          class="governance-event-card"
+        >
+          <div class="catalog-tool-head">
+            <strong>{{ event.serverName || event.serverId || '未知 Server' }}</strong>
+            <span>{{ formatTime(event.createdAt) }}</span>
+          </div>
+          <p>{{ event.summary }}</p>
+          <div class="server-item-badges">
+            <span :class="['mini-badge', `recovery-${event.status || 'info'}`]">{{ event.actionType || 'event' }}</span>
+            <span v-if="event.failureMode" class="mini-badge recovery-neutral">{{ event.failureMode }}</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
     <section class="mcp-grid">
       <div class="card server-list-card">
         <div class="section-head">
@@ -38,7 +180,7 @@
 
         <div v-else class="server-list">
           <button
-            v-for="server in servers"
+            v-for="server in visibleServers"
             :key="server.id"
             type="button"
             :class="['server-item', { active: selectedServer?.id === server.id }]"
@@ -62,6 +204,9 @@
               </span>
               <span :class="['mini-badge', statusTone('catalog', server.catalog?.status)]">
                 {{ statusLabel('catalog', server.catalog?.status) }}
+              </span>
+              <span class="mini-badge recovery-neutral">
+                {{ governanceFocusLabel(server) }}
               </span>
             </div>
             <div v-if="server.lastError" class="server-item-error">
@@ -242,6 +387,29 @@
               <strong>{{ selectedServer.bindingUsage?.summary || '当前还没有 agent 绑定这个 server。' }}</strong>
               <p v-if="selectedServer.bindingUsage?.moreCount">另有 {{ selectedServer.bindingUsage.moreCount }} 个 agent 未展开。</p>
             </article>
+
+            <article class="summary-card">
+              <div class="summary-head">
+                <span class="summary-kicker">Recovery</span>
+                <span :class="['summary-badge', recoverySeverityTone(selectedServer.recovery)]">
+                  {{ selectedServer.recovery?.status || 'healthy' }}
+                </span>
+              </div>
+              <strong>{{ selectedServer.recovery?.summary || '当前不需要额外恢复操作。' }}</strong>
+              <p v-if="selectedServer.recovery?.impact?.summary">{{ selectedServer.recovery.impact.summary }}</p>
+              <div v-if="selectedServer.recovery?.actions?.length" class="recovery-actions">
+                <button
+                  v-for="action in selectedServer.recovery.actions"
+                  :key="`${selectedServer.id}-${action.type}`"
+                  type="button"
+                  class="btn btn-secondary btn-inline"
+                  :disabled="busyAction === action.type"
+                  @click="handleRecoveryAction(action)"
+                >
+                  {{ busyAction === action.type ? '处理中...' : action.label }}
+                </button>
+              </div>
+            </article>
           </div>
           <div v-if="selectedServer.lastError" class="detail-error">
             {{ selectedServer.lastError }}
@@ -302,6 +470,24 @@
             </div>
           </div>
         </div>
+
+        <div class="detail-panel">
+          <h3>治理审计</h3>
+          <div v-if="!selectedServer.events?.length" class="mini-empty">当前还没有审计事件。</div>
+          <div v-else class="audit-list">
+            <article v-for="event in selectedServer.events" :key="event.id" class="audit-card">
+              <div class="catalog-tool-head">
+                <strong>{{ event.summary }}</strong>
+                <span>{{ formatTime(event.createdAt) }}</span>
+              </div>
+              <div class="catalog-tool-meta">
+                <span>{{ event.actionType || event.eventType }}</span>
+                <span>{{ event.status || 'info' }}</span>
+                <span v-if="event.failureMode">{{ event.failureMode }}</span>
+              </div>
+            </article>
+          </div>
+        </div>
       </div>
     </section>
   </div>
@@ -314,8 +500,13 @@ import { mcpAPI } from '@/api'
 import { useToastStore } from '@/store/toast'
 import {
   bindingUsageLabel,
+  governanceFocusLabel,
   buildAgentExtensionsRoute,
+  normalizeMCPEvent,
+  normalizeMCPGovernanceSummary,
   normalizeMCPBindingUsage,
+  normalizeMCPRecovery,
+  recoverySeverityTone,
   statusLabel,
   statusTone,
   summarizeCatalogAge
@@ -333,6 +524,15 @@ const servers = ref([])
 const selectedServer = ref(null)
 const editingServerId = ref('')
 const lastTestResult = ref(null)
+const governanceSummary = ref(null)
+const governanceFilter = ref(String(route.query.intent || '').trim() || 'all')
+const eventActionFilter = ref('')
+const eventStatusFilter = ref('')
+const eventFailureModeFilter = ref('')
+const bulkGroupBy = ref('none')
+const bulkMaxBatchSize = ref(1000)
+const bulkRetryFailed = ref(0)
+const lastBulkExecution = ref(null)
 const returnToAgentRoute = computed(() => {
   const agentId = String(route.query.agent || '').trim()
   if (!agentId) return null
@@ -344,6 +544,64 @@ const returnToAgentRoute = computed(() => {
 })
 const contextAgentName = computed(() => String(route.query.agent_name || '').trim())
 const deleteBlocked = computed(() => Number(selectedServer.value?.bindingUsage?.agentCount || 0) > 0)
+const visibleServers = computed(() => {
+  const items = Array.isArray(servers.value) ? servers.value : []
+  if (governanceFilter.value === 'recoverable') {
+    return items.filter((server) => server?.recovery?.recoverable && server?.recovery?.status !== 'healthy')
+  }
+  if (governanceFilter.value === 'blocked') {
+    return items.filter((server) => server?.recovery?.status === 'blocked')
+  }
+  if (governanceFilter.value === 'stale') {
+    return items.filter((server) => server?.catalog?.isStale)
+  }
+  if (governanceFilter.value === 'untested') {
+    return items.filter((server) => server?.connection?.status === 'untested')
+  }
+  return items
+})
+const bulkActionServerIds = computed(() => visibleServers.value
+  .filter((server) => server?.recovery?.recoverable && server?.status === 'active')
+  .map((server) => server.id))
+const bulkEnableServerIds = computed(() => visibleServers.value
+  .filter((server) => server?.status !== 'active')
+  .map((server) => server.id))
+const governanceTopFailureMode = computed(() => {
+  const entries = Object.entries(governanceSummary.value?.failureModeCounts || {})
+  if (entries.length === 0) return '暂无失败趋势'
+  const [mode, count] = entries.sort((left, right) => right[1] - left[1])[0]
+  return `${mode} · ${count} 次`
+})
+const governanceTopActionType = computed(() => {
+  const entries = Object.entries(governanceSummary.value?.actionTypeCounts || {})
+  if (entries.length === 0) return '最近没有治理动作'
+  const [actionType, count] = entries.sort((left, right) => right[1] - left[1])[0]
+  return `最近高频动作：${actionType} · ${count} 次`
+})
+const governanceTopEventStatus = computed(() => {
+  const entries = Object.entries(governanceSummary.value?.eventStatusCounts || {})
+  if (entries.length === 0) return '暂无审计状态趋势'
+  const [status, count] = entries.sort((left, right) => right[1] - left[1])[0]
+  return `主状态：${status} · ${count} 次`
+})
+const bulkExecutionSummary = computed(() => {
+  const execution = lastBulkExecution.value
+  if (!execution) return ''
+  const groupPart = execution.groupBy && execution.groupBy !== 'none'
+    ? `按 ${execution.groupBy} 分成 ${execution.groupCount} 组`
+    : '未分组执行'
+  const batchPart = execution.maxBatchSize >= execution.selectedCount
+    ? '单批执行'
+    : `每批 ${execution.maxBatchSize} 个`
+  const retryPart = execution.retryFailed > 0 ? `失败重试 ${execution.retryFailed} 次` : '失败不重试'
+  return `本次批量治理：${groupPart}，${batchPart}，${retryPart}，共 ${execution.selectedCount} 个 server。`
+})
+const governanceQueryParams = computed(() => ({
+  action_type: eventActionFilter.value,
+  status: eventStatusFilter.value,
+  failure_mode: eventFailureModeFilter.value,
+  limit: 40
+}))
 const deleteBlockedReason = computed(() => {
   if (!deleteBlocked.value) return ''
   const count = Number(selectedServer.value?.bindingUsage?.agentCount || 0)
@@ -424,6 +682,8 @@ const normalizeServer = (server = {}) => ({
     reason: server.availability.reason || ''
   } : null,
   bindingUsage: normalizeMCPBindingUsage(server.binding_usage || server.bindingUsage),
+  recovery: normalizeMCPRecovery(server.recovery),
+  events: Array.isArray(server.events) ? server.events.map(normalizeMCPEvent).filter(Boolean) : [],
   tools: Array.isArray(server.tools) ? server.tools.map(normalizeTool) : []
 })
 
@@ -463,8 +723,14 @@ const loadServers = async () => {
   loading.value = true
   errorMessage.value = ''
   try {
-    const { data } = await mcpAPI.listServers()
+    const [{ data }, governance] = await Promise.all([
+      mcpAPI.listServers(),
+      mcpAPI.getGovernance(governanceQueryParams.value).catch(() => null)
+    ])
     servers.value = (data.servers || []).map(normalizeServer)
+    if (governance?.data?.summary) {
+      governanceSummary.value = normalizeMCPGovernanceSummary(governance.data.summary)
+    }
     if (servers.value.length === 0) {
       selectedServer.value = null
       editingServerId.value = ''
@@ -495,6 +761,15 @@ const loadServers = async () => {
     errorMessage.value = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '加载 MCP servers 失败'
   } finally {
     loading.value = false
+  }
+}
+
+const loadGovernance = async () => {
+  try {
+    const { data } = await mcpAPI.getGovernance(governanceQueryParams.value)
+    governanceSummary.value = normalizeMCPGovernanceSummary(data.summary)
+  } catch (error) {
+    console.error('Failed to load MCP governance:', error)
   }
 }
 
@@ -598,6 +873,7 @@ const testServer = async () => {
     const { data } = await mcpAPI.testServer(selectedServer.value.id)
     lastTestResult.value = data.result || data
     applyServerSnapshot(data.server)
+    await loadGovernance()
     toastStore.showToast({ type: 'success', message: data?.result?.ok ? '连接测试通过' : '连接测试已完成' })
   } catch (error) {
     console.error('Failed to test MCP server:', error)
@@ -615,10 +891,90 @@ const refreshTools = async () => {
   try {
     const { data } = await mcpAPI.refreshTools(selectedServer.value.id)
     applyServerSnapshot(data.server)
+    await loadGovernance()
     toastStore.showToast({ type: 'success', message: `已刷新 ${data.total || 0} 个工具` })
   } catch (error) {
     console.error('Failed to refresh MCP tools:', error)
     errorMessage.value = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '刷新工具失败'
+    toastStore.showToast({ type: 'error', message: errorMessage.value })
+  } finally {
+    busyAction.value = ''
+  }
+}
+
+const handleRecoveryAction = async (action) => {
+  if (!selectedServer.value?.id || !action?.type) return
+  if (action.type === 'refresh') {
+    await refreshTools()
+    return
+  }
+  if (action.type === 'test') {
+    await testServer()
+    return
+  }
+  if (action.type === 'enable') {
+    busyAction.value = action.type
+    errorMessage.value = ''
+    try {
+      const payload = {
+        name: selectedServer.value.name,
+        transport: selectedServer.value.transport,
+        endpoint: selectedServer.value.transport === 'stdio' ? '' : selectedServer.value.endpoint,
+        command: selectedServer.value.transport === 'stdio' ? selectedServer.value.command : '',
+        args: selectedServer.value.args || [],
+        env: selectedServer.value.env || {},
+        metadata: selectedServer.value.metadata || {},
+        status: 'active'
+      }
+      const { data } = await mcpAPI.updateServer(selectedServer.value.id, payload)
+      applyServerSnapshot(data)
+      await loadGovernance()
+      toastStore.showToast({ type: 'success', message: 'MCP server 已重新启用' })
+    } catch (error) {
+      console.error('Failed to enable MCP server:', error)
+      errorMessage.value = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '重新启用 MCP server 失败'
+      toastStore.showToast({ type: 'error', message: errorMessage.value })
+    } finally {
+      busyAction.value = ''
+    }
+    return
+  }
+}
+
+const runBulkAction = async (action) => {
+  const serverIds = action === 'enable' ? bulkEnableServerIds.value : bulkActionServerIds.value
+  if (!serverIds.length) return
+  busyAction.value = `bulk-${action}`
+  errorMessage.value = ''
+  try {
+    const { data } = await mcpAPI.bulkAction({
+      action,
+      server_ids: serverIds,
+      group_by: bulkGroupBy.value,
+      max_batch_size: bulkMaxBatchSize.value,
+      retry_failed: bulkRetryFailed.value
+    })
+    const resultServers = Array.isArray(data.results) ? data.results.map((item) => item.server).filter(Boolean) : []
+    resultServers.forEach((server) => applyServerSnapshot(server))
+    lastBulkExecution.value = data.execution || null
+    if (data.summary) {
+      governanceSummary.value = normalizeMCPGovernanceSummary(data.summary)
+    } else {
+      await loadGovernance()
+    }
+    if (selectedServer.value?.id) {
+      const refreshedSelected = resultServers.find((server) => server.id === selectedServer.value.id)
+      if (refreshedSelected) {
+        selectedServer.value = normalizeServer(refreshedSelected)
+      }
+    }
+    toastStore.showToast({
+      type: data.failed > 0 ? 'warning' : 'success',
+      message: `批量${action === 'refresh' ? '刷新' : action === 'test' ? '测试' : '启用'}完成：成功 ${data.success || 0}，失败 ${data.failed || 0}`
+    })
+  } catch (error) {
+    console.error('Failed to run MCP bulk action:', error)
+    errorMessage.value = error?.response?.data?.error || error?.response?.data?.detail || error?.message || '批量 MCP 操作失败'
     toastStore.showToast({ type: 'error', message: errorMessage.value })
   } finally {
     busyAction.value = ''
@@ -641,6 +997,7 @@ const deleteServer = async () => {
     toastStore.showToast({ type: 'success', message: 'MCP server 已删除' })
     selectedServer.value = null
     resetForm()
+    await syncRouteServer('')
     await loadServers()
   } catch (error) {
     console.error('Failed to delete MCP server:', error)
@@ -676,6 +1033,10 @@ watch(() => route.query.server, async (serverId, previousServerId) => {
   const previous = String(previousServerId || '').trim()
   if (!nextServerId || nextServerId === previous || nextServerId === selectedServer.value?.id) return
   await loadServerDetail(nextServerId)
+})
+
+watch([eventActionFilter, eventStatusFilter, eventFailureModeFilter], async () => {
+  await loadGovernance()
 })
 </script>
 
@@ -735,6 +1096,12 @@ watch(() => route.query.server, async (serverId, previousServerId) => {
   border-radius: 24px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   padding: 24px;
+}
+
+.governance-strip {
+  background:
+    radial-gradient(circle at top right, rgba(15, 118, 110, 0.08), transparent 36%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 }
 
 .section-head {
@@ -902,6 +1269,11 @@ watch(() => route.query.server, async (serverId, previousServerId) => {
   background: #fff;
 }
 
+.compact-select {
+  min-width: 150px;
+  width: auto;
+}
+
 .textarea {
   min-height: 120px;
   resize: vertical;
@@ -929,6 +1301,10 @@ watch(() => route.query.server, async (serverId, previousServerId) => {
   display: grid;
   gap: 12px;
   margin-top: 18px;
+}
+
+.governance-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .summary-card {
@@ -980,6 +1356,21 @@ watch(() => route.query.server, async (serverId, previousServerId) => {
   white-space: pre-wrap;
 }
 
+.governance-events,
+.audit-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.governance-event-card,
+.audit-card {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  padding: 14px;
+  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+}
+
 .tool-catalog {
   display: grid;
   gap: 12px;
@@ -1011,6 +1402,17 @@ watch(() => route.query.server, async (serverId, previousServerId) => {
 .binding-badge {
   background: rgba(15, 118, 110, 0.12);
   color: #0f766e;
+}
+
+.recovery-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.btn-inline {
+  padding: 8px 12px;
 }
 
 .secondary-grid {
@@ -1105,9 +1507,22 @@ watch(() => route.query.server, async (serverId, previousServerId) => {
 
 .connection-untested,
 .availability-warning,
-.catalog-stale {
+.catalog-stale,
+.recovery-medium {
   background: rgba(245, 158, 11, 0.16);
   color: #b45309;
+}
+
+.recovery-critical,
+.recovery-high {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.recovery-neutral,
+.recovery-info {
+  background: rgba(148, 163, 184, 0.16);
+  color: #475569;
 }
 
 .connection-disabled,
@@ -1121,6 +1536,10 @@ watch(() => route.query.server, async (serverId, previousServerId) => {
   .mcp-grid,
   .detail-grid,
   .field-row {
+    grid-template-columns: 1fr;
+  }
+
+  .governance-summary-grid {
     grid-template-columns: 1fr;
   }
 

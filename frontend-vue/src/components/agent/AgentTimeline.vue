@@ -14,8 +14,8 @@
 
     <ol v-else class="timeline-list">
       <li v-for="event in events" :key="event.id" class="timeline-item">
-        <div class="timeline-dot"></div>
-        <div class="timeline-card">
+        <div :class="['timeline-dot', toneClass(event)]"></div>
+        <div :class="['timeline-card', toneClass(event)]">
           <div class="timeline-card-head">
             <div class="timeline-title">{{ event.eventType }}</div>
             <div class="timeline-seq">#{{ event.sequence }}</div>
@@ -29,13 +29,7 @@
 </template>
 
 <script setup>
-import {
-  getInvocationClarification,
-  getInvocationProgress,
-  reviewDecisionLabel,
-  reviewModeLabel,
-  summarizeInvocationTarget
-} from '@/utils/agentRunTree'
+import { summarizeTimelineEvent } from '@/utils/agentRunTree'
 
 const props = defineProps({
   events: {
@@ -56,92 +50,14 @@ const formatTime = (value) => {
   })
 }
 
-const summariseEvent = (event) => {
-  const payload = event.payload || {}
-  if (event.eventType.startsWith('subagent.')) {
-    const protocolInvocation = {
-      requestPayload: payload.handoff_envelope || payload.handoffEnvelope || {},
-      resultPayload: {
-        partial_result: payload.partial_result || payload.partialResult || {},
-        final_result: {
-          progress: payload.progress || {},
-          clarification: payload.clarification || {}
-        }
-      }
-    }
-    const target = summarizeInvocationTarget({
-      requestPayload: {
-        ...(payload.handoff_envelope || payload.handoffEnvelope || {}),
-        policy_snapshot: payload.subagent_target || payload.subagentTarget || {}
-      },
-      publicationId: payload.subagent_target?.publication_id || payload.subagentTarget?.publicationId || '',
-      subagentDefinitionId: payload.subagent_target?.subagent_definition_id || payload.subagentTarget?.subagentDefinitionId || ''
-    })
-    const progress = getInvocationProgress(protocolInvocation)
-    const clarification = getInvocationClarification(protocolInvocation)
-    const reviewResult = payload.review_result || payload.reviewResult || {}
-    const childStatus = payload.child_status || payload.childStatus || payload.status || ''
-    const task = payload.handoff_envelope?.task || payload.handoffEnvelope?.task || {}
-    const summary = clarification.question || progress.summary || payload.question || task.message || payload.summary || payload.error || payload.final_output_text || ''
-    const parts = [target]
-    if (reviewResult.mode && reviewResult.mode !== 'none') {
-      parts.push(`${reviewModeLabel(reviewResult.mode)} ${reviewDecisionLabel(reviewResult.decision)}`)
-    }
-    if (childStatus) {
-      parts.push(`状态 ${childStatus}`)
-    }
-    if (progress.state && progress.state !== 'unknown') {
-      parts.push(`进度 ${progress.state}`)
-    }
-    if (payload.child_run_id || payload.childRunId) {
-      parts.push(`child ${(payload.child_run_id || payload.childRunId).slice(0, 8)}`)
-    }
-    if (summary) {
-      parts.push(summary)
-    }
-    return parts.join(' · ')
-  }
-  if (event.eventType === 'run.resumed') {
-    return '恢复执行，当前 workspace 状态已切换到新一轮运行'
-  }
-  if (event.eventType === 'run.input_patched') {
-    return `恢复前更新了输入: ${JSON.stringify(payload.input_patch || {})}`
-  }
-  if (payload.error) {
-    return payload.error
-  }
-  if (payload.question) {
-    return payload.question
-  }
-  if (payload.final_output_text) {
-    return payload.final_output_text
-  }
-  if (payload.final_output) {
-    return payload.final_output
-  }
-  if (Array.isArray(payload.artifacts) && payload.artifacts.length > 0) {
-    return `生成了 ${payload.artifacts.length} 个结构化结果`
-  }
-  if (payload.output) {
-    return JSON.stringify(payload.output, null, 2)
-  }
-  if (payload.title) {
-    return payload.title
-  }
-  if (payload.tool_name) {
-    return `工具 ${payload.tool_name}`
-  }
-  if (payload.status) {
-    return `状态 ${payload.status}`
-  }
-  if (payload.input_patch) {
-    return `输入已更新: ${JSON.stringify(payload.input_patch)}`
-  }
-  const keys = Object.keys(payload)
-  if (keys.length === 0) {
-    return '无附加数据'
-  }
-  return keys.map((key) => `${key}: ${String(payload[key])}`).slice(0, 3).join(' · ')
+const summariseEvent = (event) => summarizeTimelineEvent(event)
+
+const toneClass = (event) => {
+  const type = String(event?.eventType || '')
+  if (type.includes('failed') || type.includes('cancelled')) return 'danger'
+  if (type.includes('waiting_user')) return 'warning'
+  if (type.includes('completed')) return 'success'
+  return 'neutral'
 }
 </script>
 
@@ -216,8 +132,25 @@ const summariseEvent = (event) => {
   height: 12px;
   margin-top: 18px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary-500) 0%, #6ee7b7 100%);
   box-shadow: 0 0 0 5px rgba(16, 163, 127, 0.08);
+}
+
+.timeline-dot.neutral {
+  background: linear-gradient(135deg, var(--primary-500) 0%, #6ee7b7 100%);
+}
+
+.timeline-dot.warning {
+  background: linear-gradient(135deg, #f59e0b 0%, #fcd34d 100%);
+  box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.1);
+}
+
+.timeline-dot.danger {
+  background: linear-gradient(135deg, #ef4444 0%, #fca5a5 100%);
+  box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.1);
+}
+
+.timeline-dot.success {
+  background: linear-gradient(135deg, #10b981 0%, #86efac 100%);
 }
 
 .timeline-card {
@@ -227,6 +160,20 @@ const summariseEvent = (event) => {
   background: linear-gradient(180deg, #ffffff 0%, #f9fcfb 100%);
   max-height: 240px;
   overflow: auto;
+}
+
+.timeline-card.warning {
+  border-color: rgba(245, 158, 11, 0.22);
+  background: linear-gradient(180deg, #fffdf7 0%, #ffffff 100%);
+}
+
+.timeline-card.danger {
+  border-color: rgba(239, 68, 68, 0.22);
+  background: linear-gradient(180deg, #fffafa 0%, #ffffff 100%);
+}
+
+.timeline-card.success {
+  border-color: rgba(16, 185, 129, 0.18);
 }
 
 .timeline-card-head {
@@ -249,14 +196,14 @@ const summariseEvent = (event) => {
 .timeline-summary {
   margin-top: 8px;
   color: var(--gray-700);
-  font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.7;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 
 .timeline-time {
   margin-top: 10px;
-  font-size: 12px;
   color: var(--gray-500);
+  font-size: 12px;
 }
 </style>

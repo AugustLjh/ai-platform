@@ -3,7 +3,7 @@
     <div class="panel-head">
       <div>
         <h3>父子协议</h3>
-        <p>把 handoff task、约束、child question 和评审结论收口到同一视图中。</p>
+        <p>把 handoff task、约束、child question、治理限制和恢复语义收口到同一视图中。</p>
       </div>
       <span class="panel-count">{{ entries.length }}</span>
     </div>
@@ -13,7 +13,11 @@
     </div>
 
     <div v-else class="protocol-list">
-      <article v-for="entry in entries" :key="entry.id" class="protocol-card">
+      <article
+        v-for="entry in entries"
+        :key="entry.id"
+        :class="['protocol-card', { attention: entry.needsAttention, danger: entry.attentionTone === 'danger' }]"
+      >
         <div class="protocol-head">
           <div>
             <div class="protocol-title">{{ entry.target }}</div>
@@ -22,8 +26,10 @@
               <span v-if="entry.childRunId" class="mono">child {{ entry.childRunId.slice(0, 8) }}</span>
             </div>
           </div>
-          <span :class="['status-pill', entry.status]">{{ entry.status }}</span>
+          <span :class="['status-pill', entry.status, entry.attentionTone]">{{ entry.statusLabel }}</span>
         </div>
+
+        <p v-if="entry.attentionSummary" class="protocol-attention">{{ entry.attentionSummary }}</p>
 
         <div v-if="entry.taskMessage" class="protocol-block">
           <span class="block-label">Handoff Task</span>
@@ -74,6 +80,7 @@
             </ul>
           </div>
           <p v-if="entry.clarification.responseHint" class="next-action">Hint: {{ entry.clarification.responseHint }}</p>
+          <p v-if="entry.waitingUserPathSummary" class="secondary-copy">waiting-user 链路：{{ entry.waitingUserPathSummary }}</p>
         </div>
 
         <div v-if="entry.constraints.length > 0" class="constraint-list">
@@ -81,6 +88,48 @@
           <ul>
             <li v-for="constraint in entry.constraints" :key="constraint">{{ constraint }}</li>
           </ul>
+        </div>
+
+        <div v-if="entry.governance.hasData" class="governance-block">
+          <div class="protocol-inline-head">
+            <span class="block-label">Governance</span>
+            <span v-if="entry.governance.protocolVersion" class="mini-pill governance-pill">
+              {{ entry.governance.protocolVersion }}
+            </span>
+          </div>
+          <p v-if="entry.governanceSummary">{{ entry.governanceSummary }}</p>
+          <div v-if="entry.governance.enforcement.hardLimits.length > 0" class="list-block">
+            <span class="list-label">Hard Limits</span>
+            <ul>
+              <li v-for="limit in entry.governance.enforcement.hardLimits" :key="limit">{{ limit }}</li>
+            </ul>
+          </div>
+          <div v-if="entry.governance.enforcement.advisoryLimits.length > 0" class="list-block">
+            <span class="list-label">Advisory</span>
+            <ul>
+              <li v-for="limit in entry.governance.enforcement.advisoryLimits" :key="limit">{{ limit }}</li>
+            </ul>
+          </div>
+          <div v-if="entry.governanceBudgetLines.length > 0" class="list-block">
+            <span class="list-label">Budget Usage</span>
+            <ul>
+              <li v-for="line in entry.governanceBudgetLines" :key="line">{{ line }}</li>
+            </ul>
+          </div>
+          <div v-if="entry.governance.history.attemptCount > 0" class="list-block">
+            <span class="list-label">Observed History</span>
+            <ul>
+              <li>已尝试 {{ entry.governance.history.attemptCount }} 次</li>
+              <li v-if="entry.governance.history.failedAttemptCount > 0">失败 {{ entry.governance.history.failedAttemptCount }} 次</li>
+              <li v-if="entry.governance.history.activeChildCount > 0">未决 child {{ entry.governance.history.activeChildCount }} 个</li>
+              <li v-if="entry.governance.history.waitingUserCount > 0">等待用户 {{ entry.governance.history.waitingUserCount }} 次</li>
+            </ul>
+          </div>
+          <p v-if="entry.governance.waitingUserPropagation" class="secondary-copy">
+            waiting-user 策略：{{ entry.governance.waitingUserPropagation }}
+          </p>
+          <p v-if="entry.recoverySummary" class="next-action">{{ entry.recoverySummary }}</p>
+          <p v-if="entry.governance.enforcement.note" class="next-action">{{ entry.governance.enforcement.note }}</p>
         </div>
 
         <div class="protocol-foot">
@@ -181,6 +230,15 @@ const formatTime = (value) => {
   padding: 16px;
 }
 
+.protocol-card.attention {
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.protocol-card.danger {
+  border-color: rgba(239, 68, 68, 0.22);
+  background: linear-gradient(180deg, #fffafa 0%, #ffffff 100%);
+}
+
 .protocol-head {
   display: flex;
   justify-content: space-between;
@@ -207,30 +265,94 @@ const formatTime = (value) => {
   font-family: var(--font-mono);
 }
 
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
+.status-pill.pending,
+.status-pill.queued {
+  background: rgba(148, 163, 184, 0.16);
+  color: #475569;
+}
+
+.status-pill.running {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.status-pill.waiting_user,
+.status-pill.warning {
+  background: rgba(245, 158, 11, 0.14);
+  color: #92400e;
+}
+
+.status-pill.completed {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+}
+
+.status-pill.failed,
+.status-pill.cancelled,
+.status-pill.danger {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.protocol-attention {
+  margin: 12px 0 0;
+  color: #92400e;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
 .protocol-block {
   margin-top: 12px;
   padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(240, 249, 255, 0.7);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(14, 116, 144, 0.08);
 }
 
 .muted-block {
-  background: rgba(248, 250, 252, 0.9);
-}
-
-.question-block {
-  background: rgba(255, 251, 235, 0.9);
-  border: 1px solid rgba(245, 158, 11, 0.18);
+  background: rgba(248, 250, 252, 0.92);
 }
 
 .progress-block {
-  background: rgba(236, 253, 245, 0.85);
-  border: 1px solid rgba(16, 185, 129, 0.16);
+  background: rgba(236, 253, 245, 0.72);
+  border-color: rgba(16, 185, 129, 0.16);
 }
 
-.block-label {
+.question-block {
+  background: rgba(255, 251, 235, 0.72);
+  border-color: rgba(245, 158, 11, 0.18);
+}
+
+.governance-block {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.9);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.protocol-inline-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.block-label,
+.list-label {
   display: block;
-  margin-bottom: 6px;
   font-size: 12px;
   font-weight: 700;
   color: #0f766e;
@@ -238,18 +360,39 @@ const formatTime = (value) => {
   letter-spacing: 0.08em;
 }
 
-.protocol-block p {
+.protocol-block p,
+.governance-block p {
   margin: 0;
   color: #334155;
-  line-height: 1.6;
+  line-height: 1.7;
+  white-space: pre-wrap;
 }
 
-.protocol-inline-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 6px;
+.list-block {
+  margin-top: 10px;
+}
+
+.list-block ul,
+.constraint-list ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.constraint-list {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px dashed rgba(15, 23, 42, 0.12);
+}
+
+.secondary-copy,
+.next-action {
+  margin-top: 8px !important;
+  color: #475569 !important;
+  font-size: 13px;
 }
 
 .mini-pill {
@@ -260,12 +403,6 @@ const formatTime = (value) => {
   padding: 4px 10px;
   font-size: 11px;
   font-weight: 700;
-}
-
-.mini-pill.state-requested,
-.mini-pill.state-in_progress {
-  background: rgba(59, 130, 246, 0.12);
-  color: #1d4ed8;
 }
 
 .mini-pill.state-blocked,
@@ -280,52 +417,19 @@ const formatTime = (value) => {
   color: #047857;
 }
 
-.mini-pill.state-failed,
-.mini-pill.state-cancelled {
+.mini-pill.state-in_progress,
+.mini-pill.state-requested {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.mini-pill.state-failed {
   background: rgba(239, 68, 68, 0.12);
   color: #b91c1c;
 }
 
-.list-block {
-  margin-top: 10px;
-}
-
-.list-label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 12px;
-  color: #64748b;
-  font-weight: 700;
-}
-
-.list-block ul {
-  margin: 0;
-  padding-left: 18px;
-  color: #475569;
-  display: grid;
-  gap: 6px;
-}
-
-.secondary-copy {
-  margin-top: 8px;
-  color: #475569;
-}
-
-.next-action {
-  margin-top: 10px !important;
-  color: #0f172a !important;
-  font-weight: 600;
-}
-
-.constraint-list {
-  margin-top: 12px;
-}
-
-.constraint-list ul {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  color: #475569;
-  display: grid;
-  gap: 6px;
+.governance-pill {
+  background: rgba(14, 116, 144, 0.1);
+  color: #0f766e;
 }
 </style>

@@ -68,6 +68,8 @@ export const normalizeMCPBindingUsage = (raw = null) => {
   if (!raw || typeof raw !== 'object') return null
   return {
     agentCount: Number(raw.agent_count || raw.agentCount || 0),
+    activeAgentCount: Number(raw.active_agent_count || raw.activeAgentCount || 0),
+    inactiveAgentCount: Number(raw.inactive_agent_count || raw.inactiveAgentCount || 0),
     summary: raw.summary || '',
     moreCount: Number(raw.more_count || raw.moreCount || 0),
     agents: Array.isArray(raw.agents)
@@ -80,10 +82,101 @@ export const normalizeMCPBindingUsage = (raw = null) => {
   }
 }
 
+export const normalizeMCPRecovery = (raw = null) => {
+  if (!raw || typeof raw !== 'object') return null
+  return {
+    status: raw.status || 'healthy',
+    severity: raw.severity || 'info',
+    summary: raw.summary || '',
+    failureMode: raw.failure_mode || raw.failureMode || '',
+    recoverable: Boolean(raw.recoverable),
+    actions: Array.isArray(raw.actions)
+      ? raw.actions.map((action) => ({
+          type: action.type || '',
+          label: action.label || '',
+          description: action.description || '',
+          priority: action.priority || ''
+        }))
+      : [],
+    impact: raw.impact && typeof raw.impact === 'object'
+      ? {
+          agentCount: Number(raw.impact.agent_count || raw.impact.agentCount || 0),
+          activeAgentCount: Number(raw.impact.active_agent_count || raw.impact.activeAgentCount || 0),
+          inactiveAgentCount: Number(raw.impact.inactive_agent_count || raw.impact.inactiveAgentCount || 0),
+          summary: raw.impact.summary || ''
+        }
+      : null
+  }
+}
+
+export const normalizeMCPEvent = (raw = null) => {
+  if (!raw || typeof raw !== 'object') return null
+  return {
+    id: raw.id || '',
+    tenantId: raw.tenant_id || raw.tenantId || '',
+    serverId: raw.server_id || raw.serverId || '',
+    serverName: raw.server_name || raw.serverName || '',
+    eventType: raw.event_type || raw.eventType || '',
+    actionType: raw.action_type || raw.actionType || '',
+    status: raw.status || '',
+    failureMode: raw.failure_mode || raw.failureMode || '',
+    summary: raw.summary || '',
+    details: raw.details && typeof raw.details === 'object' ? raw.details : {},
+    actorUserId: raw.actor_user_id || raw.actorUserId || '',
+    createdAt: raw.created_at || raw.createdAt || null
+  }
+}
+
+export const normalizeMCPGovernanceSummary = (raw = null) => {
+  if (!raw || typeof raw !== 'object') return null
+  const rawFilters = raw.event_filters || raw.eventFilters || {}
+  return {
+    totalServers: Number(raw.total_servers || raw.totalServers || 0),
+    recoveringServers: Number(raw.recovering_servers || raw.recoveringServers || 0),
+    blockedServers: Number(raw.blocked_servers || raw.blockedServers || 0),
+    staleServers: Number(raw.stale_servers || raw.staleServers || 0),
+    untestedServers: Number(raw.untested_servers || raw.untestedServers || 0),
+    impactedAgents: Number(raw.impacted_agents || raw.impactedAgents || 0),
+    activeImpactedAgents: Number(raw.active_impacted_agents || raw.activeImpactedAgents || 0),
+    recentEventCount: Number(raw.recent_event_count || raw.recentEventCount || 0),
+    longStaleServers: Array.isArray(raw.long_stale_servers || raw.longStaleServers)
+      ? [...(raw.long_stale_servers || raw.longStaleServers)]
+      : [],
+    recoverableServers: Array.isArray(raw.recoverable_servers || raw.recoverableServers)
+      ? [...(raw.recoverable_servers || raw.recoverableServers)]
+      : [],
+    recentEvents: Array.isArray(raw.recent_events || raw.recentEvents)
+      ? (raw.recent_events || raw.recentEvents).map(normalizeMCPEvent).filter(Boolean)
+      : [],
+    failureModeCounts: raw.failure_mode_counts || raw.failureModeCounts || {},
+    actionTypeCounts: raw.action_type_counts || raw.actionTypeCounts || {},
+    eventStatusCounts: raw.event_status_counts || raw.eventStatusCounts || {},
+    eventFilters: {
+      serverId: rawFilters.server_id || rawFilters.serverId || '',
+      actionType: rawFilters.action_type || rawFilters.actionType || '',
+      status: rawFilters.status || '',
+      failureMode: rawFilters.failure_mode || rawFilters.failureMode || '',
+      limit: Number(rawFilters.limit || 0)
+    }
+  }
+}
+
 export const bindingUsageLabel = (bindingUsage) => {
   const count = Number(bindingUsage?.agentCount || 0)
   if (count <= 0) return '未绑定'
   return `${count} 个 agent`
+}
+
+export const recoverySeverityTone = (recovery) => {
+  const severity = String(recovery?.severity || '').trim() || 'info'
+  return `recovery-${severity}`
+}
+
+export const buildRecoveryActions = (server) => {
+  const actions = Array.isArray(server?.recovery?.actions) ? server.recovery.actions.filter((action) => action?.type) : []
+  if (actions.length > 0) return actions
+  const fallback = buildWarningAction(server)
+  return fallback ? [fallback] : []
 }
 
 export const buildMCPManageRoute = (serverId = '', { agentId = '', agentName = '', intent = '' } = {}) => {
@@ -109,6 +202,11 @@ export const buildAgentExtensionsRoute = (agentId = '', { serverId = '', focus =
 
 const buildWarningAction = (server) => {
   if (!server?.id) return null
+  const recoveryActions = Array.isArray(server?.recovery?.actions) ? server.recovery.actions.filter((action) => action?.type) : []
+  if (recoveryActions.length > 0) {
+    const first = recoveryActions[0]
+    return { type: first.type, label: first.label || '处理问题' }
+  }
   if (server.status !== 'active') {
     return { type: 'manage', label: '前往管理' }
   }
@@ -136,6 +234,16 @@ export const buildMCPBindingWarnings = (servers = [], selectedIds = []) => {
     .filter((server) => selectedIdSet.has(server?.id))
     .flatMap((server) => {
       if (!server?.id) return []
+      if (server.recovery?.recoverable && server.recovery?.status !== 'healthy') {
+        return [{
+          id: `${server.id}-${server.recovery.status || 'recovery'}`,
+          serverId: server.id,
+          message: `${server.name}：${server.recovery.summary || server.availability?.summary || '需要恢复操作。'}`,
+          action: buildWarningAction(server),
+          severity: server.recovery.severity || 'info',
+          impactSummary: server.recovery.impact?.summary || ''
+        }]
+      }
       if (server.status !== 'active') {
         return [{
           id: `${server.id}-disabled`,
@@ -170,4 +278,12 @@ export const buildMCPBindingWarnings = (servers = [], selectedIds = []) => {
       }
       return []
     })
+}
+
+export const governanceFocusLabel = (server) => {
+  if (server?.recovery?.status === 'blocked') return '阻塞恢复'
+  if (server?.catalog?.isStale) return 'Catalog 过期'
+  if (server?.connection?.status === 'untested') return '待验证'
+  if (server?.recovery?.recoverable) return '待治理'
+  return '健康'
 }

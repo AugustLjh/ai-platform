@@ -7,7 +7,7 @@ import {
 } from '@/utils/agentArtifacts'
 import { buildRunEventPatch, deriveRunState } from '@/utils/agentRunState'
 import { collectRunEventPages } from '@/utils/runEventHydration'
-import { normalizeMCPBindingUsage } from '@/utils/mcpServers'
+import { normalizeMCPBindingUsage, normalizeMCPEvent, normalizeMCPGovernanceSummary, normalizeMCPRecovery } from '@/utils/mcpServers'
 import { collectRunTreeInvocations, normalizeRunTreeNode } from '@/utils/agentRunTree'
 
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
@@ -259,6 +259,8 @@ const normalizeMCPServer = (raw = {}) => ({
       }
     : null,
   bindingUsage: normalizeMCPBindingUsage(raw.binding_usage || raw.bindingUsage),
+  recovery: normalizeMCPRecovery(raw.recovery),
+  events: Array.isArray(raw.events) ? raw.events.map(normalizeMCPEvent).filter(Boolean) : [],
   metadata: parseJSON(raw.metadata, {}),
   tools: Array.isArray(raw.tools) ? raw.tools.map((tool) => ({
     id: tool.id,
@@ -305,6 +307,7 @@ export const useAgentsStore = defineStore('agents', {
     availableTools: [],
     skills: [],
     mcpServers: [],
+    mcpGovernanceSummary: null,
     subagents: [],
     loading: false,
     error: null,
@@ -860,8 +863,15 @@ export const useAgentsStore = defineStore('agents', {
 
     async fetchMCPServers() {
       try {
-        const { data } = await mcpAPI.listServers()
+        const [serversResponse, governanceResponse] = await Promise.all([
+          mcpAPI.listServers(),
+          mcpAPI.getGovernance().catch(() => null)
+        ])
+        const { data } = serversResponse
         this.mcpServers = (data.servers || []).map(normalizeMCPServer)
+        this.mcpGovernanceSummary = governanceResponse?.data?.summary
+          ? normalizeMCPGovernanceSummary(governanceResponse.data.summary)
+          : null
         return this.mcpServers
       } catch (error) {
         this.setError(error, 'Failed to fetch MCP servers')

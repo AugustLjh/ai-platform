@@ -1,54 +1,86 @@
 <template>
   <li class="tree-node">
-    <article :class="['run-card', `depth-${node.depth || 0}`, { root: isRoot }]">
+    <article :class="['run-card', `depth-${node.depth || 0}`, { root: isRoot, attention: runView.hasNestedAttention }]">
       <div class="run-card-head">
         <div>
           <div class="run-label">{{ isRoot ? '主 Run' : `Child Run · 深度 ${node.depth}` }}</div>
-          <h4>{{ runTitle }}</h4>
+          <h4>{{ runView.title }}</h4>
         </div>
-        <span :class="['status-chip', run.status]">{{ statusLabel }}</span>
+        <span :class="['status-chip', run.status]">{{ runView.statusLabel }}</span>
       </div>
 
-      <p v-if="runSummary" class="run-summary">{{ runSummary }}</p>
+      <p v-if="runView.summary" class="run-summary">{{ runView.summary }}</p>
 
       <div class="run-meta">
         <span v-if="run.id" class="mono">#{{ run.id.slice(0, 8) }}</span>
         <span v-if="run.agentDefinitionId" class="mono">agent {{ run.agentDefinitionId.slice(0, 8) }}</span>
         <span v-if="run.updatedAt">{{ formatTime(run.updatedAt) }}</span>
+        <span v-if="runView.childInvocationCount > 0">child {{ runView.childInvocationCount }} 个</span>
+        <span v-if="runView.attentionChildCount > 0" class="attention-text">需关注 {{ runView.attentionChildCount }} 个</span>
       </div>
     </article>
 
-    <ol v-if="node.invocations?.length" class="invocation-children">
-      <li v-for="edge in node.invocations" :key="edge.invocation.id" class="edge-item">
-        <div class="edge-connector"></div>
-        <article class="edge-card">
+    <ol v-if="visibleEdges.length" class="invocation-children">
+      <li v-for="edge in visibleEdges" :key="edge.invocation.id" class="edge-item">
+        <div :class="['edge-connector', { attention: edge.entry.needsAttention }]"></div>
+        <article :class="['edge-card', { attention: edge.entry.needsAttention, collapsed: edge.isCollapsed }]">
           <div class="edge-head">
-            <strong>{{ summarizeInvocationTarget(edge.invocation) }}</strong>
-            <span :class="['status-pill', edge.invocation.status]">{{ edge.invocation.status }}</span>
+            <div class="edge-main">
+              <strong>{{ edge.entry.target }}</strong>
+              <p v-if="edge.entry.attentionSummary" class="edge-attention">{{ edge.entry.attentionSummary }}</p>
+            </div>
+            <span :class="['status-pill', edge.entry.status, edge.entry.attentionTone]">{{ edge.entry.statusLabel }}</span>
           </div>
-          <p v-if="summarizeInvocationTask(edge.invocation)" class="edge-task">
-            {{ summarizeInvocationTask(edge.invocation) }}
+
+          <p v-if="edge.entry.taskMessage" class="edge-task">
+            {{ edge.entry.taskMessage }}
           </p>
-          <p v-if="summarizeInvocationReview(edge.invocation)" class="edge-review">
-            {{ summarizeInvocationReview(edge.invocation) }}
-          </p>
+
+          <div class="edge-facts">
+            <span v-if="edge.entry.reviewSummary" class="fact-pill review">{{ edge.entry.reviewSummary }}</span>
+            <span v-if="edge.entry.governanceSummary" class="fact-pill governance">{{ edge.entry.governanceSummary }}</span>
+            <span v-if="edge.entry.waitingUserPathSummary" class="fact-pill warning">链路 {{ edge.entry.waitingUserPathSummary }}</span>
+            <span v-if="edge.entry.recoverySummary" class="fact-pill muted">{{ edge.entry.recoverySummary }}</span>
+          </div>
+
           <div class="edge-meta">
             <span v-if="edge.invocation.publicationId" class="mono">pub {{ edge.invocation.publicationId.slice(0, 8) }}</span>
-            <span v-if="edge.invocation.childRunId" class="mono">child {{ edge.invocation.childRunId.slice(0, 8) }}</span>
+            <span v-if="edge.entry.childRunId" class="mono">child {{ edge.entry.childRunId.slice(0, 8) }}</span>
           </div>
+
+          <button
+            v-if="edge.canCollapse"
+            type="button"
+            class="collapse-toggle"
+            @click="toggleCollapsed(edge.invocation.id)"
+          >
+            {{ edge.isCollapsed ? '展开普通链路' : '收起普通链路' }}
+          </button>
         </article>
 
-        <ol v-if="edge.childRun" class="child-list">
+        <ol v-if="edge.childRun && !edge.isCollapsed" class="child-list">
           <AgentRunTreeNode :node="edge.childRun" />
         </ol>
       </li>
     </ol>
+
+    <button
+      v-if="hiddenEdgeCount > 0"
+      type="button"
+      class="hidden-toggle"
+      @click="showAllEdges = !showAllEdges"
+    >
+      {{ showAllEdges ? '收起普通链路' : `展开其余 ${hiddenEdgeCount} 条普通链路` }}
+    </button>
   </li>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { summarizeInvocationReview, summarizeInvocationTarget, summarizeInvocationTask } from '@/utils/agentRunTree'
+import { computed, ref } from 'vue'
+import {
+  buildInvocationProtocolEntry,
+  buildRunTreeNodeView
+} from '@/utils/agentRunTree'
 
 defineOptions({
   name: 'AgentRunTreeNode'
@@ -65,33 +97,46 @@ const props = defineProps({
   }
 })
 
-const statusMap = {
-  queued: '排队中',
-  running: '运行中',
-  waiting_user: '等待补充',
-  completed: '已完成',
-  failed: '失败',
-  cancelled: '已取消'
-}
+const collapsedEdgeIds = ref(new Set())
+const showAllEdges = ref(false)
 
 const run = computed(() => props.node?.run || {})
+const runView = computed(() => buildRunTreeNodeView(props.node || {}))
 
-const runTitle = computed(() => {
-  const input = run.value?.input || {}
-  return input.message || input.prompt || run.value?.finalOutputText || '未命名运行'
+const normalizedEdges = computed(() => (
+  (props.node?.invocations || []).map((edge) => {
+    const entry = buildInvocationProtocolEntry({
+      invocation: edge.invocation,
+      childRun: edge.childRun,
+      parentRun: run.value
+    })
+    return {
+      ...edge,
+      entry,
+      canCollapse: !entry.needsAttention && Boolean(edge.childRun),
+      isCollapsed: collapsedEdgeIds.value.has(edge.invocation.id)
+    }
+  })
+))
+
+const visibleEdges = computed(() => {
+  if (showAllEdges.value) return normalizedEdges.value
+  const attentionEdges = normalizedEdges.value.filter((edge) => edge.entry.needsAttention)
+  const defaultEdges = normalizedEdges.value.filter((edge) => !edge.entry.needsAttention)
+  return [...attentionEdges, ...defaultEdges.slice(0, 2)]
 })
 
-const runSummary = computed(() => {
-  if (run.value?.status === 'failed') {
-    return run.value?.errorMessage || '子任务执行失败。'
-  }
-  if (run.value?.status === 'waiting_user') {
-    return run.value?.finalOutputText || '子任务暂停，等待父 run 转译后继续。'
-  }
-  return run.value?.finalOutputText || ''
-})
+const hiddenEdgeCount = computed(() => Math.max(0, normalizedEdges.value.length - visibleEdges.value.length))
 
-const statusLabel = computed(() => statusMap[run.value?.status] || run.value?.status || '未知状态')
+const toggleCollapsed = (id) => {
+  const next = new Set(collapsedEdgeIds.value)
+  if (next.has(id)) {
+    next.delete(id)
+  } else {
+    next.add(id)
+  }
+  collapsedEdgeIds.value = next
+}
 
 const formatTime = (value) => {
   if (!value) return '未知时间'
@@ -125,6 +170,10 @@ const formatTime = (value) => {
   border-color: rgba(16, 163, 127, 0.2);
 }
 
+.run-card.attention {
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.18);
+}
+
 .run-card-head,
 .edge-head {
   display: flex;
@@ -151,18 +200,24 @@ const formatTime = (value) => {
 
 .run-summary,
 .edge-task,
-.edge-review {
+.edge-attention {
   margin-top: 10px;
   color: #475569;
   line-height: 1.6;
   word-break: break-word;
 }
 
-.edge-review {
-  color: #0f766e;
+.edge-main {
+  min-width: 0;
+}
+
+.edge-attention {
+  margin-bottom: 0;
+  color: #92400e;
   font-weight: 600;
 }
 
+.edge-facts,
 .run-meta,
 .edge-meta {
   display: flex;
@@ -175,6 +230,41 @@ const formatTime = (value) => {
 
 .mono {
   font-family: var(--font-mono);
+}
+
+.attention-text {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.fact-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(148, 163, 184, 0.12);
+  color: #334155;
+  font-weight: 600;
+}
+
+.fact-pill.review {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+}
+
+.fact-pill.governance {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.fact-pill.warning {
+  background: rgba(245, 158, 11, 0.14);
+  color: #92400e;
+}
+
+.fact-pill.muted {
+  background: rgba(15, 23, 42, 0.06);
+  color: #475569;
 }
 
 .status-chip,
@@ -190,7 +280,8 @@ const formatTime = (value) => {
 }
 
 .status-chip.queued,
-.status-pill.queued {
+.status-pill.queued,
+.status-pill.pending {
   background: rgba(148, 163, 184, 0.16);
   color: #475569;
 }
@@ -216,9 +307,14 @@ const formatTime = (value) => {
 .status-chip.failed,
 .status-pill.failed,
 .status-chip.cancelled,
-.status-pill.cancelled {
+.status-pill.cancelled,
+.status-pill.danger {
   background: rgba(239, 68, 68, 0.12);
   color: #b91c1c;
+}
+
+.status-pill.warning {
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.24);
 }
 
 .invocation-children,
@@ -241,8 +337,35 @@ const formatTime = (value) => {
   background: linear-gradient(180deg, rgba(16, 163, 127, 0.35) 0%, rgba(16, 163, 127, 0.08) 100%);
 }
 
+.edge-connector.attention {
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.45) 0%, rgba(245, 158, 11, 0.08) 100%);
+}
+
 .edge-card {
   background: linear-gradient(180deg, #fffef8 0%, #fff7ed 100%);
-  border-color: rgba(245, 158, 11, 0.22);
+}
+
+.edge-card.attention {
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.edge-card.collapsed {
+  opacity: 0.92;
+}
+
+.collapse-toggle,
+.hidden-toggle {
+  justify-self: start;
+  border: none;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  font-weight: 700;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.hidden-toggle {
+  margin-left: 18px;
 }
 </style>
