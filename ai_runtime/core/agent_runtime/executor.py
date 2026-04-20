@@ -6,6 +6,7 @@ import re
 from typing import Any, Dict
 
 from ai_runtime.core.agent_runtime.models import PlannerResult
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig, ToolResultCache
 from ai_runtime.core.agent_runtime.policy import RuntimePolicy
 from ai_runtime.core.agent_runtime.schema_utils import normalize_output_schema
 from ai_runtime.core.agent_runtime.tools.base import ToolContext, ToolLookupContext
@@ -13,9 +14,16 @@ from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 
 
 class AgentExecutor:
-    def __init__(self, registry: ToolRegistry, policy: RuntimePolicy | None = None) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        policy: RuntimePolicy | None = None,
+        optimization_config: AgentRuntimeOptimizationConfig | None = None,
+    ) -> None:
         self.registry = registry
         self.policy = policy or RuntimePolicy()
+        self.optimization_config = optimization_config or AgentRuntimeOptimizationConfig.from_env()
+        self._tool_result_cache = ToolResultCache()
 
     async def execute_tool(
         self,
@@ -38,6 +46,7 @@ class AgentExecutor:
                 user_id=tool_context.user_id,
                 agent_definition_id=tool_context.agent_definition_id,
                 run_id=tool_context.run_id,
+                session_id=tool_context.session_id,
                 allowed_knowledge_base_ids=tool_context.allowed_knowledge_base_ids,
                 allowed_mcp_server_ids=tool_context.allowed_mcp_server_ids,
                 allowed_mcp_tool_names=tool_context.allowed_mcp_tool_names,
@@ -45,7 +54,31 @@ class AgentExecutor:
         )
         if tool is None:
             raise ValueError(f"Tool {action.tool_name} is not registered")
-        return await tool.execute(tool_context, action.tool_arguments)
+        if not self.optimization_config.enable_tool_result_cache:
+            result = await tool.execute(tool_context, action.tool_arguments)
+            cached = False
+        else:
+            cache = tool_context.tool_result_cache or self._tool_result_cache
+            cache_key = cache.build_key(
+                tool_name=action.tool_name,
+                tenant_id=tool_context.tenant_id,
+                user_id=tool_context.user_id,
+                agent_definition_id=tool_context.agent_definition_id,
+                run_id=tool_context.run_id,
+                session_id=tool_context.session_id,
+                allowed_knowledge_base_ids=tool_context.allowed_knowledge_base_ids,
+                allowed_mcp_server_ids=tool_context.allowed_mcp_server_ids,
+                allowed_mcp_tool_names=tool_context.allowed_mcp_tool_names,
+                arguments=action.tool_arguments,
+            )
+            result, cached = await cache.get_or_compute(cache_key, lambda: tool.execute(tool_context, action.tool_arguments))
+        if cached:
+            result = dict(result)
+            result["cache_hit"] = True
+        else:
+            result = dict(result)
+            result["cache_hit"] = False
+        return result
 
     def _select_effective_schema(self, output_schema: Dict[str, Any] | None) -> Dict[str, Any]:
         return normalize_output_schema(output_schema)

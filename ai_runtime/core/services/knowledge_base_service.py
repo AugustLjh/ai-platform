@@ -65,6 +65,16 @@ DEFAULT_GOVERNANCE_SETTINGS = {
             "primary_model_id": None,
             "fallback_model_id": None,
         },
+        "agent_planning": {
+            "enabled": True,
+            "primary_model_id": None,
+            "fallback_model_id": None,
+        },
+        "agent_synthesis": {
+            "enabled": True,
+            "primary_model_id": None,
+            "fallback_model_id": None,
+        },
     },
 }
 

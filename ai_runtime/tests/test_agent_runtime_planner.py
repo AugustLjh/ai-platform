@@ -2,6 +2,7 @@ import json
 import asyncio
 
 from ai_runtime.core.agent_runtime.models import AgentDefinition
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
 from ai_runtime.core.agent_runtime.planner import AgentPlanner
 from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
 
@@ -136,6 +137,39 @@ def test_planner_user_prompt_includes_tool_failure_state():
     assert payload["context_state"]["mounted_knowledge_base_ids"] == ["kb-1"]
 
 
+def test_planner_user_prompt_prefers_prompt_context_when_compression_applies():
+    planner = AgentPlanner()
+    prompt = planner._build_user_prompt(
+        run_input={"message": "find docs"},
+        runtime_context={
+            "conversation": [{"role": "user", "content": "full conversation item"} for _ in range(12)],
+            "step_history": [{"status": "completed", "tool_name": "knowledge_search", "result": "full result"} for _ in range(10)],
+            "tool_failures": 0,
+            "execution_count": 4,
+            "mounted_knowledge_base_ids": ["kb-1"],
+            "prompt_context": {
+                "mode": "compressed",
+                "conversation": [{"role": "user", "content": "recent tail"}],
+                "step_history": [{"status": "completed", "tool_name": "knowledge_search", "result_excerpt": "tail result"}],
+                "compressed_context": {
+                    "objective": "find docs",
+                    "recent_tail": {"conversation": [{"role": "user", "content": "recent tail"}], "observations": []},
+                },
+                "intent_state": {"inferred_intent": "research"},
+            },
+        },
+        iteration=4,
+    )
+
+    payload = json.loads(prompt.split("\n\n", 1)[1])
+    assert payload["prompt_mode"] == "compressed"
+    assert payload["conversation"] == [{"role": "user", "content": "recent tail"}]
+    assert payload["step_history"][0]["result_excerpt"] == "tail result"
+    assert payload["compressed_context"]["objective"] == "find docs"
+    assert payload["context_state"]["conversation_message_count"] == 12
+    assert payload["context_state"]["prompt_conversation_count"] == 1
+
+
 def test_planner_retries_once_when_initial_json_is_invalid():
     class FakeLLMService:
         def __init__(self):
@@ -195,6 +229,53 @@ def test_planner_retries_once_when_initial_json_is_invalid():
     assert result.action.type == "final_answer"
     assert result.metadata["repair_attempted"] is True
     assert "initial_raw_response" in result.metadata
+
+
+def test_planner_skips_repair_when_structured_output_is_supported_and_disabled_by_default():
+    class FakeLLMService:
+        def __init__(self):
+            self.calls = 0
+            self.kwargs: list[dict] = []
+
+        async def chat_with_candidates(self, resolution, messages, **kwargs):
+            self.calls += 1
+            self.kwargs.append(kwargs)
+            return "not valid json", {"resolved_model_name": "Planner Model"}
+
+    planner = AgentPlanner(
+        optimization_config=AgentRuntimeOptimizationConfig(disable_planner_repair=True),
+    )
+    definition = AgentDefinition.model_validate(
+        {
+            "id": "agent-1",
+            "tenant_id": "tenant-1",
+            "name": "Test Agent",
+            "system_prompt": "",
+            "created_at": "2026-03-27T00:00:00Z",
+            "updated_at": "2026-03-27T00:00:00Z",
+        }
+    )
+    service = FakeLLMService()
+
+    try:
+        asyncio.run(
+            planner.plan(
+                definition,
+                {"message": "用python写一个简单的计算器代码"},
+                [],
+                runtime_context={"conversation": [], "step_history": []},
+                iteration=1,
+                llm_service=service,
+                llm_resolution={"candidates": [{"provider": "openai"}]},
+            )
+        )
+    except ValueError as exc:
+        assert "valid JSON" in str(exc)
+    else:
+        raise AssertionError("expected planner to fail fast without repair")
+
+    assert service.calls == 1
+    assert service.kwargs[0]["response_format"] == {"type": "json_object"}
 
 
 def test_planner_parses_delegate_action_against_available_subagents():

@@ -5,9 +5,14 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
+from ai_runtime.core.agent_runtime.context_compressor import (
+    COMPRESSION_STATE_KEY,
+    ContextCompressor,
+)
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
 from ai_runtime.core.agent_runtime.intent import IntentPreprocessor
 from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig, ToolResultCache
 from ai_runtime.core.agent_runtime.planner import AgentPlanner
 from ai_runtime.core.agent_runtime.policy import RuntimePolicy
 from ai_runtime.core.agent_runtime.result_contract import (
@@ -78,6 +83,7 @@ class AgentOrchestrator:
         self.planner = planner
         self.executor = executor
         self.summarizer = summarizer
+        self.context_compressor = ContextCompressor()
         self.llm_service = llm_service
         self.tracer = tracer
         self.agent_repository = agent_repository
@@ -89,6 +95,8 @@ class AgentOrchestrator:
         self.subagent_registry = subagent_registry
         self.subagent_router = subagent_router or SubagentRouter()
         self.subagent_handoff = subagent_handoff
+        self.optimization_config = AgentRuntimeOptimizationConfig.from_env()
+        self.tool_result_cache = ToolResultCache(self.optimization_config.tool_cache_max_entries)
 
     async def _emit_step_event(
         self,
@@ -121,6 +129,29 @@ class AgentOrchestrator:
     def _extract_requested_model(self, definition: AgentDefinition, run_input: Dict[str, Any]) -> Optional[str]:
         selector = str(run_input.get("model") or definition.model or "").strip()
         return selector or None
+
+    def _extract_phase_requested_model(
+        self,
+        definition: AgentDefinition,
+        run_input: Dict[str, Any],
+        *,
+        phase: str,
+    ) -> Optional[str]:
+        run_models = run_input.get("models") if isinstance(run_input.get("models"), dict) else {}
+        definition_models = definition.config.get("models") if isinstance(definition.config.get("models"), dict) else {}
+        candidates = [
+            run_input.get(f"{phase}_model"),
+            run_models.get(phase),
+            definition.config.get(f"{phase}_model"),
+            definition_models.get(phase),
+            run_input.get("model"),
+            definition.model,
+        ]
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return None
 
     def _extract_knowledge_base_id(self, run_input: Dict[str, Any]) -> Optional[str]:
         knowledge_base_id = str(run_input.get("knowledge_base_id") or "").strip()
@@ -223,12 +254,17 @@ class AgentOrchestrator:
         return tuple(dict.fromkeys(server_ids)), tuple(dict.fromkeys(tool_names))
 
     def _resolve_max_iterations(self, definition: AgentDefinition) -> int:
-        value = definition.config.get("max_iterations", 8)
+        value = definition.config.get("max_iterations", self.optimization_config.default_max_iterations)
         try:
             parsed = int(value)
         except (TypeError, ValueError):
-            parsed = 8
+            parsed = self.optimization_config.default_max_iterations
         return max(2, min(parsed, 20))
+
+    async def _flush_tracer(self) -> None:
+        flush = getattr(self.tracer, "flush", None)
+        if callable(flush):
+            await flush()
 
     async def _resolve_skill_context(
         self,
@@ -335,6 +371,21 @@ class AgentOrchestrator:
         runtime_context.setdefault("tool_failures", 0)
         return runtime_context
 
+    def _refresh_prompt_context(
+        self,
+        *,
+        run_input: Dict[str, Any],
+        runtime_context: Dict[str, Any],
+        phase: str,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        return self.context_compressor.compress(
+            run_input=run_input,
+            runtime_context=runtime_context,
+            phase=phase,
+            force=force,
+        )
+
     async def _preprocess_intent(
         self,
         *,
@@ -362,6 +413,11 @@ class AgentOrchestrator:
             "search_queries": intent_state.get("search_queries", []),
             "resolved_references": intent_state.get("resolved_references", []),
         }
+        self._refresh_prompt_context(
+            run_input=runtime_context.get("normalized_task_input") or run.input,
+            runtime_context=runtime_context,
+            phase="intent",
+        )
         return intent_state
 
     def _tool_attempt_count(self, runtime_context: Dict[str, Any]) -> int:
@@ -426,6 +482,11 @@ class AgentOrchestrator:
         llm_resolution: Dict[str, Any],
         iteration: int,
     ) -> PlannerResult:
+        self._refresh_prompt_context(
+            run_input=runtime_context.get("normalized_task_input") or run.input,
+            runtime_context=runtime_context,
+            phase=f"planning.iteration_{iteration}",
+        )
         for attempt in range(2):
             planner_result = await self.planner.plan(
                 definition,
@@ -772,6 +833,7 @@ class AgentOrchestrator:
             user_id=run.user_id,
             agent_definition_id=run.agent_definition_id,
             run_id=run.id,
+            session_id=run.session_id,
             allowed_knowledge_base_ids=tuple(mounted_knowledge_base_ids or []),
             allowed_mcp_server_ids=allowed_mcp_server_ids,
             allowed_mcp_tool_names=allowed_mcp_tool_names,
@@ -792,6 +854,7 @@ class AgentOrchestrator:
         )
         return ToolContext(
             run_id=run.id,
+            session_id=run.session_id,
             tenant_id=run.tenant_id,
             user_id=run.user_id,
             agent_definition_id=run.agent_definition_id,
@@ -799,6 +862,7 @@ class AgentOrchestrator:
             allowed_knowledge_base_ids=lookup_context.allowed_knowledge_base_ids,
             allowed_mcp_server_ids=lookup_context.allowed_mcp_server_ids,
             allowed_mcp_tool_names=lookup_context.allowed_mcp_tool_names,
+            tool_result_cache=self.tool_result_cache if self.optimization_config.enable_tool_result_cache else None,
         )
 
     async def _get_tool_kind(
@@ -854,6 +918,7 @@ class AgentOrchestrator:
             )
             if result.get("artifacts") is not None:
                 await self.run_repository.replace_artifacts(run.id, result.get("artifacts") or [])
+            await self._flush_tracer()
             if result["status"] == "completed":
                 await self.tracer.emit_event(
                     run.id,
@@ -894,6 +959,7 @@ class AgentOrchestrator:
                 )
                 if terminal_surface.get("artifacts") is not None:
                     await self.run_repository.replace_artifacts(run_id, terminal_surface.get("artifacts") or [])
+                await self._flush_tracer()
                 await self.tracer.emit_event(
                     run_id,
                     "run.cancelled",
@@ -919,6 +985,7 @@ class AgentOrchestrator:
             )
             if terminal_surface.get("artifacts") is not None:
                 await self.run_repository.replace_artifacts(run_id, terminal_surface.get("artifacts") or [])
+            await self._flush_tracer()
             await self.tracer.emit_event(
                 run_id,
                 "run.failed",
@@ -1505,6 +1572,13 @@ class AgentOrchestrator:
         elif skill_context is None and output_schema:
             effective_skill_context = SkillRuntimeContext(output_schema=output_schema)
 
+        self._refresh_prompt_context(
+            run_input=runtime_context.get("normalized_task_input") or run.input,
+            runtime_context=runtime_context,
+            phase="synthesis",
+            force=bool(runtime_context.get("step_history")),
+        )
+
         try:
             summary, model_info = await self.summarizer.summarize(
                 llm_service=self.llm_service,
@@ -1658,30 +1732,38 @@ class AgentOrchestrator:
         if managed_subagent is not None:
             runtime_context["managed_subagent"] = managed_subagent.model_dump(mode="json")
 
-        requested_model = self._extract_requested_model(definition, run.input)
+        planning_requested_model = self._extract_phase_requested_model(definition, run.input, phase="planning")
+        synthesis_requested_model = self._extract_phase_requested_model(definition, run.input, phase="synthesis")
         knowledge_base_id = self._extract_knowledge_base_id(run.input)
         planning_resolution = await self.llm_service.resolve_candidates(
             tenant_id=run.tenant_id,
             user_id=run.user_id,
             knowledge_base_id=knowledge_base_id,
             route_scene="agent_planning",
-            requested_model=requested_model,
+            requested_model=planning_requested_model,
         )
         synthesis_resolution = await self.llm_service.resolve_candidates(
             tenant_id=run.tenant_id,
             user_id=run.user_id,
             knowledge_base_id=knowledge_base_id,
             route_scene="agent_synthesis",
-            requested_model=requested_model,
+            requested_model=synthesis_requested_model,
         )
         runtime_context["planning_model"] = {
+            "route_scene": "agent_planning",
             "requested_model": planning_resolution.get("requested_model"),
             "candidate_count": len(planning_resolution.get("candidates", [])),
         }
         runtime_context["synthesis_model"] = {
+            "route_scene": "agent_synthesis",
             "requested_model": synthesis_resolution.get("requested_model"),
             "candidate_count": len(synthesis_resolution.get("candidates", [])),
         }
+        self._refresh_prompt_context(
+            run_input=run.input,
+            runtime_context=runtime_context,
+            phase="bootstrap",
+        )
         await self._preprocess_intent(
             definition=definition,
             run=run,
@@ -1749,6 +1831,12 @@ class AgentOrchestrator:
                 filtered_for_intent=inferred_intent,
             )
         await self._persist_run_state(run.id, status="running", runtime_context=runtime_context)
+        await self.tracer.emit_event(
+            run.id,
+            "context.compression.updated",
+            phase="bootstrap",
+            state=runtime_context.get(COMPRESSION_STATE_KEY, {}),
+        )
 
         max_iterations = self._resolve_max_iterations(definition)
         last_plan: Dict[str, Any] | None = None
@@ -1767,12 +1855,6 @@ class AgentOrchestrator:
             )
             last_plan = planner_result.model_dump(mode="json")
             runtime_context["last_plan"] = last_plan
-            await self._persist_run_state(
-                run.id,
-                status="running",
-                runtime_context=runtime_context,
-                plan=last_plan,
-            )
             await self.tracer.emit_event(
                 run.id,
                 "plan.created",

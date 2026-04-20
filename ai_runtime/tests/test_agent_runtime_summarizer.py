@@ -1,3 +1,6 @@
+import asyncio
+
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
 from ai_runtime.core.agent_runtime.summarizer import AgentSummarizer
 
 
@@ -111,3 +114,51 @@ def test_summarizer_prompt_mentions_required_fields_and_enum_guidance():
     assert "Do not omit required fields: answer, status." in prompt
     assert "When status is present, use one of: done, blocked." in prompt
     assert "\"status\": \"done\"" in prompt
+
+
+def test_summarizer_direct_short_circuit_uses_planner_note():
+    summarizer = AgentSummarizer(
+        optimization_config=AgentRuntimeOptimizationConfig(enable_summarizer_short_circuit=True),
+    )
+
+    text, model_info = asyncio.run(
+        summarizer.summarize(
+            llm_service=None,
+            llm_resolution={"candidates": [{}]},
+            system_prompt="",
+            run_input={"message": "ignore"},
+            runtime_context={},
+            skill_context=None,
+            planner_note="Summarize the findings.",
+        )
+    )
+
+    assert text == "Summarize the findings."
+    assert model_info["model_source"] == "short_circuit"
+
+
+def test_summarizer_does_not_short_circuit_to_user_input_when_no_answer_exists():
+    class _FailingLLMService:
+        async def chat_with_candidates(self, *args, **kwargs):
+            raise RuntimeError("llm required")
+
+    summarizer = AgentSummarizer(
+        optimization_config=AgentRuntimeOptimizationConfig(enable_summarizer_short_circuit=True),
+    )
+
+    try:
+        asyncio.run(
+            summarizer.summarize(
+                llm_service=_FailingLLMService(),
+                llm_resolution={"candidates": [{}]},
+                system_prompt="",
+                run_input={"message": "user task"},
+                runtime_context={},
+                skill_context=None,
+                planner_note=None,
+            )
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "llm required"
+    else:
+        raise AssertionError("expected llm fallback when no direct final text exists")

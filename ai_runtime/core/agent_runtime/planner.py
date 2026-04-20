@@ -4,18 +4,36 @@ import json
 import re
 from typing import Any, Dict, List, Sequence
 
+from ai_runtime.core.agent_runtime.context_compressor import PROMPT_CONTEXT_KEY
 from ai_runtime.core.agent_runtime.models import (
     AgentDefinition,
     PlannerAction,
     PlannerResult,
     PlannerStep,
 )
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
 from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 class AgentPlanner:
+    def __init__(self, optimization_config: AgentRuntimeOptimizationConfig | None = None) -> None:
+        self.optimization_config = optimization_config or AgentRuntimeOptimizationConfig.from_env()
+
+    def _supports_native_json_mode(self, llm_resolution: Dict[str, Any]) -> bool:
+        candidates = llm_resolution.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            return False
+        supported_providers = {"openai", "deepseek", "jina"}
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                return False
+            provider = str(candidate.get("provider") or "").strip().lower()
+            if provider not in supported_providers:
+                return False
+        return True
+
     def _is_recoverable_format_error(self, error: Exception) -> bool:
         message = str(error)
         return (
@@ -196,28 +214,40 @@ class AgentPlanner:
         iteration: int,
         available_subagents: List[SubagentTarget] | None = None,
     ) -> str:
-        step_history = runtime_context.get("step_history", [])
+        prompt_context = runtime_context.get(PROMPT_CONTEXT_KEY, {})
+        if not isinstance(prompt_context, dict):
+            prompt_context = {}
+        prompt_mode = str(prompt_context.get("mode") or "full")
+        conversation = prompt_context.get("conversation", runtime_context.get("conversation", []))
+        step_history = prompt_context.get("step_history", runtime_context.get("step_history", []))
+        compressed_context = prompt_context.get("compressed_context")
         recent_observations = self._summarize_recent_steps(step_history)
         payload = {
             "iteration": iteration,
             "task_input": run_input,
-            "conversation": runtime_context.get("conversation", []),
+            "prompt_mode": prompt_mode,
+            "conversation": conversation,
             "step_history": step_history,
             "recent_observations": recent_observations,
             "latest_observation": recent_observations[-1] if recent_observations else None,
-            "intent_state": runtime_context.get("intent_state", {}),
-            "ask_user_guard": runtime_context.get("ask_user_guard"),
+            "compressed_context": compressed_context,
+            "intent_state": prompt_context.get("intent_state", runtime_context.get("intent_state", {})),
+            "ask_user_guard": prompt_context.get("ask_user_guard", runtime_context.get("ask_user_guard")),
             "context_state": {
                 "conversation_message_count": len(runtime_context.get("conversation", []))
                 if isinstance(runtime_context.get("conversation"), list)
                 else 0,
-                "step_history_count": len(step_history) if isinstance(step_history, list) else 0,
+                "step_history_count": len(runtime_context.get("step_history", []))
+                if isinstance(runtime_context.get("step_history"), list)
+                else 0,
+                "prompt_conversation_count": len(conversation) if isinstance(conversation, list) else 0,
+                "prompt_step_history_count": len(step_history) if isinstance(step_history, list) else 0,
                 "execution_count": runtime_context.get("execution_count", 0),
                 "tool_failures": runtime_context.get("tool_failures", 0),
                 "mounted_knowledge_base_ids": runtime_context.get("mounted_knowledge_base_ids", []),
             },
             "tool_failures": runtime_context.get("tool_failures", 0),
-            "pending_question": runtime_context.get("pending_question"),
+            "pending_question": prompt_context.get("pending_question", runtime_context.get("pending_question")),
             "available_subagents": [
                 {
                     "slug": target.slug,
@@ -429,11 +459,16 @@ class AgentPlanner:
                 ),
             },
         ]
+        chat_kwargs: dict[str, Any] = {
+            "temperature": 0.1,
+            "max_tokens": self.optimization_config.planner_max_tokens,
+        }
+        if self._supports_native_json_mode(llm_resolution):
+            chat_kwargs["response_format"] = {"type": "json_object"}
         raw_response, model_info = await llm_service.chat_with_candidates(
             llm_resolution,
             messages,
-            temperature=0.1,
-            max_tokens=1400,
+            **chat_kwargs,
         )
         try:
             return self._parse_planner_response(
@@ -444,6 +479,12 @@ class AgentPlanner:
                 model_info=model_info,
             )
         except ValueError as exc:
+            should_repair = (
+                not self.optimization_config.disable_planner_repair
+                or not self._supports_native_json_mode(llm_resolution)
+            )
+            if not should_repair:
+                raise
             if not self._is_recoverable_format_error(exc):
                 raise
 

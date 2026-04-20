@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, List, Sequence
 
 from ai_runtime.core.agent_runtime.models import AgentDefinition
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
@@ -48,8 +49,28 @@ DECISION_MARKERS = ("你选", "我该选", "帮我选", "which one", "pick one",
 
 
 class IntentPreprocessor:
+    def __init__(self, optimization_config: AgentRuntimeOptimizationConfig | None = None) -> None:
+        self.optimization_config = optimization_config or AgentRuntimeOptimizationConfig.from_env()
+
     def _extract_message(self, run_input: Dict[str, Any]) -> str:
         return str(run_input.get("message") or run_input.get("prompt") or "").strip()
+
+    def _is_explicit_request(self, current_message: str) -> bool:
+        text = current_message.strip()
+        if len(text) < 4:
+            return False
+        lowered = text.lower()
+        if "\n" in text:
+            return False
+        if any(symbol in text for symbol in ("?", "？")):
+            return False
+        if any(marker in text or marker in lowered for marker in REFERENCE_MARKERS):
+            return False
+        if any(token in text for token in ("上述", "前面", "刚才", "继续", "顺便", "再", "也", "同样")):
+            return False
+        if re.search(r"\b(it|this|that|these|those|them|they|he|she)\b", lowered):
+            return False
+        return True
 
     def _extract_json_payload(self, raw_response: str) -> Dict[str, Any]:
         text = (raw_response or "").strip()
@@ -175,6 +196,26 @@ class IntentPreprocessor:
             "reference_hints": reference_hints,
             "preprocess_source": "heuristic_fallback",
         }
+
+    def _short_circuit_state(
+        self,
+        *,
+        run_input: Dict[str, Any],
+        runtime_context: Dict[str, Any],
+    ) -> Dict[str, Any] | None:
+        if not self.optimization_config.enable_intent_preprocess_short_circuit:
+            return None
+        current_message = self._extract_message(run_input)
+        if not self._is_explicit_request(current_message):
+            return None
+        state = self._fallback_state(run_input=run_input, runtime_context=runtime_context)
+        state["normalized_message"] = current_message
+        state["resolved_references"] = []
+        state["assumptions"] = []
+        state["reference_hints"] = []
+        state["reasoning_summary"] = "Intent preprocessing short-circuited because the request is explicit and self-contained."
+        state["preprocess_source"] = "short_circuit"
+        return state
 
     def _normalize_payload(
         self,
@@ -306,6 +347,10 @@ class IntentPreprocessor:
         llm_service,
         llm_resolution: Dict[str, Any],
     ) -> Dict[str, Any]:
+        short_circuit = self._short_circuit_state(run_input=run_input, runtime_context=runtime_context)
+        if short_circuit is not None:
+            return short_circuit
+
         messages = [
             {
                 "role": "system",
@@ -328,7 +373,7 @@ class IntentPreprocessor:
                 llm_resolution,
                 messages,
                 temperature=0.1,
-                max_tokens=1200,
+                max_tokens=self.optimization_config.intent_max_tokens,
             )
             payload = self._extract_json_payload(raw_response)
             normalized = self._normalize_payload(

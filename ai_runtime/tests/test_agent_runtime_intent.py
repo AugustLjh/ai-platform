@@ -1,6 +1,8 @@
 import asyncio
 
 from ai_runtime.core.agent_runtime.intent import IntentPreprocessor
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
+from ai_runtime.core.agent_runtime.intent import IntentPreprocessor
 from ai_runtime.core.agent_runtime.models import PlannerAction
 from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
 
@@ -101,3 +103,24 @@ def test_intent_preprocessor_infers_implement_intent():
     )
 
     assert result["inferred_intent"] == "implement"
+
+
+def test_intent_preprocessor_short_circuits_explicit_request():
+    preprocessor = IntentPreprocessor(
+        optimization_config=AgentRuntimeOptimizationConfig(enable_intent_preprocess_short_circuit=True),
+    )
+
+    result = asyncio.run(
+        preprocessor.preprocess(
+            definition=type("Definition", (), {"system_prompt": ""})(),
+            run_input={"message": "实现一个登录接口并修复 token 刷新逻辑"},
+            available_tools=[],
+            runtime_context={"conversation": []},
+            llm_service=_FailingLLMService(),
+            llm_resolution={"candidates": [{}]},
+        )
+    )
+
+    assert result["preprocess_source"] == "short_circuit"
+    assert result["normalized_message"] == "实现一个登录接口并修复 token 刷新逻辑"
+    assert result["resolved_references"] == []

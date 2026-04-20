@@ -35,6 +35,9 @@ COPY ai_runtime /app/ai_runtime
 COPY db /app/db
 
 # 生成包内 proto stubs，避免运行时路径注入
+RUN mkdir -p /app/ai_runtime/proto && \
+    touch /app/ai_runtime/proto/__init__.py
+
 RUN python -m grpc_tools.protoc \
       -I/proto \
       --python_out=/app/ai_runtime/proto \

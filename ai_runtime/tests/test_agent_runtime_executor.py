@@ -1,4 +1,6 @@
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
+from ai_runtime.core.agent_runtime.tools.base import BaseTool, ToolContext, ToolLookupContext, ToolSpec
 from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 
 
@@ -289,3 +291,117 @@ def test_executor_coerces_additional_properties_and_array_constraints():
     assert shaped["metrics"]["coverage"] == 98
     assert shaped["metrics"]["risk"] == 0
     assert shaped["open_questions"] == ["rollback path", "owner confirmation"]
+
+
+class _CountingTool(BaseTool):
+    spec = ToolSpec(name="counting_tool", description="Counts tool invocations.")
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.contexts: list[ToolContext] = []
+
+    async def execute(self, context: ToolContext, arguments):
+        self.calls += 1
+        self.contexts.append(context)
+        return {"value": arguments["value"]}
+
+
+class _CapturingProvider:
+    def __init__(self, tool: BaseTool) -> None:
+        self.tool = tool
+        self.lookup_contexts: list[ToolLookupContext | None] = []
+
+    async def get(self, name: str, context: ToolLookupContext | None = None):
+        self.lookup_contexts.append(context)
+        if name == self.tool.spec.name:
+            return self.tool
+        return None
+
+    async def list_specs(self, context: ToolLookupContext | None = None):
+        return []
+
+    async def get_spec(self, name: str, context: ToolLookupContext | None = None):
+        return None
+
+
+def test_executor_passes_session_id_and_reuses_cached_tool_results():
+    registry = ToolRegistry()
+    tool = _CountingTool()
+    provider = _CapturingProvider(tool)
+    registry.register_provider(provider)
+    executor = AgentExecutor(registry)
+
+    planner_result = type(
+        "_PlannerResult",
+        (),
+        {
+            "action": type(
+                "_PlannerAction",
+                (),
+                {
+                    "type": "tool_call",
+                    "tool_name": "counting_tool",
+                    "tool_arguments": {"value": 7},
+                },
+            )(),
+        },
+    )()
+    context = ToolContext(
+        run_id="run-1",
+        session_id="session-1",
+        tenant_id="tenant-1",
+        user_id="user-1",
+        agent_definition_id="agent-1",
+        step_id="step-1",
+    )
+
+    first = __import__("asyncio").run(executor.execute_tool(planner_result, tool_context=context))
+    second = __import__("asyncio").run(executor.execute_tool(planner_result, tool_context=context))
+
+    assert tool.calls == 1
+    assert provider.lookup_contexts[0] is not None
+    assert provider.lookup_contexts[0].session_id == "session-1"
+    assert tool.contexts[0].session_id == "session-1"
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+
+
+def test_executor_can_disable_tool_result_cache():
+    registry = ToolRegistry()
+    tool = _CountingTool()
+    registry.register(tool)
+    executor = AgentExecutor(
+        registry,
+        optimization_config=AgentRuntimeOptimizationConfig(enable_tool_result_cache=False),
+    )
+
+    planner_result = type(
+        "_PlannerResult",
+        (),
+        {
+            "action": type(
+                "_PlannerAction",
+                (),
+                {
+                    "type": "tool_call",
+                    "tool_name": "counting_tool",
+                    "tool_arguments": {"value": 7},
+                },
+            )(),
+        },
+    )()
+    context = ToolContext(
+        run_id="run-1",
+        session_id="session-1",
+        tenant_id="tenant-1",
+        user_id="user-1",
+        agent_definition_id="agent-1",
+        step_id="step-1",
+    )
+
+    first = __import__("asyncio").run(executor.execute_tool(planner_result, tool_context=context))
+    second = __import__("asyncio").run(executor.execute_tool(planner_result, tool_context=context))
+
+    assert tool.calls == 2
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is False

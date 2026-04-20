@@ -48,6 +48,9 @@ class FakeRegistry:
     async def get_spec(self, tool_name, context=None):
         return {"kind": "mcp"} if tool_name == "search_docs" else {"kind": "builtin"}
 
+    async def list_specs(self, context=None):
+        return []
+
 
 class FakeExecutor:
     def __init__(self, result):
@@ -67,6 +70,30 @@ class FakeExecutor:
 class FakeSummarizer:
     async def summarize(self, **kwargs):
         return "Final synthesis.", {"resolved_model_name": "summary-model"}
+
+
+class FakeLLMService:
+    def __init__(self):
+        self.resolve_calls: list[dict] = []
+
+    async def resolve_candidates(self, **kwargs):
+        self.resolve_calls.append(kwargs)
+        return {"requested_model": None, "candidates": [{}]}
+
+    async def chat_with_candidates(self, resolution, messages, **kwargs):
+        return "{}", {"resolved_model_name": "fake-model"}
+
+
+class CapturingSummarizer:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def summarize(self, **kwargs):
+        self.calls.append(kwargs)
+        prompt_context = kwargs["runtime_context"]["prompt_context"]
+        assert prompt_context["mode"] == "compressed"
+        assert prompt_context["compressed_context"]["objective"]
+        return "Compressed synthesis.", {"resolved_model_name": "summary-model"}
 
 
 class FakeRunRepository:
@@ -169,6 +196,25 @@ class FakeAgentRepository:
 
     async def get_definition(self, agent_definition_id, tenant_id):
         return self.definition
+
+    async def list_accessible_knowledge_bindings(self, agent_definition_id, tenant_id, user_id):
+        return []
+
+
+class FakePlanner:
+    async def plan(self, *args, **kwargs):
+        runtime_context = kwargs["runtime_context"]
+        assert "compressed_context" in runtime_context
+        assert "prompt_context" in runtime_context
+        return PlannerResult(
+            action=PlannerAction(
+                type="final_answer",
+                title="Return answer",
+                content="Return the answer from compressed context.",
+            ),
+            reasoning="Compressed context is available.",
+            iteration=kwargs["iteration"],
+        )
 
 
 @pytest.mark.asyncio
@@ -306,6 +352,160 @@ async def test_orchestrator_persists_partial_artifacts_and_terminal_payload_when
     assert terminal_event["event_type"] == "run.failed"
     assert terminal_event["payload"]["error"] == "Synthesis failed"
     assert terminal_event["payload"]["artifacts"][0]["artifact_type"] == "citations"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_builds_and_uses_compressed_context_in_main_chain():
+    run_repository = FakeRunRepository(
+        {
+            "id": "run-parent",
+            "agent_definition_id": "agent-parent",
+            "tenant_id": "tenant-1",
+            "user_id": "user-1",
+            "session_id": "session-1",
+            "status": "running",
+            "input": {"message": "Summarize the long discussion."},
+            "plan": {},
+            "context": {
+                "conversation": [{"role": "user", "content": f"message {idx}"} for idx in range(14)],
+                "step_history": [
+                    {
+                        "step_index": idx + 1,
+                        "title": f"step {idx}",
+                        "kind": "tool",
+                        "status": "completed",
+                        "tool_name": "knowledge_search",
+                        "result": {"text": f"result {idx}"},
+                    }
+                    for idx in range(10)
+                ],
+            },
+            "created_at": _timestamp(),
+            "updated_at": _timestamp(),
+        }
+    )
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=FakePlanner(),
+        executor=FakeExecutor({}),
+        summarizer=FakeSummarizer(),
+        llm_service=FakeLLMService(),
+        tracer=tracer,
+        agent_repository=FakeAgentRepository(_build_definition().model_dump(mode="json")),
+        run_repository=run_repository,
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+
+    result = await orchestrator.start_run("run-parent")
+
+    assert result.status == "completed"
+    assert result.context["context_compression"]["applied"] is True
+    assert result.context["prompt_context"]["mode"] == "compressed"
+    assert result.context["prompt_context"]["compressed_context"]["objective"] == "Summarize the long discussion."
+    assert tracer.events[-1]["event_type"] == "run.completed"
+    assert any(event["event_type"] == "context.compression.updated" for event in tracer.events)
+
+
+@pytest.mark.asyncio
+async def test_execute_final_answer_uses_compressed_prompt_context():
+    summarizer = CapturingSummarizer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({}),
+        summarizer=summarizer,
+        llm_service=None,
+        tracer=FakeTracer(),
+        agent_repository=None,
+        run_repository=FakeRunRepository(),
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+    runtime_context = {
+        "conversation": [{"role": "user", "content": f"message {idx}"} for idx in range(12)],
+        "step_history": [
+            {
+                "step_index": idx + 1,
+                "title": f"step {idx}",
+                "kind": "tool",
+                "status": "completed",
+                "tool_name": "knowledge_search",
+                "result": {"text": f"result {idx}"},
+            }
+            for idx in range(9)
+        ],
+        "tool_failures": 0,
+        "intent_state": {"inferred_intent": "summarize"},
+        "normalized_task_input": {"message": "Summarize the long discussion."},
+    }
+    run = _build_run()
+
+    final_result = await orchestrator._execute_final_answer(
+        definition=_build_definition(),
+        run=run,
+        runtime_context=runtime_context,
+        skill_context=None,
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="final_answer",
+                title="Return answer",
+                content="Summarize the findings.",
+            ),
+            reasoning="Enough evidence gathered.",
+            iteration=2,
+        ),
+        synthesis_resolution={"candidates": [{}]},
+    )
+
+    assert final_result["status"] == "completed"
+    assert runtime_context["prompt_context"]["mode"] == "compressed"
+    assert summarizer.calls[0]["runtime_context"]["prompt_context"]["mode"] == "compressed"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_uses_phase_specific_requested_models_and_default_iteration_budget():
+    llm_service = FakeLLMService()
+    run_repository = FakeRunRepository(
+        {
+            "id": "run-parent",
+            "agent_definition_id": "agent-parent",
+            "tenant_id": "tenant-1",
+            "user_id": "user-1",
+            "session_id": "session-1",
+            "status": "running",
+            "input": {
+                "message": "Summarize the long discussion.",
+                "planning_model": "fast-model",
+                "synthesis_model": "quality-model",
+            },
+            "plan": {},
+            "context": {},
+            "created_at": _timestamp(),
+            "updated_at": _timestamp(),
+        }
+    )
+    orchestrator = AgentOrchestrator(
+        planner=FakePlanner(),
+        executor=FakeExecutor({}),
+        summarizer=FakeSummarizer(),
+        llm_service=llm_service,
+        tracer=FakeTracer(),
+        agent_repository=FakeAgentRepository(
+            _build_definition().model_copy(update={"config": {}}).model_dump(mode="json")
+        ),
+        run_repository=run_repository,
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+
+    result = await orchestrator.start_run("run-parent")
+
+    assert result.status == "completed"
+    assert llm_service.resolve_calls[0]["route_scene"] == "agent_planning"
+    assert llm_service.resolve_calls[0]["requested_model"] == "fast-model"
+    assert llm_service.resolve_calls[1]["route_scene"] == "agent_synthesis"
+    assert llm_service.resolve_calls[1]["requested_model"] == "quality-model"
+    assert orchestrator._resolve_max_iterations(_build_definition().model_copy(update={"config": {}})) == 5
 
 
 @pytest.mark.asyncio

@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
+from ai_runtime.core.agent_runtime.context_compressor import PROMPT_CONTEXT_KEY
 from ai_runtime.core.agent_runtime.schema_utils import normalize_output_schema
+from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
 from ai_runtime.core.agent_runtime.skills.models import SkillRuntimeContext
 
 
 class AgentSummarizer:
+    def __init__(self, optimization_config: AgentRuntimeOptimizationConfig | None = None) -> None:
+        self.optimization_config = optimization_config or AgentRuntimeOptimizationConfig.from_env()
+
     def _example_value_for_schema(self, schema: Dict[str, Any] | None, field_name: str = "value") -> Any:
         if not isinstance(schema, dict):
             return {}
@@ -125,11 +130,16 @@ class AgentSummarizer:
         runtime_context: Dict[str, Any],
         planner_note: Optional[str],
     ) -> str:
+        prompt_context = runtime_context.get(PROMPT_CONTEXT_KEY, {})
+        if not isinstance(prompt_context, dict):
+            prompt_context = {}
         payload = {
             "task_input": run_input,
-            "conversation": runtime_context.get("conversation", []),
-            "step_history": runtime_context.get("step_history", []),
-            "intent_state": runtime_context.get("intent_state", {}),
+            "prompt_mode": prompt_context.get("mode", "full"),
+            "conversation": prompt_context.get("conversation", runtime_context.get("conversation", [])),
+            "step_history": prompt_context.get("step_history", runtime_context.get("step_history", [])),
+            "compressed_context": prompt_context.get("compressed_context"),
+            "intent_state": prompt_context.get("intent_state", runtime_context.get("intent_state", {})),
             "planner_note": planner_note or "",
         }
         return (
@@ -137,6 +147,50 @@ class AgentSummarizer:
             "If the task is incomplete or blocked, explain the concrete blocker.\n\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
+
+    def _direct_candidate_text(
+        self,
+        *,
+        planner_note: Optional[str],
+        run_input: Dict[str, Any],
+        runtime_context: Dict[str, Any],
+    ) -> str:
+        planner_text = str(planner_note or "").strip()
+        if planner_text:
+            return planner_text
+        final_output = str(runtime_context.get("final_output") or "").strip()
+        if final_output:
+            return final_output
+        last_plan = runtime_context.get("last_plan")
+        if isinstance(last_plan, dict):
+            action = last_plan.get("action")
+            if isinstance(action, dict):
+                content = str(action.get("content") or "").strip()
+                if content:
+                    return content
+        return ""
+
+    def _can_return_directly(
+        self,
+        *,
+        planner_note: Optional[str],
+        output_schema: Dict[str, Any] | None,
+        run_input: Dict[str, Any],
+        runtime_context: Dict[str, Any],
+    ) -> bool:
+        if output_schema:
+            return False
+        if not self.optimization_config.enable_summarizer_short_circuit:
+            return False
+        direct_text = self._direct_candidate_text(
+            planner_note=planner_note,
+            run_input=run_input,
+            runtime_context=runtime_context,
+        )
+        if not direct_text:
+            return False
+        note = direct_text.lower()
+        return len(note) <= 280 and not any(marker in note for marker in ("needs", "blocked", "uncertain", "clarify", "ask user"))
 
     async def summarize(
         self,
@@ -150,6 +204,19 @@ class AgentSummarizer:
         planner_note: Optional[str] = None,
     ) -> tuple[str, Dict[str, Any]]:
         output_schema = skill_context.output_schema if skill_context else None
+        if self._can_return_directly(
+            planner_note=planner_note,
+            output_schema=output_schema,
+            run_input=run_input,
+            runtime_context=runtime_context,
+        ):
+            text = self._direct_candidate_text(
+                planner_note=planner_note,
+                run_input=run_input,
+                runtime_context=runtime_context,
+            )
+            if text:
+                return text, {"resolved_model_name": "direct_short_circuit", "model_source": "short_circuit"}
         messages = [
             {
                 "role": "system",
@@ -171,5 +238,5 @@ class AgentSummarizer:
             llm_resolution,
             messages,
             temperature=0.2,
-            max_tokens=1600,
+            max_tokens=self.optimization_config.synthesis_max_tokens,
         )

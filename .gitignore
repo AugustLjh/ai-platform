@@ -86,4 +86,5 @@ platform_build_cache/
 frontend-dist/
 dist/
 docs/
+/docs
 nul
