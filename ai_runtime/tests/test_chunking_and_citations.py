@@ -2,9 +2,9 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from core.chat.service import ChatRuntimeService
-from core.models.knowledge_base import Document, SourceType
-from core.services.document_service import DocumentService
+from ai_runtime.core.chat.service import ChatRuntimeService
+from ai_runtime.core.models.knowledge_base import Document, SourceType
+from ai_runtime.core.services.document_service import DocumentService
 
 
 def build_document_service() -> DocumentService:
@@ -109,7 +109,7 @@ def test_rag_citations_are_emitted_per_matched_chunk():
         ),
     )
 
-    with patch("core.chat.service.get_container", return_value=SimpleNamespace(document_service=fake_doc_service)):
+    with patch("ai_runtime.core.chat.service.get_container", return_value=SimpleNamespace(document_service=fake_doc_service)):
         service._get_knowledge_base_name = AsyncMock(return_value="测试知识库")
         context, citations, kb_name = asyncio.run(
             service._build_rag_context_and_citations(

@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Any, Dict
 
-from core.agent_runtime.repositories.agent_repository import AgentRepository
-from core.agent_runtime.tools.base import BaseTool, ToolContext, ToolLookupContext, ToolSpec
-from core.database import get_db_manager
-from core.dependencies import get_container
+from ai_runtime.core.agent_runtime.repositories.agent_repository import AgentRepository
+from ai_runtime.core.agent_runtime.tools.base import BaseTool, ToolContext, ToolLookupContext, ToolSpec
+from ai_runtime.core.database import get_db_manager
+from ai_runtime.core.dependencies import get_container
 
 
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:

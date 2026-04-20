@@ -10,7 +10,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import Implementation, InitializeResult, ListToolsResult
 
-from core.agent_runtime.mcp.models import MCPServerDefinition
+from ai_runtime.core.agent_runtime.mcp.models import MCPServerDefinition
 
 
 class ManagedMCPSession:

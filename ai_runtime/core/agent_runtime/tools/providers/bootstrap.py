@@ -4,11 +4,11 @@ import logging
 import os
 from typing import Iterable
 
-from core.agent_runtime.mcp.registry import MCPRegistry
-from core.agent_runtime.tools.providers.builtin import register_builtin_tools
-from core.agent_runtime.tools.providers.engineering import EngineeringToolProvider
-from core.agent_runtime.tools.providers.knowledge import register_knowledge_tools
-from core.agent_runtime.tools.providers.mcp import MCPToolProvider
+from ai_runtime.core.agent_runtime.mcp.registry import MCPRegistry
+from ai_runtime.core.agent_runtime.tools.providers.builtin import register_builtin_tools
+from ai_runtime.core.agent_runtime.tools.providers.engineering import EngineeringToolProvider
+from ai_runtime.core.agent_runtime.tools.providers.knowledge import register_knowledge_tools
+from ai_runtime.core.agent_runtime.tools.providers.mcp import MCPToolProvider
 
 logger = logging.getLogger(__name__)
 

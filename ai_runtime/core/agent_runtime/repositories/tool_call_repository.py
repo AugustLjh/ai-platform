@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
+from ai_runtime.core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
 
 
 def _serialize_uuid(value: str | None) -> UUID | None:

@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from uuid import UUID
 
-from core.models.knowledge_base import (
+from ai_runtime.core.models.knowledge_base import (
     CreateKnowledgeBaseRequest,
     UpdateKnowledgeBaseRequest,
     KnowledgeBaseResponse,
@@ -34,10 +34,10 @@ from core.models.knowledge_base import (
     RetrievalEvaluationApplyConfigResponse,
     DocumentSegment,
 )
-from core.services.knowledge_base_service import KnowledgeBaseService
-from core.services.document_service import DocumentService
-from core.services.retrieval_evaluation_service import RetrievalEvaluationService
-from core.dependencies import (
+from ai_runtime.core.services.knowledge_base_service import KnowledgeBaseService
+from ai_runtime.core.services.document_service import DocumentService
+from ai_runtime.core.services.retrieval_evaluation_service import RetrievalEvaluationService
+from ai_runtime.core.dependencies import (
     get_current_tenant_id,
     get_current_user_id,
     get_kb_service,

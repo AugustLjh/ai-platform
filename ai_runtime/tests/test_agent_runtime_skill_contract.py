@@ -1,5 +1,5 @@
-from core.agent_runtime.skills.contract import apply_skill_contract, derive_skill_contract
-from core.agent_runtime.skills.models import SkillDefinition
+from ai_runtime.core.agent_runtime.skills.contract import apply_skill_contract, derive_skill_contract
+from ai_runtime.core.agent_runtime.skills.models import SkillDefinition
 
 
 def test_apply_skill_contract_normalizes_capability_pack_contract():

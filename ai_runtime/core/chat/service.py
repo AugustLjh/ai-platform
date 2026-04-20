@@ -4,17 +4,17 @@ import logging
 import os
 from uuid import UUID
 
-from core.chat.prompting import ChatPromptBuilder
-from core.chat.response_types import (
+from ai_runtime.core.chat.prompting import ChatPromptBuilder
+from ai_runtime.core.chat.response_types import (
     RESPONSE_TYPE_COMPLETE,
     RESPONSE_TYPE_CONTENT,
     RESPONSE_TYPE_ERROR,
 )
-from core.dependencies import DEV_DEFAULT_TENANT_ID, get_container
-from core.llm import DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
-from core.rag import RAGPipeline, Retriever, SimpleVectorStore
-from core.rag.retriever import DatabaseVectorStore
-from core.uploads.bundle_store import UPLOAD_BUNDLE_IDS_METADATA_KEY, get_attachment_bundle_store, normalize_bundle_ids
+from ai_runtime.core.dependencies import DEV_DEFAULT_TENANT_ID, get_container
+from ai_runtime.core.llm import DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
+from ai_runtime.core.rag import RAGPipeline, Retriever, SimpleVectorStore
+from ai_runtime.core.rag.retriever import DatabaseVectorStore
+from ai_runtime.core.uploads.bundle_store import UPLOAD_BUNDLE_IDS_METADATA_KEY, get_attachment_bundle_store, normalize_bundle_ids
 
 logger = logging.getLogger(__name__)
 

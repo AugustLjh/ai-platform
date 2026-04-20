@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.chat.service import ChatRuntimeService
+from ai_runtime.core.chat.service import ChatRuntimeService
 
 logger = logging.getLogger(__name__)
 

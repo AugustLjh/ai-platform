@@ -2,12 +2,12 @@
 Retrieval Evaluation Service
 """
 import uuid
-from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from .knowledge_base_service import KnowledgeBaseService, DEFAULT_RETRIEVAL_SETTINGS
 from .document_service import DocumentService
 from ..repositories.retrieval_evaluation_repository import RetrievalEvaluationRepository
+from ..models.knowledge_base import utc_now
 
 
 class RetrievalEvaluationService:
@@ -282,7 +282,7 @@ class RetrievalEvaluationService:
             })
 
         summary = self._summarize_run(run_results)
-        run_name = (name or "").strip() or f"评测 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+        run_name = (name or "").strip() or f"评测 {utc_now().strftime('%Y-%m-%d %H:%M:%S')}"
 
         return await self.repository.create_run(
             tenant_id=tenant_id,
@@ -354,7 +354,7 @@ class RetrievalEvaluationService:
             raise ValueError("Knowledge base not found")
 
         metadata = dict(run.get("metadata") or {})
-        metadata["applied_to_production_at"] = datetime.utcnow().isoformat()
+        metadata["applied_to_production_at"] = utc_now().isoformat()
         metadata["applied_to_production"] = True
         await self.repository.update_run(
             run_id=run_id,

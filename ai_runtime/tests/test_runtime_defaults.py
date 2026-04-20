@@ -2,8 +2,8 @@ import asyncio
 
 from starlette.requests import Request
 
-from core.chat.service import ChatRuntimeService
-from core.dependencies import DEV_DEFAULT_TENANT_ID, get_current_tenant_id
+from ai_runtime.core.chat.service import ChatRuntimeService
+from ai_runtime.core.dependencies import DEV_DEFAULT_TENANT_ID, get_current_tenant_id
 
 
 async def _empty_receive():

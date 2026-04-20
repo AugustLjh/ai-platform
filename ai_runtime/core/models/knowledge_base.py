@@ -1,10 +1,14 @@
 """
 Knowledge Base Data Models and Schemas
 """
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from enum import Enum
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class SourceType(str, Enum):
@@ -43,8 +47,8 @@ class KnowledgeBase:
         self.name = name
         self.description = description
         self.access_level = access_level
-        self.created_at = created_at or datetime.utcnow()
-        self.updated_at = updated_at or datetime.utcnow()
+        self.created_at = created_at or utc_now()
+        self.updated_at = updated_at or utc_now()
         self.metadata = metadata or {}
 
     def to_dict(self) -> dict:
@@ -103,8 +107,8 @@ class Document:
         self.index_status = index_status
         self.index_version = index_version
         self.last_index_error = last_index_error
-        self.created_at = created_at or datetime.utcnow()
-        self.updated_at = updated_at or datetime.utcnow()
+        self.created_at = created_at or utc_now()
+        self.updated_at = updated_at or utc_now()
         self.metadata = metadata or {}
 
     def to_dict(self) -> dict:
@@ -331,7 +335,7 @@ class AIGovernanceSettingsUpdate(BaseModel):
 
 class BatchCreateRequest(BaseModel):
     """批量创建文档请求"""
-    documents: List[CreateDocumentRequest] = Field(..., max_items=100)
+    documents: List[CreateDocumentRequest] = Field(..., max_length=100)
 
 
 class BatchCreateResponse(BaseModel):
@@ -450,14 +454,14 @@ class RetrievalTestSetCreateRequest(BaseModel):
     """创建检索测试集"""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    cases: List[RetrievalEvaluationCase] = Field(..., min_items=1, max_items=200)
+    cases: List[RetrievalEvaluationCase] = Field(..., min_length=1, max_length=200)
 
 
 class RetrievalTestSetUpdateRequest(BaseModel):
     """更新检索测试集"""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    cases: List[RetrievalEvaluationCase] = Field(..., min_items=1, max_items=200)
+    cases: List[RetrievalEvaluationCase] = Field(..., min_length=1, max_length=200)
 
 
 class RetrievalTestSetResponse(BaseModel):

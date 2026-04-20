@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import AsyncIterator, Optional
 
-from core.agent_runtime.executor import AgentExecutor
-from core.agent_runtime.llm_service import AgentLLMService
-from core.agent_runtime.memory import RuntimeStateStore
-from core.agent_runtime.mcp.registry import MCPRegistry
-from core.agent_runtime.models import (
+from ai_runtime.core.agent_runtime.executor import AgentExecutor
+from ai_runtime.core.agent_runtime.llm_service import AgentLLMService
+from ai_runtime.core.agent_runtime.memory import RuntimeStateStore
+from ai_runtime.core.agent_runtime.mcp.registry import MCPRegistry
+from ai_runtime.core.agent_runtime.models import (
     AgentArtifact,
     AgentRun,
     AgentRunEvent,
@@ -22,24 +22,24 @@ from core.agent_runtime.models import (
     AgentSubagentInvocationListResponse,
     RuntimeCreateRunRequest,
 )
-from core.agent_runtime.orchestrator import AgentOrchestrator
-from core.agent_runtime.skills.registry import SkillRegistry
-from core.agent_runtime.planner import AgentPlanner
-from core.agent_runtime.result_contract import hydrate_legacy_result, merge_artifacts
-from core.agent_runtime.subagents.governance import prune_runtime_governance_ledger_for_resume
-from core.agent_runtime.summarizer import AgentSummarizer
-from core.agent_runtime.repositories.agent_repository import AgentRepository
-from core.agent_runtime.repositories.run_repository import RunRepository
-from core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
-from core.agent_runtime.subagents.handoff import SubagentHandoff
-from core.agent_runtime.subagents.registry import SubagentRegistry
-from core.agent_runtime.subagents.router import SubagentRouter
-from core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
-from core.agent_runtime.tools.base import ToolLookupContext
-from core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
-from core.agent_runtime.tools.registry import ToolRegistry
-from core.agent_runtime.tracing import AgentTracer
-from core.uploads.bundle_store import get_attachment_bundle_store, normalize_bundle_ids
+from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
+from ai_runtime.core.agent_runtime.skills.registry import SkillRegistry
+from ai_runtime.core.agent_runtime.planner import AgentPlanner
+from ai_runtime.core.agent_runtime.result_contract import hydrate_legacy_result, merge_artifacts
+from ai_runtime.core.agent_runtime.subagents.governance import prune_runtime_governance_ledger_for_resume
+from ai_runtime.core.agent_runtime.summarizer import AgentSummarizer
+from ai_runtime.core.agent_runtime.repositories.agent_repository import AgentRepository
+from ai_runtime.core.agent_runtime.repositories.run_repository import RunRepository
+from ai_runtime.core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
+from ai_runtime.core.agent_runtime.subagents.handoff import SubagentHandoff
+from ai_runtime.core.agent_runtime.subagents.registry import SubagentRegistry
+from ai_runtime.core.agent_runtime.subagents.router import SubagentRouter
+from ai_runtime.core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
+from ai_runtime.core.agent_runtime.tools.base import ToolLookupContext
+from ai_runtime.core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
+from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
+from ai_runtime.core.agent_runtime.tracing import AgentTracer
+from ai_runtime.core.uploads.bundle_store import get_attachment_bundle_store, normalize_bundle_ids
 
 
 class AgentRuntime:

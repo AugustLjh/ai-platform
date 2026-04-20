@@ -6,13 +6,13 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Sequence
 
-from core.agent_runtime.repositories.run_repository import RunRepository
-from core.agent_runtime.tools.base import BaseTool, ToolContext, ToolLookupContext, ToolSpec
-from core.agent_runtime.tools.providers.knowledge import _resolve_accessible_knowledge_base_ids
-from core.database import get_db_manager
-from core.dependencies import get_container
-from core.models.knowledge_base import SourceType
-from core.uploads.bundle_store import get_attachment_bundle_store, normalize_bundle_ids
+from ai_runtime.core.agent_runtime.repositories.run_repository import RunRepository
+from ai_runtime.core.agent_runtime.tools.base import BaseTool, ToolContext, ToolLookupContext, ToolSpec
+from ai_runtime.core.agent_runtime.tools.providers.knowledge import _resolve_accessible_knowledge_base_ids
+from ai_runtime.core.database import get_db_manager
+from ai_runtime.core.dependencies import get_container
+from ai_runtime.core.models.knowledge_base import SourceType
+from ai_runtime.core.uploads.bundle_store import get_attachment_bundle_store, normalize_bundle_ids
 
 logger = logging.getLogger(__name__)
 

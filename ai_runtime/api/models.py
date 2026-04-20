@@ -10,8 +10,8 @@ from uuid import UUID
 import json
 import logging
 
-from core.dependencies import get_db_manager, get_current_tenant_id, get_current_user_id
-from core.database import DatabaseManager
+from ai_runtime.core.dependencies import get_db_manager, get_current_tenant_id, get_current_user_id
+from ai_runtime.core.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 

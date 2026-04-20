@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-from core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
-from core.agent_runtime.orchestrator import AgentOrchestrator
-from core.agent_runtime.subagents.governance import record_delegation_outcome
-from core.agent_runtime.subagents.handoff import SubagentHandoff
-from core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
-from core.agent_runtime.subagents.registry import SubagentRegistry
+from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
+from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
+from ai_runtime.core.agent_runtime.subagents.governance import record_delegation_outcome
+from ai_runtime.core.agent_runtime.subagents.handoff import SubagentHandoff
+from ai_runtime.core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
+from ai_runtime.core.agent_runtime.subagents.registry import SubagentRegistry
 
 
 def _timestamp() -> datetime:

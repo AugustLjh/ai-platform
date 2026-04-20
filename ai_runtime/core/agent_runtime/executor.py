@@ -5,11 +5,11 @@ import json
 import re
 from typing import Any, Dict
 
-from core.agent_runtime.models import PlannerResult
-from core.agent_runtime.policy import RuntimePolicy
-from core.agent_runtime.schema_utils import normalize_output_schema
-from core.agent_runtime.tools.base import ToolContext, ToolLookupContext
-from core.agent_runtime.tools.registry import ToolRegistry
+from ai_runtime.core.agent_runtime.models import PlannerResult
+from ai_runtime.core.agent_runtime.policy import RuntimePolicy
+from ai_runtime.core.agent_runtime.schema_utils import normalize_output_schema
+from ai_runtime.core.agent_runtime.tools.base import ToolContext, ToolLookupContext
+from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 
 
 class AgentExecutor:

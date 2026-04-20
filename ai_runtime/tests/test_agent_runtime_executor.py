@@ -1,5 +1,5 @@
-from core.agent_runtime.executor import AgentExecutor
-from core.agent_runtime.tools.registry import ToolRegistry
+from ai_runtime.core.agent_runtime.executor import AgentExecutor
+from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 
 
 def test_executor_shapes_plan_schema_into_structured_object():

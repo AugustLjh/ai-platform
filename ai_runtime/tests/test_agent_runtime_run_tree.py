@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from core.agent_runtime.runtime import AgentRuntime
+from ai_runtime.core.agent_runtime.runtime import AgentRuntime
 
 
 def _timestamp() -> datetime:

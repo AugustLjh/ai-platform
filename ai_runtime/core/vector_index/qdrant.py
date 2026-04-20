@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from qdrant_client import AsyncQdrantClient, models
 
-from core.config import QdrantConfig
+from ai_runtime.core.config import QdrantConfig
 
 from .base import VectorIndex, VectorSearchHit
 

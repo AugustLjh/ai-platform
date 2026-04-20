@@ -6,10 +6,11 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 import asyncpg
-from core.models.knowledge_base import (
+from ai_runtime.core.models.knowledge_base import (
     Document,
     SourceType,
     AccessLevel,
+    utc_now,
 )
 
 
@@ -65,8 +66,8 @@ class DocumentRepository:
             创建的文档对象
         """
         doc_id = str(uuid.uuid4())
-        indexed_at = datetime.utcnow() if indexed else None
-        now = datetime.utcnow()
+        indexed_at = utc_now() if indexed else None
+        now = utc_now()
 
         query = """
             INSERT INTO documents (
@@ -203,7 +204,7 @@ class DocumentRepository:
         """
         # 构建动态更新字段
         updates = ["updated_at = $1"]
-        params = [datetime.utcnow()]
+        params = [utc_now()]
         param_idx = 2
 
         if title is not None:
@@ -252,7 +253,7 @@ class DocumentRepository:
             param_idx += 1
 
             updates.append(f"indexed_at = ${param_idx}")
-            params.append(datetime.utcnow() if indexed else None)
+            params.append(utc_now() if indexed else None)
             param_idx += 1
 
         if index_status is not None:
@@ -325,7 +326,7 @@ class DocumentRepository:
             if not chunks:
                 return
 
-            now = datetime.utcnow()
+            now = utc_now()
             rows = [
                 (
                     document.id,

@@ -1,8 +1,8 @@
 import asyncio
 
-from core.agent_runtime.intent import IntentPreprocessor
-from core.agent_runtime.models import PlannerAction
-from core.agent_runtime.orchestrator import AgentOrchestrator
+from ai_runtime.core.agent_runtime.intent import IntentPreprocessor
+from ai_runtime.core.agent_runtime.models import PlannerAction
+from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
 
 
 class _FailingLLMService:

@@ -1,4 +1,4 @@
-from core.agent_runtime.schema_utils import merge_output_schema, normalize_output_schema
+from ai_runtime.core.agent_runtime.schema_utils import merge_output_schema, normalize_output_schema
 
 
 def test_normalize_output_schema_merges_anyof_object_variants():

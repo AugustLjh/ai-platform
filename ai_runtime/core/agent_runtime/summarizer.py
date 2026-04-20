@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-from core.agent_runtime.schema_utils import normalize_output_schema
-from core.agent_runtime.skills.models import SkillRuntimeContext
+from ai_runtime.core.agent_runtime.schema_utils import normalize_output_schema
+from ai_runtime.core.agent_runtime.skills.models import SkillRuntimeContext
 
 
 class AgentSummarizer:

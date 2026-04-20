@@ -4,7 +4,7 @@ import asyncio
 from collections import defaultdict
 from typing import AsyncIterator, DefaultDict, Dict, List, Optional
 
-from core.agent_runtime.models import AgentRunEvent
+from ai_runtime.core.agent_runtime.models import AgentRunEvent
 
 
 class RuntimeStateStore:

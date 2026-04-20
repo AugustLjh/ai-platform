@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from core.agent_runtime.models import AgentRun
-from core.agent_runtime.runtime import AgentRuntime
-from core.agent_runtime.subagents.governance import evaluate_governance_gate
-from core.agent_runtime.subagents.models import SubagentTarget
+from ai_runtime.core.agent_runtime.models import AgentRun
+from ai_runtime.core.agent_runtime.runtime import AgentRuntime
+from ai_runtime.core.agent_runtime.subagents.governance import evaluate_governance_gate
+from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
 
 
 def _run_row(*, status: str = "waiting_user", input_payload: dict | None = None, context: dict | None = None) -> dict:

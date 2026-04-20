@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.dependencies import get_current_tenant_id
+from ai_runtime.core.dependencies import get_current_tenant_id
 
 from .agents import get_agent_runtime
 

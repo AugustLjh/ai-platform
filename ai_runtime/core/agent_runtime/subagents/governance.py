@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.agent_runtime.models import AgentRun
-from core.agent_runtime.subagents.models import SubagentTarget
+from ai_runtime.core.agent_runtime.models import AgentRun
+from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
 
 
 GOVERNANCE_PROTOCOL_VERSION = "managed-subagent.governance.v1"

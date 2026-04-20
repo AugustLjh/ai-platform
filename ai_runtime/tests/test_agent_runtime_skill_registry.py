@@ -1,7 +1,7 @@
 import asyncio
 
-from core.agent_runtime.skills.models import SkillDefinition
-from core.agent_runtime.skills.registry import SkillRegistry
+from ai_runtime.core.agent_runtime.skills.models import SkillDefinition
+from ai_runtime.core.agent_runtime.skills.registry import SkillRegistry
 
 
 def test_compose_for_non_plan_intent_filters_implementation_planner_from_output_phase():

@@ -6,14 +6,14 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
-from core.agent_runtime.mcp.client import MCPClient
-from core.agent_runtime.mcp.models import (
+from ai_runtime.core.agent_runtime.mcp.client import MCPClient
+from ai_runtime.core.agent_runtime.mcp.models import (
     MCPCallToolResponse,
     MCPConnectionTestResult,
     MCPServerDefinition,
     MCPToolCatalogEntry,
 )
-from core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
+from ai_runtime.core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
 
 
 MASK = "********"
@@ -239,7 +239,7 @@ class MCPRegistry:
         async with self._session_lock:
             session = self._sessions.get(server.id)
             if session is None:
-                from core.agent_runtime.mcp.session import ManagedMCPSession
+                from ai_runtime.core.agent_runtime.mcp.session import ManagedMCPSession
 
                 session = ManagedMCPSession(server)
                 self._sessions[server.id] = session

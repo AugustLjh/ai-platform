@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Dict, List, Sequence
 
-from core.agent_runtime.models import AgentDefinition
+from ai_runtime.core.agent_runtime.models import AgentDefinition
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 

@@ -5,17 +5,13 @@ Runs both gRPC and HTTP/FastAPI servers concurrently
 import asyncio
 import logging
 import sys
-import os
 from typing import Literal
 
-# Add current directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from api.grpc_server import run_grpc_server
-from api.http_server import run_http_server
-from core.config import load_env_file, get_config
-from core.database import init_db_manager, get_db_manager
-from core.dependencies import init_container, get_container
+from ai_runtime.api.grpc_server import run_grpc_server
+from ai_runtime.api.http_server import run_http_server
+from ai_runtime.core.config import load_env_file, get_config
+from ai_runtime.core.database import init_db_manager, get_db_manager
+from ai_runtime.core.dependencies import init_container, get_container
 
 logging.basicConfig(
     level=logging.INFO,

@@ -1,7 +1,7 @@
 """
 Legacy compatibility executor.
 
-The production runtime entrypoints use `core.agent_runtime.*` and do not route
+The production runtime entrypoints use `ai_runtime.core.agent_runtime.*` and do not route
 through this module anymore. Keep it importable for compatibility only.
 """
 

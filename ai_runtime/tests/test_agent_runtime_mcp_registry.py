@@ -1,5 +1,5 @@
-from core.agent_runtime.mcp.models import MCPServerDefinition
-from core.agent_runtime.mcp.registry import _sanitize_endpoint, _sanitize_error_message
+from ai_runtime.core.agent_runtime.mcp.models import MCPServerDefinition
+from ai_runtime.core.agent_runtime.mcp.registry import _sanitize_endpoint, _sanitize_error_message
 
 
 def build_server(**kwargs):

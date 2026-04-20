@@ -1,5 +1,5 @@
-from core.agent_runtime.orchestrator import apply_skill_tool_policy
-from core.agent_runtime.skills.models import SkillDefinition, SkillRuntimeContext
+from ai_runtime.core.agent_runtime.orchestrator import apply_skill_tool_policy
+from ai_runtime.core.agent_runtime.skills.models import SkillDefinition, SkillRuntimeContext
 
 
 def test_empty_skill_allowlist_keeps_available_tools():

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from core.agent_runtime.mcp.models import (
+from ai_runtime.core.agent_runtime.mcp.models import (
     MCPCallToolResponse,
     MCPConnectionTestResult,
     MCPServerDefinition,
     MCPToolCatalogEntry,
 )
-from core.agent_runtime.mcp.session import ManagedMCPSession
+from ai_runtime.core.agent_runtime.mcp.session import ManagedMCPSession
 
 
 class MCPClient:

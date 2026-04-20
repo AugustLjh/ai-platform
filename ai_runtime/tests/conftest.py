@@ -2,16 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import sys
-from pathlib import Path
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-AI_RUNTIME_ROOT = PROJECT_ROOT / "ai_runtime"
-
-for candidate in (str(PROJECT_ROOT), str(AI_RUNTIME_ROOT)):
-    if candidate not in sys.path:
-        sys.path.insert(0, candidate)
 
 
 def pytest_configure(config) -> None:

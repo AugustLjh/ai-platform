@@ -30,27 +30,23 @@ RUN pip install --upgrade pip \
 # 复制 proto 文件并生成 stubs
 COPY proto /proto
 
-# 生成到 /generated（不怕 /app volume 覆盖）
-RUN mkdir -p /generated && \
-    python -m grpc_tools.protoc \
-      -I/proto \
-      --python_out=/generated \
-      --grpc_python_out=/generated \
-      /proto/chat_service.proto && \
-    touch /generated/__init__.py
-
-# 让运行时能找到生成的模块
-ENV PYTHONPATH=/generated
-
 # ---------- 应用代码 ----------
-COPY ai_runtime/ .
+COPY ai_runtime /app/ai_runtime
 COPY db /app/db
+
+# 生成包内 proto stubs，避免运行时路径注入
+RUN python -m grpc_tools.protoc \
+      -I/proto \
+      --python_out=/app/ai_runtime/proto \
+      --grpc_python_out=/app/ai_runtime/proto \
+      /proto/chat_service.proto && \
+    sed -i 's/^import chat_service_pb2 as /from . import chat_service_pb2 as /' /app/ai_runtime/proto/chat_service_pb2_grpc.py
 
 # ---------- 端口 ----------
 EXPOSE 8000 50051
 
 # ---------- 启动 ----------
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/ai_runtime/entrypoint.sh
 
-ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["python", "-m", "main", "--mode", "both", "--http-port", "8000", "--grpc-port", "50051"]
+ENTRYPOINT ["/app/ai_runtime/entrypoint.sh"]
+CMD ["python", "-m", "ai_runtime.main", "--mode", "both", "--http-port", "8000", "--grpc-port", "50051"]

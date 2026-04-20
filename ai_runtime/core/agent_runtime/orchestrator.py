@@ -5,20 +5,20 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from core.agent_runtime.executor import AgentExecutor
-from core.agent_runtime.intent import IntentPreprocessor
-from core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
-from core.agent_runtime.planner import AgentPlanner
-from core.agent_runtime.policy import RuntimePolicy
-from core.agent_runtime.result_contract import (
+from ai_runtime.core.agent_runtime.executor import AgentExecutor
+from ai_runtime.core.agent_runtime.intent import IntentPreprocessor
+from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
+from ai_runtime.core.agent_runtime.planner import AgentPlanner
+from ai_runtime.core.agent_runtime.policy import RuntimePolicy
+from ai_runtime.core.agent_runtime.result_contract import (
     build_artifacts_from_tool_result,
     build_structured_run_result,
     hydrate_legacy_result,
     merge_artifacts,
 )
-from core.agent_runtime.schema_utils import merge_output_schema
-from core.agent_runtime.skills.models import SkillRuntimeContext
-from core.agent_runtime.subagents.governance import (
+from ai_runtime.core.agent_runtime.schema_utils import merge_output_schema
+from ai_runtime.core.agent_runtime.skills.models import SkillRuntimeContext
+from ai_runtime.core.agent_runtime.subagents.governance import (
     annotate_governance_policy,
     append_delegation_outcome,
     build_waiting_user_path,
@@ -27,13 +27,13 @@ from core.agent_runtime.subagents.governance import (
     record_delegation_outcome,
     should_bubble_waiting_user_to_parent,
 )
-from core.agent_runtime.subagents.handoff import SubagentHandoff
-from core.agent_runtime.subagents.models import SubagentTarget
-from core.agent_runtime.subagents.registry import SubagentRegistry
-from core.agent_runtime.subagents.router import SubagentRouter
-from core.agent_runtime.summarizer import AgentSummarizer
-from core.agent_runtime.tools.base import ToolContext, ToolLookupContext
-from core.agent_runtime.tracing import AgentTracer
+from ai_runtime.core.agent_runtime.subagents.handoff import SubagentHandoff
+from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
+from ai_runtime.core.agent_runtime.subagents.registry import SubagentRegistry
+from ai_runtime.core.agent_runtime.subagents.router import SubagentRouter
+from ai_runtime.core.agent_runtime.summarizer import AgentSummarizer
+from ai_runtime.core.agent_runtime.tools.base import ToolContext, ToolLookupContext
+from ai_runtime.core.agent_runtime.tracing import AgentTracer
 
 logger = logging.getLogger(__name__)
 

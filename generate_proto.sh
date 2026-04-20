@@ -6,13 +6,12 @@ echo "Generating gRPC stubs..."
 
 # Python
 echo "Generating Python stubs..."
-cd ai_runtime
 python3 -m grpc_tools.protoc \
-  -I../proto \
-  --python_out=. \
-  --grpc_python_out=. \
-  ../proto/chat_service.proto
-cd ..
+  -I./proto \
+  --python_out=./ai_runtime/proto \
+  --grpc_python_out=./ai_runtime/proto \
+  ./proto/chat_service.proto
+sed -i 's/^import chat_service_pb2 as /from . import chat_service_pb2 as /' ./ai_runtime/proto/chat_service_pb2_grpc.py
 
 # Go
 echo "Generating Go stubs..."

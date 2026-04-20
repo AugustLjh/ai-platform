@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from core.agent_runtime.models import AgentDefinition
-from core.agent_runtime.subagents.models import SubagentTarget
+from ai_runtime.core.agent_runtime.models import AgentDefinition
+from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
 
 
 def _normalize_slug(value: str) -> str:

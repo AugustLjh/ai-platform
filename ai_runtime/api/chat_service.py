@@ -1,11 +1,6 @@
 from typing import Any, AsyncIterator, Dict
-import os
-import sys
 
-# Add proto path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../proto"))
-
-from core.chat import ChatRuntimeService
+from ai_runtime.core.chat import ChatRuntimeService
 
 
 class ChatServiceImpl:

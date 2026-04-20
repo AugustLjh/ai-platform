@@ -3,10 +3,11 @@ Audit Logging Service
 """
 import uuid
 import logging
-from datetime import datetime
 from typing import Optional, Dict, Any
 import asyncpg
 import json
+
+from ai_runtime.core.models.knowledge_base import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ class AuditLogger:
                     ip_address,
                     user_agent,
                     json.dumps(details or {}),
-                    datetime.utcnow(),
+                    utc_now(),
                 )
 
             logger.debug(

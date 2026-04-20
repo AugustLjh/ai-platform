@@ -1,9 +1,9 @@
 import json
 import asyncio
 
-from core.agent_runtime.models import AgentDefinition
-from core.agent_runtime.planner import AgentPlanner
-from core.agent_runtime.subagents.models import SubagentTarget
+from ai_runtime.core.agent_runtime.models import AgentDefinition
+from ai_runtime.core.agent_runtime.planner import AgentPlanner
+from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
 
 
 def test_planner_parses_fenced_json_response():

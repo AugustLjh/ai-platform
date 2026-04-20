@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from core.prompt import PromptBuilder
+from ai_runtime.core.prompt import PromptBuilder
 
 
 DEFAULT_CHAT_SYSTEM_PROMPT = (

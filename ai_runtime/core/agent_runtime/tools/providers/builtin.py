@@ -5,7 +5,7 @@ import operator
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from core.agent_runtime.tools.base import BaseTool, ToolContext, ToolSpec
+from ai_runtime.core.agent_runtime.tools.base import BaseTool, ToolContext, ToolSpec
 
 
 class GetCurrentTimeTool(BaseTool):

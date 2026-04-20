@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from core.agent_runtime.mcp.registry import MCPRegistry
-from core.agent_runtime.tools.base import BaseTool, ToolContext, ToolLookupContext, ToolSpec
+from ai_runtime.core.agent_runtime.mcp.registry import MCPRegistry
+from ai_runtime.core.agent_runtime.tools.base import BaseTool, ToolContext, ToolLookupContext, ToolSpec
 
 
 class MCPTool(BaseTool):

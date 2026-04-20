@@ -6,8 +6,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from core.agent_runtime import AgentRuntime
-from core.agent_runtime.models import (
+from ai_runtime.core.agent_runtime import AgentRuntime
+from ai_runtime.core.agent_runtime.models import (
     AgentRunEventListResponse,
     AgentRunListResponse,
     AgentRunSummaryResponse,
@@ -16,8 +16,8 @@ from core.agent_runtime.models import (
     RuntimeCreateRunRequest,
     RuntimeResumeRunRequest,
 )
-from core.database import get_db_manager
-from core.dependencies import get_current_tenant_id, get_current_user_id
+from ai_runtime.core.database import get_db_manager
+from ai_runtime.core.dependencies import get_current_tenant_id, get_current_user_id
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 

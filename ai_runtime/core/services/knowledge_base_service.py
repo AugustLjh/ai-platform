@@ -655,8 +655,7 @@ class KnowledgeBaseService:
         knowledge_base_id: Optional[str] = None,
     ) -> List[Tuple[Any, float]]:
         """Search documents for RAG retrieval"""
-        from core.services.document_service import DocumentService
-        from core.dependencies import get_container
+        from ai_runtime.core.dependencies import get_container
 
         container = get_container()
         doc_service = container.document_service

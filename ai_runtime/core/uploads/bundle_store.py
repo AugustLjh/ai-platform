@@ -4,15 +4,15 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
 from fastapi import UploadFile
 
-from core.config import QuotaConfig
-from core.parsers.file_parser import FileParser
+from ai_runtime.core.config import QuotaConfig
+from ai_runtime.core.models.knowledge_base import utc_now
+from ai_runtime.core.parsers.file_parser import FileParser
 
 UPLOAD_BUNDLE_IDS_METADATA_KEY = "upload_bundle_ids"
 DEFAULT_STORAGE_ROOT = Path(os.getenv("CHAT_UPLOAD_STORAGE_ROOT", "/tmp/ai-platform-upload-bundles"))
@@ -175,7 +175,7 @@ class AttachmentBundleStore:
             "bundle_id": bundle_id,
             "tenant_id": tenant_id,
             "user_id": user_id,
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": utc_now().isoformat(),
             "summary": {
                 "file_count": len(file_entries),
                 "skipped_count": len(skipped_entries),

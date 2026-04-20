@@ -4,10 +4,10 @@ from collections.abc import Iterable
 from typing import List
 from uuid import UUID
 
-from core.agent_runtime.schema_utils import merge_output_schema
-from core.agent_runtime.skills.contract import derive_skill_contract
-from core.agent_runtime.skills.loader import load_skill_row
-from core.agent_runtime.skills.models import SkillDefinition, SkillRuntimeContext
+from ai_runtime.core.agent_runtime.schema_utils import merge_output_schema
+from ai_runtime.core.agent_runtime.skills.contract import derive_skill_contract
+from ai_runtime.core.agent_runtime.skills.loader import load_skill_row
+from ai_runtime.core.agent_runtime.skills.models import SkillDefinition, SkillRuntimeContext
 
 
 def _serialize_uuid(value: str) -> UUID:

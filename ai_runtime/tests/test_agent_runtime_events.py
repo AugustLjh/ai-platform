@@ -1,4 +1,4 @@
-from core.agent_runtime.events import MASK, build_event_payload
+from ai_runtime.core.agent_runtime.events import MASK, build_event_payload
 
 
 def test_build_event_payload_masks_sensitive_values():

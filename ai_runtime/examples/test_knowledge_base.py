@@ -229,7 +229,7 @@ if __name__ == "__main__":
         main()
     except requests.exceptions.ConnectionError:
         print("\n❌ 错误: 无法连接到服务器")
-        print("请确保服务已启动: python ai_runtime/main.py")
+        print("请确保服务已启动: python -m ai_runtime.main")
     except Exception as e:
         print(f"\n❌ 发生错误: {e}")
         import traceback

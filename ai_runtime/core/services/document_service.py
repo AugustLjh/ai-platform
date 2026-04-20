@@ -13,23 +13,23 @@ from uuid import UUID
 from typing import List, Optional, Dict, Any
 from fastapi import UploadFile
 
-from core.models.knowledge_base import (
+from ai_runtime.core.models.knowledge_base import (
     Document,
     SourceType,
     AccessLevel,
     CreateDocumentRequest,
     UpdateDocumentRequest,
 )
-from core.repositories.document_repository import DocumentRepository
-from core.repositories.knowledge_base_repository import KnowledgeBaseRepository
-from core.embeddings import EmbeddingService, OpenAIEmbedding, JinaEmbedding, SentenceTransformerEmbedding
-from core.config import AppConfig
-from core.parsers.file_parser import FileParser
-from core.parsers.url_fetcher import URLFetcher
-from core.audit import AuditLogger
-from core.quota import QuotaManager
-from core.llm import BaseLLM, DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
-from core.vector_index import VectorIndex, VectorSearchHit
+from ai_runtime.core.repositories.document_repository import DocumentRepository
+from ai_runtime.core.repositories.knowledge_base_repository import KnowledgeBaseRepository
+from ai_runtime.core.embeddings import EmbeddingService, OpenAIEmbedding, JinaEmbedding, SentenceTransformerEmbedding
+from ai_runtime.core.config import AppConfig
+from ai_runtime.core.parsers.file_parser import FileParser
+from ai_runtime.core.parsers.url_fetcher import URLFetcher
+from ai_runtime.core.audit import AuditLogger
+from ai_runtime.core.quota import QuotaManager
+from ai_runtime.core.llm import BaseLLM, DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
+from ai_runtime.core.vector_index import VectorIndex, VectorSearchHit
 
 try:
     import jieba
@@ -883,7 +883,7 @@ class DocumentService:
             "ai_tags": keywords[:5],
             "ai_faq": faq,
             "ai_document_type": document_type,
-            "ai_processed_at": datetime.utcnow().isoformat(),
+            "ai_processed_at": utc_now().isoformat(),
             "ai_content_hash": content_hash,
             "ai_simhash": simhash,
             "ai_processing_version": "p1-v1",
@@ -1360,7 +1360,7 @@ class DocumentService:
             document_id=document.id,
             index_status="ready",
             indexed=bool(chunk_payloads),
-            indexed_at=datetime.utcnow() if chunk_payloads else None,
+            indexed_at=utc_now() if chunk_payloads else None,
             last_index_error=None,
         )
 

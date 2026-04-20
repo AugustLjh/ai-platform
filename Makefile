@@ -329,7 +329,7 @@ redis-cli:
 
 qdrant-backfill:
 	@echo "执行 Qdrant 全量回填..."
-	$(COMPOSE) $(PROD_BACKEND_FILES) exec ai-runtime python /app/scripts/backfill_qdrant.py
+	$(COMPOSE) $(PROD_BACKEND_FILES) exec ai-runtime python -m ai_runtime.scripts.backfill_qdrant
 
 # ============================================
 # 服务重启

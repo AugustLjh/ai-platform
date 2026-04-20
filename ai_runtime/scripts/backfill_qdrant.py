@@ -6,19 +6,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
-import sys
 from typing import Optional
 
+from ai_runtime.core.config import get_config, load_env_file
+from ai_runtime.core.database import get_db_manager, init_db_manager
+from ai_runtime.core.dependencies import get_container, init_container
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_ROOT = os.path.dirname(CURRENT_DIR)
-if APP_ROOT not in sys.path:
-    sys.path.insert(0, APP_ROOT)
-
-from core.config import get_config, load_env_file
-from core.database import get_db_manager, init_db_manager
-from core.dependencies import get_container, init_container
 logger = logging.getLogger("backfill_qdrant")
 
 

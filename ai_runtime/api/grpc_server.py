@@ -7,14 +7,8 @@ from concurrent import futures
 import asyncio
 import logging
 from typing import AsyncIterator
-import sys
-import os
 
-# Add parent directory to path for proto imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-import chat_service_pb2
-import chat_service_pb2_grpc
+from ai_runtime.proto import chat_service_pb2, chat_service_pb2_grpc
 from .chat_service import ChatServiceImpl
 
 logger = logging.getLogger(__name__)

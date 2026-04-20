@@ -60,6 +60,10 @@ dist/
 .dockerignore
 
 # Environment
+.env
+.env副本
+**/.env
+**/.env副本
 .env.local
 .env.*.local
 

@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from core.agent_runtime.skills.contract import apply_skill_contract
-from core.agent_runtime.skills.models import SkillDefinition
+from ai_runtime.core.agent_runtime.skills.contract import apply_skill_contract
+from ai_runtime.core.agent_runtime.skills.models import SkillDefinition
 
 
 def _parse_json(value: Any, fallback: Dict[str, Any] | list[Any]):

@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 
-from core.models.knowledge_base import (
+from ai_runtime.core.models.knowledge_base import (
     CreateDocumentRequest,
     UpdateDocumentRequest,
     DocumentResponse,
@@ -20,17 +20,17 @@ from core.models.knowledge_base import (
     SourceType,
     AccessLevel,
 )
-from core.services.document_service import DocumentService
-from core.services.document_service import DuplicateDocumentError
-from core.services.knowledge_base_service import KnowledgeBaseService
-from core.dependencies import (
+from ai_runtime.core.services.document_service import DocumentService
+from ai_runtime.core.services.document_service import DuplicateDocumentError
+from ai_runtime.core.services.knowledge_base_service import KnowledgeBaseService
+from ai_runtime.core.dependencies import (
     get_document_service,
     get_kb_service,
     get_current_tenant_id,
     get_current_user_id,
     get_current_request_context,
 )
-from core.quota import QuotaError, convert_quota_error_to_http_exception
+from ai_runtime.core.quota import QuotaError, convert_quota_error_to_http_exception
 
 
 logger = logging.getLogger(__name__)

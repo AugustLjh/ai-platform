@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.agent_runtime.subagents.models import SubagentTarget
+from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
 
 
 def _normalize_match_key(value: str) -> str:

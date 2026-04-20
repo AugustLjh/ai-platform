@@ -4,8 +4,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from core.dependencies import get_current_tenant_id, get_current_user_id
-from core.uploads import get_attachment_bundle_store
+from ai_runtime.core.dependencies import get_current_tenant_id, get_current_user_id
+from ai_runtime.core.uploads import get_attachment_bundle_store
 
 router = APIRouter(prefix="/api/v1/uploads", tags=["uploads"])
 

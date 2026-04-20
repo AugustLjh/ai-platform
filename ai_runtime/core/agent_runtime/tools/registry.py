@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Protocol
 
-from core.agent_runtime.tools.base import BaseTool, ToolLookupContext
+from ai_runtime.core.agent_runtime.tools.base import BaseTool, ToolLookupContext
 
 
 class ToolProvider(Protocol):

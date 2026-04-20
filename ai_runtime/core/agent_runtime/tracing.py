@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from core.agent_runtime.events import build_event_payload
-from core.agent_runtime.memory import RuntimeStateStore
-from core.agent_runtime.models import AgentRunEvent
-from core.agent_runtime.repositories.run_repository import RunRepository
-from core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
+from ai_runtime.core.agent_runtime.events import build_event_payload
+from ai_runtime.core.agent_runtime.memory import RuntimeStateStore
+from ai_runtime.core.agent_runtime.models import AgentRunEvent
+from ai_runtime.core.agent_runtime.repositories.run_repository import RunRepository
+from ai_runtime.core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
 
 
 class AgentTracer:

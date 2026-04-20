@@ -4,14 +4,13 @@ echo.
 
 REM Python
 echo [1/2] Generating Python stubs...
-cd ai_runtime
-python -m grpc_tools.protoc -I../proto --python_out=./proto --grpc_python_out=./proto ../proto/chat_service.proto
+python -m grpc_tools.protoc -I./proto --python_out=./ai_runtime/proto --grpc_python_out=./ai_runtime/proto ./proto/chat_service.proto
+powershell -NoProfile -Command "(Get-Content 'ai_runtime/proto/chat_service_pb2_grpc.py') -replace '^import chat_service_pb2 as ','from . import chat_service_pb2 as ' | Set-Content 'ai_runtime/proto/chat_service_pb2_grpc.py'"
 if %ERRORLEVEL% EQU 0 (
     echo     Python stubs generated successfully
 ) else (
     echo     ERROR: Failed to generate Python stubs
 )
-cd ..
 echo.
 
 REM Go - using downloaded protoc or system protoc

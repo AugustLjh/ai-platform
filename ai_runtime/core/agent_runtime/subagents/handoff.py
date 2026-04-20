@@ -3,24 +3,24 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable
 
-from core.agent_runtime.models import PlannerAction
-from core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
-from core.agent_runtime.result_contract import hydrate_legacy_result
-from core.agent_runtime.subagents.governance import (
+from ai_runtime.core.agent_runtime.models import PlannerAction
+from ai_runtime.core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
+from ai_runtime.core.agent_runtime.result_contract import hydrate_legacy_result
+from ai_runtime.core.agent_runtime.subagents.governance import (
     annotate_governance_policy,
     build_governance_policy,
     extract_governance_usage,
     merge_governance_usage_snapshots,
     resolve_timeout_seconds,
 )
-from core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
-from core.agent_runtime.subagents.protocol import (
+from ai_runtime.core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
+from ai_runtime.core.agent_runtime.subagents.protocol import (
     build_partial_result_payload,
     build_progress_payload,
     build_requested_progress_payload,
     build_clarification_payload,
 )
-from core.agent_runtime.subagents.review import build_review_result
+from ai_runtime.core.agent_runtime.subagents.review import build_review_result
 
 
 class SubagentHandoff:

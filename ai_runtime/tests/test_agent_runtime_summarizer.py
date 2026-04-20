@@ -1,4 +1,4 @@
-from core.agent_runtime.summarizer import AgentSummarizer
+from ai_runtime.core.agent_runtime.summarizer import AgentSummarizer
 
 
 def test_summarizer_system_prompt_uses_codex_style_guidance():
