@@ -1,11 +1,11 @@
 #!/bin/bash
-# Setup SSL certificates for augustusliu.top using Let's Encrypt
+# Setup SSL certificates for example.test using Let's Encrypt
 
 set -e
 
 echo "╔══════════════════════════════════════════════════════════════════════╗"
 echo "║                                                                      ║"
-echo "║           Let's Encrypt SSL Setup for augustusliu.top               ║"
+echo "║           Let's Encrypt SSL Setup for example.test                  ║"
 echo "║                                                                      ║"
 echo "╚══════════════════════════════════════════════════════════════════════╝"
 echo ""
@@ -136,15 +136,15 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 # Create SSL configuration with Let's Encrypt certificate
 cat > nginx/conf.d/ssl.conf << EOF
-# HTTPS Server with Let's Encrypt for augustusliu.top
+# HTTPS Server with Let's Encrypt for example.test
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name augustusliu.top;
+    server_name example.test;
 
     # Let's Encrypt certificates
-    ssl_certificate /etc/letsencrypt/live/augustusliu.top/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/augustusliu.top/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/example.test/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.test/privkey.pem;
 
     # SSL configuration
     include /etc/nginx/ssl/options-ssl-nginx.conf;
@@ -263,15 +263,15 @@ echo "║                                                                      �
 echo "╚══════════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "✅ Your site is now available at:"
-echo "   🌐 https://augustusliu.top"
+echo "   🌐 https://example.test"
 echo ""
 echo "📋 Certificate details:"
-echo "   Domain: augustusliu.top"
+echo "   Domain: example.test"
 echo "   Issuer: Let's Encrypt"
 echo "   Auto-renewal: Every 12 hours (via certbot service)"
 echo ""
 echo "🔍 Next steps:"
-echo "   1. Test your site: https://augustusliu.top"
+echo "   1. Test your site: https://example.test"
 echo "   2. Check certificate: ./scripts/check-ssl.sh"
 echo "   3. Test SSL rating: https://www.ssllabs.com/ssltest/"
 echo ""
