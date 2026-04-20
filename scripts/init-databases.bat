@@ -15,7 +15,7 @@ if %errorlevel% neq 0 (
 
 REM Start only database services
 echo Starting database services...
-docker-compose up -d postgres redis elasticsearch
+docker-compose up -d postgres redis
 
 echo.
 echo Waiting for databases to be ready...
@@ -30,14 +30,10 @@ echo Checking Redis...
 docker-compose exec -T redis redis-cli ping
 echo.
 
-echo Checking Elasticsearch...
-curl -s http://localhost:9200/_cluster/health >nul
-echo.
-
 echo ======================================
 echo Database Services Status:
 echo ======================================
-docker-compose ps postgres redis elasticsearch
+docker-compose ps postgres redis
 
 echo.
 echo ======================================
@@ -54,11 +50,6 @@ echo.
 echo Redis:
 echo   Host: localhost
 echo   Port: 6379
-echo.
-echo Elasticsearch:
-echo   Host: localhost
-echo   Port: 9200
-echo   URL: http://localhost:9200
 echo.
 echo ======================================
 echo Setup Complete!

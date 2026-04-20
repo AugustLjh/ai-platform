@@ -1,15 +1,120 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import Login from '../views/Login.vue'
-import Register from '../views/Register.vue'
-import KnowledgeList from '../views/KnowledgeList.vue'
-import KnowledgeCreate from '../views/KnowledgeCreate.vue'
-import KnowledgeDetail from '../views/KnowledgeDetail.vue'
-import KnowledgeEdit from '../views/KnowledgeEdit.vue'
+
+const Login = () => import('../views/Login.vue')
+const Register = () => import('../views/Register.vue')
+const Chat = () => import('../views/Chat.vue')
+const History = () => import('../views/History.vue')
+const CostStats = () => import('../views/CostStats.vue')
+const ModelsManage = () => import('../views/ModelsManage.vue')
+const MCPManage = () => import('../views/MCPManage.vue')
+const SubagentManage = () => import('../views/SubagentManage.vue')
+const Profile = () => import('../views/Profile.vue')
+const Settings = () => import('../views/Settings.vue')
+const AgentsList = () => import('../views/AgentsList.vue')
+const AgentChat = () => import('../views/AgentChat.vue')
+const AgentSettingsBasic = () => import('../views/AgentSettingsBasic.vue')
+const AgentExtensions = () => import('../views/AgentExtensions.vue')
+const AgentRuns = () => import('../views/AgentRuns.vue')
+const AgentRunDetail = () => import('../views/AgentRunDetail.vue')
+const KnowledgeBaseList = () => import('../views/KnowledgeBaseList.vue')
+const KnowledgeBaseCreate = () => import('../views/KnowledgeBaseCreate.vue')
+const KnowledgeBaseDetail = () => import('../views/KnowledgeBaseDetail.vue')
+const KnowledgeBaseEdit = () => import('../views/KnowledgeBaseEdit.vue')
+const KnowledgeBaseSettings = () => import('../views/KnowledgeBaseSettings.vue')
+const KnowledgeBaseRetrievalTest = () => import('../views/KnowledgeBaseRetrievalTest.vue')
 
 const routes = [
   {
     path: '/',
-    redirect: '/knowledge'
+    redirect: '/chat'
+  },
+  {
+    path: '/chat',
+    name: 'Chat',
+    component: Chat,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/history',
+    name: 'History',
+    component: History,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/costs',
+    name: 'CostStats',
+    component: CostStats,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/models',
+    name: 'ModelsManage',
+    component: ModelsManage,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/mcp',
+    name: 'MCPManage',
+    component: MCPManage,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/subagents',
+    name: 'SubagentManage',
+    component: SubagentManage,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/profile',
+    name: 'Profile',
+    component: Profile,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/settings',
+    name: 'Settings',
+    component: Settings,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents',
+    name: 'AgentsList',
+    component: AgentsList,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/runs/:run_id',
+    name: 'AgentRunDetail',
+    component: AgentRunDetail,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/:id/runs',
+    name: 'AgentRuns',
+    component: AgentRuns,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/:id',
+    name: 'AgentChat',
+    component: AgentChat,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/:id/settings',
+    redirect: (to) => `/agents/${to.params.id}/settings/basic`
+  },
+  {
+    path: '/agents/:id/settings/basic',
+    name: 'AgentSettingsBasic',
+    component: AgentSettingsBasic,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/agents/:id/settings/extensions',
+    name: 'AgentExtensions',
+    component: AgentExtensions,
+    meta: { requiresAuth: true }
   },
   {
     path: '/login',
@@ -23,27 +128,47 @@ const routes = [
   },
   {
     path: '/knowledge',
-    name: 'KnowledgeList',
-    component: KnowledgeList,
+    name: 'KnowledgeBaseList',
+    component: KnowledgeBaseList,
     meta: { requiresAuth: true }
   },
   {
     path: '/knowledge/create',
-    name: 'KnowledgeCreate',
-    component: KnowledgeCreate,
+    name: 'KnowledgeBaseCreate',
+    component: KnowledgeBaseCreate,
     meta: { requiresAuth: true }
   },
   {
     path: '/knowledge/:id',
-    name: 'KnowledgeDetail',
-    component: KnowledgeDetail,
+    name: 'KnowledgeBaseDetail',
+    component: KnowledgeBaseDetail,
     meta: { requiresAuth: true }
   },
   {
     path: '/knowledge/:id/edit',
-    name: 'KnowledgeEdit',
-    component: KnowledgeEdit,
+    name: 'KnowledgeBaseEdit',
+    component: KnowledgeBaseEdit,
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/knowledge/:id/settings',
+    name: 'KnowledgeBaseSettings',
+    component: KnowledgeBaseSettings,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/knowledge/:id/retrieval-test',
+    name: 'KnowledgeBaseRetrievalTest',
+    component: KnowledgeBaseRetrievalTest,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/knowledge/:id/indexing',
+    redirect: (to) => `/knowledge/${to.params.id}/settings`
+  },
+  {
+    path: '/knowledge/:id/retrieval',
+    redirect: (to) => `/knowledge/${to.params.id}/settings`
   }
 ]
 
@@ -59,7 +184,7 @@ router.beforeEach((to, from, next) => {
   if (to.meta.requiresAuth && !isAuthenticated) {
     next('/login')
   } else if ((to.path === '/login' || to.path === '/register') && isAuthenticated) {
-    next('/knowledge')
+    next('/chat')
   } else {
     next()
   }

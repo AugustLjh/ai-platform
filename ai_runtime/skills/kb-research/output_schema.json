@@ -1,0 +1,60 @@
+{
+  "type": "object",
+  "required": [
+    "answer",
+    "citations",
+    "open_questions"
+  ],
+  "properties": {
+    "answer": {
+      "type": "string"
+    },
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "title",
+          "snippet"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "snippet": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "document_excerpt": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

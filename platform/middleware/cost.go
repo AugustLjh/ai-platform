@@ -16,10 +16,10 @@ type CostTracker struct {
 
 // UserCost tracks cost for a user
 type UserCost struct {
-	TotalCost      float64
-	TotalTokens    int64
-	RequestCount   int64
-	LastUpdated    time.Time
+	TotalCost    float64
+	TotalTokens  int64
+	RequestCount int64
+	LastUpdated  time.Time
 }
 
 // ModelPricing holds pricing information
@@ -33,8 +33,8 @@ func NewCostTracker() *CostTracker {
 	return &CostTracker{
 		costs: make(map[string]*UserCost),
 		prices: ModelPricing{
-			InputTokenPrice:  0.0015,  // $0.0015 per 1K tokens
-			OutputTokenPrice: 0.002,   // $0.002 per 1K tokens
+			InputTokenPrice:  0.0015, // $0.0015 per 1K tokens
+			OutputTokenPrice: 0.002,  // $0.002 per 1K tokens
 		},
 	}
 }
@@ -64,6 +64,11 @@ func (ct *CostTracker) Handler(next http.Handler) http.Handler {
 
 // TrackTokens tracks token usage and calculates cost
 func (ct *CostTracker) TrackTokens(userID string, inputTokens, outputTokens int64) {
+	ct.TrackUsage(userID, inputTokens, outputTokens, 0)
+}
+
+// TrackUsage tracks token usage and cost.
+func (ct *CostTracker) TrackUsage(userID string, inputTokens, outputTokens int64, explicitCost float64) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -76,13 +81,17 @@ func (ct *CostTracker) TrackTokens(userID string, inputTokens, outputTokens int6
 	// Calculate cost
 	inputCost := float64(inputTokens) / 1000.0 * ct.prices.InputTokenPrice
 	outputCost := float64(outputTokens) / 1000.0 * ct.prices.OutputTokenPrice
+	totalCost := inputCost + outputCost
+	if explicitCost > 0 {
+		totalCost = explicitCost
+	}
 
-	cost.TotalCost += inputCost + outputCost
+	cost.TotalCost += totalCost
 	cost.TotalTokens += inputTokens + outputTokens
 	cost.LastUpdated = time.Now()
 
 	log.Printf("[Cost] User %s: +%d tokens, $%.6f (total: $%.6f)",
-		userID, inputTokens+outputTokens, inputCost+outputCost, cost.TotalCost)
+		userID, inputTokens+outputTokens, totalCost, cost.TotalCost)
 }
 
 // GetCost returns cost information for a user

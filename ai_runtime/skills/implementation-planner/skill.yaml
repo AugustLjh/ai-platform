@@ -1,0 +1,4 @@
+name: Implementation Planner
+slug: implementation-planner
+version: 1.0.0
+description: Break implementation requests into an ordered plan with dependencies, risks, and validation steps.

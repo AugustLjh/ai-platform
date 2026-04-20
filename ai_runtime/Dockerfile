@@ -1,27 +1,55 @@
-# Python AI Runtime Dockerfile
 FROM python:3.11-slim
+
+# ---------- 基础环境 ----------
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
-# Configure pip to use Chinese mirrors (Tsinghua, Aliyun, USTC)
-#RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
-#    pip config set global.extra-index-url "https://mirrors.aliyun.com/pypi/simple/ https://mirrors.ustc.edu.cn/pypi/web/simple/" && \
-#    pip config set global.trusted-host "pypi.tuna.tsinghua.edu.cn mirrors.aliyun.com mirrors.ustc.edu.cn"
+# ---------- 系统依赖（按需） ----------
+# 如果你有 grpc / cryptography / numpy / torch 等，通常需要这些
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    nodejs \
+    npm \
+    protobuf-compiler \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
 
+# ---------- Python 依赖 ----------
+# 先拷贝 requirements，利用 Docker cache
+COPY ai_runtime/requirements.txt requirements.txt
 
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip config set global.extra-index-url "https://mirrors.aliyun.com/pypi/simple/ https://mirrors.ustc.edu.cn/pypi/web/simple/ https://pypi.org/simple" && \
-    pip config set global.trusted-host "pypi.tuna.tsinghua.edu.cn mirrors.aliyun.com mirrors.ustc.edu.cn pypi.org"
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir --no-compile -r requirements.txt
 
-# Install dependencies
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+# ---------- Proto 文件生成 ----------
+# 复制 proto 文件并生成 stubs
+COPY proto /proto
 
-# Copy source code
-COPY . .
+# ---------- 应用代码 ----------
+COPY ai_runtime /app/ai_runtime
+COPY db /app/db
 
-# Expose ports
+# 生成包内 proto stubs，避免运行时路径注入
+RUN mkdir -p /app/ai_runtime/proto && \
+    touch /app/ai_runtime/proto/__init__.py
+
+RUN python -m grpc_tools.protoc \
+      -I/proto \
+      --python_out=/app/ai_runtime/proto \
+      --grpc_python_out=/app/ai_runtime/proto \
+      /proto/chat_service.proto && \
+    sed -i 's/^import chat_service_pb2 as /from . import chat_service_pb2 as /' /app/ai_runtime/proto/chat_service_pb2_grpc.py
+
+# ---------- 端口 ----------
 EXPOSE 8000 50051
 
-# Run the application
-CMD ["python", "main.py"]
+# ---------- 启动 ----------
+RUN chmod +x /app/ai_runtime/entrypoint.sh
+
+ENTRYPOINT ["/app/ai_runtime/entrypoint.sh"]
+CMD ["python", "-m", "ai_runtime.main", "--mode", "both", "--http-port", "8000", "--grpc-port", "50051"]

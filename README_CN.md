@@ -1,636 +1,255 @@
-# AI Platform - 企业级 AI 应用平台
+# AI Platform
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](https://golang.org/)
-[![Python Version](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python)](https://www.python.org/)
+[English](./README.md) | 简体中文
 
-一个生产就绪的 AI 应用平台，采用 Go (平台层) 和 Python (AI 运行时) 微服务架构，通过 gRPC 流式通信。
+AI Platform 是一个面向聊天、知识库和 Agent Runtime 编排的全栈应用平台。
 
-## 🌟 核心特性
+## 服务组成
 
-### 平台层 (Go)
-- ✅ **JWT 认证** - 完整的用户注册/登录系统
-- ✅ **多租户支持** - 租户隔离和管理
-- ✅ **限流中间件** - Token Bucket 算法
-- ✅ **内容安全** - 请求过滤和安全检查
-- ✅ **成本追踪** - Token 使用计量和成本计算
-- ✅ **多协议支持** - HTTP/SSE/WebSocket
-- ✅ **数据库集成** - PostgreSQL + Redis + Elasticsearch
+- `frontend-vue`：Vue 3 前端
+- `platform`：Go 平台层，负责认证、会话、对外 API 和 Runtime 代理
+- `ai_runtime`：Python FastAPI + gRPC 运行时，负责聊天、知识库、模型和 Agent 执行
 
-### AI 运行时 (Python)
-- ✅ **Prompt 构建器** - 模板化 Prompt 管理
-- ✅ **RAG 管道** - 检索增强生成
-- ✅ **LLM 集成** - OpenAI 和本地模型支持
-- ✅ **Agent 系统** - 工具使用型 Agent
-- ✅ **流式处理** - 完整的流式输出支持
-- ✅ **中间件管道** - 可扩展的处理链
+## 当前状态
 
-### 数据库
-- ✅ **PostgreSQL** - 用户、会话、消息存储
-- ✅ **Redis** - 缓存、Token 黑名单、限流
-- ✅ **Elasticsearch** - 向量搜索、RAG 支持
+当前仓库已经具备可直接使用的主线能力：
 
-## 📋 目录
+- 用户认证、聊天、会话历史、用量统计和消息反馈
+- 知识库 CRUD、文档上传/导入/搜索、预览、分块查看和检索测试
+- `openai`、`deepseek`、`local`、`mock`、`jina` 模型配置管理
+- Agent 工作台、运行历史、结构化产物展示、运行树、MCP 管理和子代理治理页面
+- Agent Runtime 结果契约、工具与 provider 装配、MCP 集成、技能绑定、评审流程和委派治理
+- 基于 Alembic 的 PostgreSQL schema 管理
+- 围绕 PostgreSQL、Redis、Qdrant 的部署方式
 
-- [架构设计](#架构设计)
-- [快速开始](#快速开始)
-- [项目结构](#项目结构)
-- [功能特性](#功能特性)
-- [API 文档](#api-文档)
-- [数据库配置](#数据库配置)
-- [开发指南](#开发指南)
-- [部署指南](#部署指南)
-- [常见问题](#常见问题)
+## 架构
 
-## 🏗️ 架构设计
+```text
+浏览器
+  |
+  v
+Vue 3 前端
+  |
+  v
+Go 平台层 (:8080)
+  |- JWT 认证
+  |- 聊天与会话接口
+  |- 用量与反馈接口
+  |- Agent 接口与治理接口
+  |- 知识库和模型接口代理
+  |
+  +--> Python AI Runtime HTTP (:8000)
+  |      |- 知识库 / 文档 / 模型接口
+  |      |- 可选 HTTP 聊天接口
+  |      |- Agent Runtime 接口
+  |
+  +--> Python AI Runtime gRPC (:50051)
+         |- 流式聊天后端
 
-```
-┌──────────────────────────────┐
-│     客户端 (Web/App/CLI)      │
-└────────────▲─────────────────┘
-             │ SSE / WebSocket
-┌────────────┴─────────────────┐
-│      Go 平台层 (中枢)         │
-│                               │
-│  ✓ JWT 认证                   │
-│  ✓ 限流/配额                  │
-│  ✓ 成本追踪                   │
-│  ✓ 内容安全                   │
-│  ✓ 审计日志                   │
-└────────────▲─────────────────┘
-             │ gRPC Streaming
-┌────────────┴─────────────────┐
-│    Python AI 运行时 (大脑)    │
-│                               │
-│  ✓ Prompt Builder            │
-│  ✓ RAG Pipeline              │
-│  ✓ LLM Integration           │
-│  ✓ Agent Executor            │
-│  ✓ Stream Processing         │
-└────────────▲─────────────────┘
-             │
-┌────────────┴─────────────────┐
-│       数据库基础设施          │
-│  PostgreSQL | Redis | ES     │
-└──────────────────────────────┘
+PostgreSQL + Redis + Qdrant
 ```
 
-## 🚀 快速开始
+## 项目结构
 
-### 前置要求
+```text
+.
+|-- ai_runtime/               # Python Runtime 服务
+|-- db/alembic/               # Alembic 迁移
+|-- frontend-vue/             # Vue 3 前端
+|-- frontend-dist/            # 前端静态发布目录
+|-- nginx/                    # Nginx 配置
+|-- platform/                 # Go 平台层
+|-- proto/                    # 共享 proto 定义
+|-- scripts/                  # 辅助脚本
+|-- docker-compose.infra.yml
+|-- docker-compose.backend.yml
+|-- docker-compose.frontend.yml
+|-- Makefile
+|-- README.md
+`-- README_CN.md
+```
 
-- **Docker & Docker Compose** (推荐)
-- **Go 1.21+** (如果本地运行)
-- **Python 3.11+** (如果本地运行)
-- **PostgreSQL 16** (如果不使用 Docker)
-- **Redis 7** (如果不使用 Docker)
-- **Elasticsearch 8** (如果不使用 Docker)
+## 环境要求
 
-### 方式一：使用 Docker Compose (推荐)
+- Docker Engine 和 Compose 插件
+- GNU Make
+- Git
+- Node.js 20+，用于本地前端开发
+- Go 1.24+，用于本地平台层开发
+- Python 3.11+，用于本地 Runtime 开发
+
+## 本地开发
+
+当前采用各服务目录独立启动。
+
+前端：
 
 ```bash
-# 1. 克隆仓库
-git clone <repository-url>
-cd ai-platform
-
-# 2. 配置环境变量
-cp .env.example .env
-# 编辑 .env 设置你的配置
-
-# 3. 启动所有服务
-docker-compose --profile full up -d
-
-# 4. 查看日志
-docker-compose logs -f
+cd frontend-vue
+npm install
+npm run dev -- --host 0.0.0.0
 ```
 
-访问：
-- **API 服务**: http://localhost:8080
-- **Kibana** (可选): http://localhost:5601
-
-### 方式二：仅启动数据库
+平台层：
 
 ```bash
-# 启动数据库
-./scripts/init-databases.sh  # Linux/Mac
-# 或
-scripts\init-databases.bat   # Windows
-
-# 启动 Python AI Runtime
-cd ai_runtime
-pip install -r requirements.txt
-python main.py
-
-# 启动 Go Platform (新终端)
 cd platform
-go mod download
 go run main.go
 ```
 
-### 方式三：使用启动脚本
+AI Runtime：
 
 ```bash
-# Linux/Mac
-chmod +x start_dev.sh
-./start_dev.sh
-
-# Windows
-start_dev.bat
+pip install -r ai_runtime/requirements.txt
+python -m ai_runtime.main --mode both --http-port 8000 --grpc-port 50051
 ```
 
-## 📁 项目结构
-
-```
-ai-platform/
-├── platform/                    # Go 平台层
-│   ├── api/
-│   │   ├── http/               # HTTP/SSE/WebSocket 处理器
-│   │   │   ├── auth_handler.go
-│   │   │   └── chat_handler.go
-│   │   └── grpc/               # gRPC 客户端
-│   │       └── ai_client.go
-│   ├── auth/                    # JWT 认证
-│   │   ├── jwt.go
-│   │   ├── user.go
-│   │   └── service.go
-│   ├── database/                # 数据库集成
-│   │   ├── postgres.go
-│   │   ├── redis.go
-│   │   ├── elasticsearch.go
-│   │   ├── user_store.go
-│   │   └── session_store.go
-│   ├── middleware/              # 中间件
-│   │   ├── auth.go
-│   │   ├── rate_limit.go
-│   │   ├── guard.go
-│   │   └── cost.go
-│   ├── service/                 # 业务逻辑
-│   │   ├── chat_service.go
-│   │   └── session_service.go
-│   ├── main.go
-│   └── go.mod
-│
-├── ai_runtime/                  # Python AI 运行时
-│   ├── api/
-│   │   └── chat_service.py
-│   ├── core/
-│   │   ├── prompt/             # Prompt 管理
-│   │   ├── rag/                # RAG 管道
-│   │   ├── llm/                # LLM 集成
-│   │   ├── agent/              # Agent 执行器
-│   │   └── stream/             # 流处理
-│   ├── main.py
-│   └── requirements.txt
-│
-├── db/
-│   └── migrations/             # 数据库迁移
-│       └── 001_initial_schema.sql
-│
-├── docs/                        # 文档
-│   ├── DATABASE_GUIDE.md
-│   ├── JWT_AUTHENTICATION.md
-│   └── JWT_IMPLEMENTATION_SUMMARY.md
-│
-├── examples/                    # 示例
-│   ├── auth_examples.sh
-│   ├── api_examples.sh
-│   └── websocket_client_jwt.html
-│
-├── scripts/                     # 工具脚本
-│   ├── init-databases.sh
-│   └── generate_proto.sh
-│
-├── proto/                       # gRPC 协议定义
-│   └── chat_service.proto
-│
-├── docker-compose.yml
-├── .env.example
-└── README_CN.md                # 本文件
-```
-
-## ✨ 功能特性
-
-### 1. JWT 认证系统
-
-完整的用户认证和授权系统：
+常用本地校验：
 
 ```bash
-# 注册用户
-curl -X POST http://localhost:8080/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"password123"}'
-
-# 登录
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"demo@example.com","password":"demo123456"}'
+make test
+make test-agent-runtime
+make test-platform
+make test-frontend
 ```
 
-**Demo 用户：**
-- Email: `demo@example.com`
-- Password: `demo123456`
+## 部署
 
-详细文档：[docs/JWT_AUTHENTICATION.md](docs/JWT_AUTHENTICATION.md)
+当前仓库使用拆分后的 compose 文件：
 
-### 2. 聊天 API
+- `docker-compose.infra.yml`
+- `docker-compose.backend.yml`
+- `docker-compose.frontend.yml`
 
-支持三种模式的聊天接口：
-
-#### 同步聊天
-```bash
-curl -X POST http://localhost:8080/api/v1/chat \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "session_001",
-    "message": "Hello!",
-    "config": {"use_rag": false, "use_agent": false}
-  }'
-```
-
-#### 流式聊天 (SSE)
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/sse \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"session_002","message":"Tell me a story"}'
-```
-
-#### WebSocket 聊天
-```javascript
-const ws = new WebSocket('ws://localhost:8080/api/v1/chat/ws');
-// 详见 examples/websocket_client_jwt.html
-```
-
-### 3. 数据库集成
-
-#### PostgreSQL
-- 用户管理
-- 会话历史
-- 消息存储
-- Token 使用追踪
-- 审计日志
-
-#### Redis
-- API 响应缓存
-- JWT Token 黑名单
-- 会话数据
-- 分布式限流
-
-#### Elasticsearch
-- 向量搜索 (RAG)
-- 文档索引
-- 语义搜索
-
-详细文档：[docs/DATABASE_GUIDE.md](docs/DATABASE_GUIDE.md)
-
-### 4. RAG (检索增强生成)
-
-```python
-# 添加文档到向量库
-from core.rag import RAGPipeline, Document
-
-documents = [
-    Document(content="文档内容...", metadata={"source": "doc1.pdf"}),
-]
-await rag_pipeline.add_documents(documents)
-
-# 使用 RAG 查询
-context = await rag_pipeline.process("用户问题", top_k=5)
-```
-
-### 5. Agent 工具系统
-
-```python
-# 内置工具
-- get_current_time: 获取当前时间
-- calculator: 执行计算
-
-# 使用 Agent
-curl -X POST http://localhost:8080/api/v1/chat \
-  -H "Authorization: Bearer <token>" \
-  -d '{
-    "message": "现在几点了？",
-    "config": {"use_agent": true, "tools": ["get_current_time"]}
-  }'
-```
-
-## 📚 API 文档
-
-### 认证端点
-
-| 方法 | 端点 | 描述 | 认证 |
-|------|------|------|------|
-| POST | `/api/v1/auth/register` | 用户注册 | 否 |
-| POST | `/api/v1/auth/login` | 用户登录 | 否 |
-| POST | `/api/v1/auth/refresh` | 刷新 Token | 否 |
-| GET | `/api/v1/auth/me` | 获取当前用户 | 是 |
-| POST | `/api/v1/auth/logout` | 登出 | 是 |
-
-### 聊天端点
-
-| 方法 | 端点 | 描述 | 认证 |
-|------|------|------|------|
-| POST | `/api/v1/chat` | 同步聊天 | 是 |
-| POST | `/api/v1/chat/sse` | 流式聊天 (SSE) | 是 |
-| WS | `/api/v1/chat/ws` | WebSocket 聊天 | 是 |
-
-### 健康检查
-
-| 方法 | 端点 | 描述 |
-|------|------|------|
-| GET | `/health` | 健康检查 |
-
-完整 API 文档：[docs/JWT_AUTHENTICATION.md](docs/JWT_AUTHENTICATION.md)
-
-## 💾 数据库配置
-
-### 连接信息
-
-**PostgreSQL:**
-```
-Host: localhost:5432
-Database: ai_platform
-User: ai_platform
-Password: ai_platform_password
-```
-
-**Redis:**
-```
-Host: localhost:6379
-```
-
-**Elasticsearch:**
-```
-URL: http://localhost:9200
-```
-
-### 初始化数据库
+推荐启动顺序：
 
 ```bash
-# Linux/Mac
-./scripts/init-databases.sh
-
-# Windows
-scripts\init-databases.bat
-
-# 或使用 Docker Compose
-docker-compose up -d postgres redis elasticsearch
+make infra-up
+make db-upgrade
+make backend-up
+make frontend-build
 ```
 
-### 数据库迁移
-
-迁移会在 PostgreSQL 启动时自动运行。手动运行：
+如果本地镜像已经准备好：
 
 ```bash
-psql -h localhost -U ai_platform -d ai_platform -f db/migrations/001_initial_schema.sql
+make prod-check
+make prod
 ```
 
-详细文档：[docs/DATABASE_GUIDE.md](docs/DATABASE_GUIDE.md)
-
-## 🔧 开发指南
-
-### 环境配置
-
-1. **复制环境变量模板**
-```bash
-cp .env.example .env
-```
-
-2. **配置关键变量**
-```bash
-# JWT 密钥 (生产环境必须修改！)
-JWT_SECRET=your-super-secret-key-change-in-production
-
-# 数据库
-POSTGRES_HOST=localhost
-POSTGRES_PASSWORD=your-secure-password
-
-# OpenAI (可选)
-OPENAI_API_KEY=your-openai-api-key
-```
-
-### 生成 gRPC Stubs
+构建与发布：
 
 ```bash
-# Linux/Mac
-chmod +x generate_proto.sh
-./generate_proto.sh
-
-# Windows
-generate_proto.bat
+make infra-build
+make backend-build
+make frontend-build
 ```
 
-### 本地开发
+低 I/O 版本：
 
-**启动 AI Runtime:**
 ```bash
-cd ai_runtime
-pip install -r requirements.txt
-python main.py
+make infra-build-safe
+make ai-runtime-build-safe
+make platform-build-safe
+make frontend-build-safe
 ```
 
-**启动 Platform:**
+运维入口：
+
+```bash
+make infra-logs
+make backend-logs
+make frontend-logs
+make prod-down
+```
+
+## 环境变量文件
+
+主要模板文件：
+
+- `./.env.example`
+- `./ai_runtime/.env.example`
+- `./platform/.env.example`
+
+关键配置：
+
+- `JWT_SECRET`：生产环境必须替换
+- `EMBEDDING_PROVIDER`：支持 `local`、`openai`、`jina`
+- `LLM_PROVIDER`：支持 `openai`、`deepseek`、`local`、`mock`
+- `QDRANT_HOST` / `QDRANT_PORT`：向量数据库地址
+- `AI_RUNTIME_HTTP_ADDR`：Platform 访问 Runtime HTTP 接口所需地址
+- `AI_RUNTIME_CHAT_TRANSPORT`：Go 服务使用 `grpc` 或 `http` 调用聊天能力
+
+## 前端
+
+当前前端已包含：
+
+- 登录和注册
+- 聊天工作台和会话历史
+- 用量与成本统计
+- 模型管理
+- 知识库列表、新建、编辑、详情、设置和检索测试页面
+- Agent 列表、Agent Chat 工作台、运行历史、运行详情、扩展绑定、MCP 管理和子代理管理页面
+
+生产发布时，前端静态资源会写入 `frontend-dist/releases/<version>`，并更新 `frontend-dist/current`。
+
+## Platform
+
+Go 平台层是用户直接访问的后端，负责认证、聊天与会话接口、Agent 接口、用量与反馈接口，以及 Runtime 的知识库和模型代理。
+
+本地启动：
+
 ```bash
 cd platform
-go mod download
 go run main.go
 ```
 
-### 运行测试
+平台层启动时会写入一个演示账号：
 
-**Go 测试:**
-```bash
-cd platform
-go test ./...
+```text
+Email: demo@example.com
+Password: demo123456
 ```
 
-**Python 测试:**
-```bash
-cd ai_runtime
-pytest
-```
+## AI Runtime
 
-### 代码风格
+Python Runtime 负责 AI 侧执行逻辑，同时提供 HTTP 和 gRPC 服务。
 
-**Go:**
-```bash
-gofmt -w .
-go vet ./...
-```
+主要职责：
 
-**Python:**
-```bash
-black .
-flake8
-```
+- 聊天生成
+- Agent Runtime 编排、事件流和追踪
+- 技能加载与工具/provider 装配
+- MCP catalog、发现、会话和运行时集成
+- 子代理委派、评审流程和治理状态
+- 知识库管理
+- 文档解析、切分、检索和评测
+- 模型存储与选择
 
-## 🚢 部署指南
-
-### Docker 部署
+Agent Runtime 相关改动建议至少执行以下校验：
 
 ```bash
-# 构建镜像
-docker-compose build
-
-# 启动所有服务
-docker-compose --profile full up -d
-
-# 查看日志
-docker-compose logs -f
-
-# 停止服务
-docker-compose down
+.venv/bin/python -m pytest ai_runtime/tests/test_agent_runtime_executor.py \
+  ai_runtime/tests/test_agent_runtime_schema_utils.py \
+  ai_runtime/tests/test_agent_runtime_summarizer.py \
+  ai_runtime/tests/test_agent_runtime_skill_registry.py -q
 ```
 
-### Kubernetes 部署
+## 数据库
+
+数据库 schema 通过 `db/alembic/` 下的 Alembic 管理。
+
+常用命令：
 
 ```bash
-# 应用配置
-kubectl apply -f k8s/
-
-# 查看状态
-kubectl get pods
-kubectl get services
+make db-upgrade
+make db-current
+make db-history
+make db-revision m=describe_change
+make db-reset-to-alembic
+make qdrant-backfill
 ```
 
-### 生产环境检查清单
+## 许可证
 
-- [ ] 修改所有默认密码
-- [ ] 设置强 JWT 密钥
-- [ ] 启用 HTTPS/TLS
-- [ ] 配置防火墙规则
-- [ ] 设置数据库备份
-- [ ] 配置日志收集
-- [ ] 设置监控告警
-- [ ] 配置 CDN (如需要)
-- [ ] 启用限流
-- [ ] 配置错误追踪
-
-### 环境变量 (生产)
-
-```bash
-# 安全
-JWT_SECRET=<强随机字符串>
-POSTGRES_PASSWORD=<强密码>
-REDIS_PASSWORD=<强密码>
-
-# 数据库 (使用托管服务)
-POSTGRES_HOST=<RDS地址>
-REDIS_HOST=<ElastiCache地址>
-ELASTICSEARCH_URL=<OpenSearch地址>
-
-# 功能开关
-ENVIRONMENT=production
-LOG_LEVEL=INFO
-ENABLE_TELEMETRY=true
-```
-
-## ❓ 常见问题
-
-### Q: 如何修改 JWT 密钥？
-
-A: 在 `.env` 文件中设置 `JWT_SECRET` 环境变量，或在启动时设置：
-```bash
-export JWT_SECRET="your-new-secret-key"
-```
-
-### Q: 如何添加新的 Agent 工具？
-
-A: 在 `ai_runtime/core/agent/tools/` 创建新工具类：
-```python
-class MyTool(Tool):
-    def __init__(self):
-        super().__init__("my_tool", "工具描述")
-
-    async def execute(self, **kwargs):
-        # 实现工具逻辑
-        return result
-```
-
-### Q: 如何切换到 OpenAI？
-
-A: 在 `ai_runtime/main.py` 中修改：
-```python
-from core.llm import OpenAILLM
-
-# 替换 LocalLLM
-self.llm = OpenAILLM(
-    model="gpt-4",
-    api_key=os.getenv("OPENAI_API_KEY")
-)
-```
-
-### Q: 如何增加 RAG 文档？
-
-A: 使用 Elasticsearch API 或通过代码：
-```python
-from database import ElasticsearchVectorStore
-
-# 索引文档
-doc = VectorDocument(
-    id="doc-1",
-    tenant_id="tenant-1",
-    title="文档标题",
-    content="文档内容",
-    embedding=vector  # 从嵌入模型获取
-)
-await vector_store.IndexDocument(ctx, doc)
-```
-
-### Q: 数据库连接失败？
-
-A: 检查：
-1. 数据库服务是否运行：`docker-compose ps`
-2. 连接信息是否正确：查看 `.env`
-3. 防火墙规则
-4. 查看日志：`docker-compose logs postgres`
-
-### Q: 如何备份数据？
-
-A:
-```bash
-# PostgreSQL 备份
-docker-compose exec postgres pg_dump -U ai_platform ai_platform > backup.sql
-
-# 恢复
-docker-compose exec -T postgres psql -U ai_platform ai_platform < backup.sql
-
-# Redis 备份
-docker-compose exec redis redis-cli SAVE
-```
-
-## 📖 文档索引
-
-- **[快速开始](QUICKSTART.md)** - 5分钟入门
-- **[JWT 认证](docs/JWT_AUTHENTICATION.md)** - 完整认证指南
-- **[数据库指南](docs/DATABASE_GUIDE.md)** - 数据库配置和使用
-- **[API 参考](docs/API_REFERENCE.md)** - 完整 API 文档
-- **[部署指南](docs/DEPLOYMENT.md)** - 生产部署
-- **[开发指南](docs/DEVELOPMENT.md)** - 开发者文档
-
-## 🤝 贡献
-
-欢迎贡献！请查看 [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情
-
-## 🙏 致谢
-
-- OpenAI - LLM 支持
-- LangChain - AI 框架
-- PostgreSQL - 数据库
-- Redis - 缓存
-- Elasticsearch - 搜索引擎
-
-## 📞 支持
-
-- **问题反馈**: [GitHub Issues](https://github.com/your-org/ai-platform/issues)
-- **讨论**: [GitHub Discussions](https://github.com/your-org/ai-platform/discussions)
-- **文档**: [docs/](docs/)
-
----
-
-**使用愉快！如有问题，请查看文档或提交 Issue。** 🚀
+本项目采用 Apache License 2.0。见 [LICENSE](./LICENSE) 和 [LICENSE.zh-CN](./LICENSE.zh-CN)。

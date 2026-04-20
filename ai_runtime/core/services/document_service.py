@@ -1,0 +1,2862 @@
+"""
+Document Service - Business Logic Layer
+"""
+import asyncio
+import hashlib
+import json
+import logging
+import re
+from collections import Counter
+from contextlib import suppress
+from datetime import datetime
+from uuid import UUID
+from typing import List, Optional, Dict, Any
+from fastapi import UploadFile
+
+from ai_runtime.core.models.knowledge_base import (
+    Document,
+    SourceType,
+    AccessLevel,
+    CreateDocumentRequest,
+    UpdateDocumentRequest,
+)
+from ai_runtime.core.repositories.document_repository import DocumentRepository
+from ai_runtime.core.repositories.knowledge_base_repository import KnowledgeBaseRepository
+from ai_runtime.core.embeddings import EmbeddingService, OpenAIEmbedding, JinaEmbedding, SentenceTransformerEmbedding
+from ai_runtime.core.config import AppConfig
+from ai_runtime.core.parsers.file_parser import FileParser
+from ai_runtime.core.parsers.url_fetcher import URLFetcher
+from ai_runtime.core.audit import AuditLogger
+from ai_runtime.core.quota import QuotaManager
+from ai_runtime.core.llm import BaseLLM, DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
+from ai_runtime.core.vector_index import VectorIndex, VectorSearchHit
+
+try:
+    import jieba
+except ImportError:
+    jieba = None
+
+
+logger = logging.getLogger(__name__)
+
+
+class DuplicateDocumentError(Exception):
+    """重复或高相似文档冲突。"""
+
+    def __init__(self, payload: Dict[str, Any]):
+        self.payload = payload
+        super().__init__(payload.get("message") or "Duplicate document detected")
+
+AI_METADATA_KEYS = {
+    "ai_summary",
+    "ai_keywords",
+    "ai_tags",
+    "ai_faq",
+    "ai_document_type",
+    "ai_processed_at",
+    "ai_content_hash",
+    "ai_simhash",
+    "ai_processing_version",
+}
+
+CHINESE_STOPWORDS = {
+    "我们", "你们", "他们", "这是", "一个", "一些", "这个", "那个", "以及", "进行",
+    "相关", "支持", "使用", "可以", "通过", "需要", "如果", "没有", "已经", "为了",
+    "关于", "其中", "功能", "系统", "平台", "文档", "内容", "说明", "问题", "方案",
+}
+
+ENGLISH_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "into", "have", "has",
+    "are", "was", "were", "will", "shall", "you", "your", "our", "their", "about",
+    "document", "system", "platform", "usage", "using", "used", "guide",
+}
+
+DEFAULT_INDEXING_SETTINGS = {
+    "indexing_method": "structured",
+    "chunk_size": 500,
+    "chunk_overlap": 50,
+    "embedding_model_id": None,
+    "tokenizer_mode": "cjk",
+    "custom_terms": [],
+    "synonym_map": {},
+}
+
+DEFAULT_RETRIEVAL_SETTINGS = {
+    "retrieval_method": "hybrid",
+    "top_k": 5,
+    "score_threshold": 0.0,
+    "vector_top_k": 40,
+    "keyword_top_k": 40,
+    "fusion_algorithm": "rrf",
+    "rrf_k": 60,
+    "vector_weight": 0.65,
+    "keyword_weight": 0.35,
+    "max_candidates": 100,
+    "enable_rerank": False,
+    "rerank_model_id": None,
+    "query_rewrite": True,
+}
+
+SIMHASH_MAX_DISTANCE = 8
+SIMILARITY_LIMIT = 5
+CANDIDATE_SCAN_LIMIT = 200
+SEARCH_TERMS_VERSION = "chunk-cjk-v1"
+INDEX_JOB_MAX_RETRIES = 5
+INDEX_JOB_POLL_SECONDS = 2.0
+RERANK_POOL_MULTIPLIER = 4
+RERANK_MAX_CANDIDATES = 24
+RERANK_MAX_TITLE_CHARS = 180
+RERANK_MAX_CONTENT_CHARS = 1200
+RERANK_MAX_RESPONSE_TOKENS = 1600
+
+
+class DocumentService:
+    """文档业务逻辑服务"""
+
+    def __init__(
+        self,
+        repository: DocumentRepository,
+        kb_repository: KnowledgeBaseRepository,
+        embedding_service: EmbeddingService,
+        vector_index: VectorIndex,
+        audit_logger: Optional[AuditLogger] = None,
+        quota_manager: Optional[QuotaManager] = None,
+    ):
+        """
+        初始化服务
+
+        Args:
+            repository: 文档数据库仓库
+            kb_repository: 知识库数据库仓库
+            embedding_service: 向量嵌入服务
+            vector_index: 向量索引后端
+            audit_logger: 审计日志服务（可选）
+            quota_manager: 配额管理服务（可选）
+        """
+        self.repository = repository
+        self.kb_repository = kb_repository
+        self.embedding_service = embedding_service
+        self.vector_index = vector_index
+        self.audit_logger = audit_logger
+        self.quota_manager = quota_manager
+        self.url_fetcher = URLFetcher()
+        self._app_config = AppConfig.from_env()
+        self._embedding_service_cache: Dict[str, EmbeddingService] = {}
+        self._rerank_runtime_cache: Dict[str, Any] = {}
+        self._index_worker_task: Optional[asyncio.Task] = None
+        self._index_worker_stop = asyncio.Event()
+
+    async def _get_kb_metadata(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        knowledge_base_id: Optional[str],
+    ) -> Dict[str, Any]:
+        if not knowledge_base_id:
+            return {}
+
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=knowledge_base_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            return {}
+
+        return kb.metadata or {}
+
+    def _merge_settings(self, metadata: Dict[str, Any], key: str, defaults: Dict[str, Any]) -> Dict[str, Any]:
+        settings = metadata.get(key) if isinstance(metadata.get(key), dict) else {}
+        merged = dict(defaults)
+        merged.update(settings or {})
+        return merged
+
+    async def _get_indexing_settings(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        knowledge_base_id: Optional[str],
+    ) -> Dict[str, Any]:
+        metadata = await self._get_kb_metadata(tenant_id, user_id, knowledge_base_id)
+        return self._merge_settings(metadata, "indexing_settings", DEFAULT_INDEXING_SETTINGS)
+
+    async def _get_retrieval_settings(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        knowledge_base_id: Optional[str],
+    ) -> Dict[str, Any]:
+        metadata = await self._get_kb_metadata(tenant_id, user_id, knowledge_base_id)
+        return self._merge_settings(metadata, "retrieval_settings", DEFAULT_RETRIEVAL_SETTINGS)
+
+    def _normalize_chunk_settings(self, chunk_size: int, chunk_overlap: int) -> tuple[int, int]:
+        if chunk_size <= 0:
+            chunk_size = DEFAULT_INDEXING_SETTINGS["chunk_size"]
+
+        if chunk_overlap < 0:
+            chunk_overlap = 0
+
+        if chunk_overlap >= chunk_size:
+            chunk_overlap = max(0, chunk_size - 1)
+
+        return chunk_size, chunk_overlap
+
+    def _chunk_text_with_offsets(self, text: str, chunk_size: int, chunk_overlap: int) -> List[Dict[str, Any]]:
+        chunk_size, chunk_overlap = self._normalize_chunk_settings(chunk_size, chunk_overlap)
+        if not text:
+            return []
+
+        chunks: List[Dict[str, Any]] = []
+        start = 0
+        text_length = len(text)
+        segment_index = 1
+
+        while start < text_length:
+            end = min(start + chunk_size, text_length)
+            chunk_content = text[start:end]
+            chunks.append(
+                {
+                    "segment_index": segment_index,
+                    "start_offset": start,
+                    "end_offset": end,
+                    "char_count": len(chunk_content),
+                    "content": chunk_content,
+                }
+            )
+            if end >= text_length:
+                break
+            start = max(0, end - chunk_overlap)
+            segment_index += 1
+
+        return chunks
+
+    def _chunk_text(self, text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+        return [segment["content"] for segment in self._chunk_text_with_offsets(text, chunk_size, chunk_overlap)]
+
+    def _normalize_indexing_method(self, method: Optional[str]) -> str:
+        normalized = str(method or DEFAULT_INDEXING_SETTINGS["indexing_method"]).strip().lower()
+        if normalized in {"structured", "paragraph", "chunk", "full"}:
+            return normalized
+        return DEFAULT_INDEXING_SETTINGS["indexing_method"]
+
+    def _build_segment_label(
+        self,
+        *,
+        section_title: Optional[str],
+        segment_type: str,
+        local_index: int,
+        total_parts: int = 1,
+        part_index: int = 1,
+    ) -> str:
+        if segment_type == "full":
+            return "全文"
+
+        base = section_title or "正文"
+        if segment_type == "paragraph":
+            label = f"{base} · 段落 {local_index}"
+        else:
+            label = f"{base} · 分块 {local_index}"
+
+        if total_parts > 1:
+            label = f"{label} ({part_index}/{total_parts})"
+        return label
+
+    def _make_segment(
+        self,
+        *,
+        segment_index: int,
+        start_offset: int,
+        end_offset: int,
+        content: str,
+        segment_type: str,
+        section_title: Optional[str] = None,
+        heading_level: Optional[int] = None,
+        citation_label: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "segment_index": segment_index,
+            "start_offset": start_offset,
+            "end_offset": end_offset,
+            "char_count": len(content),
+            "content": content,
+            "segment_type": segment_type,
+            "section_title": section_title,
+            "heading_level": heading_level,
+            "citation_label": citation_label,
+        }
+
+    def _iter_text_blocks_with_offsets(self, text: str) -> List[Dict[str, Any]]:
+        if not text:
+            return []
+
+        blocks: List[Dict[str, Any]] = []
+        for match in re.finditer(r"\S(?:.*?\S)?(?=(?:\n\s*\n)+|\Z)", text, flags=re.DOTALL):
+            content = match.group(0)
+            if not content.strip():
+                continue
+            blocks.append(
+                {
+                    "content": content,
+                    "start_offset": match.start(),
+                    "end_offset": match.end(),
+                }
+            )
+        return blocks
+
+    def _parse_heading_block(self, block_text: str) -> Optional[Dict[str, Any]]:
+        if not block_text:
+            return None
+
+        stripped = block_text.strip()
+        if not stripped:
+            return None
+
+        lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+        compact = " ".join(lines)
+        if len(lines) > 3 or len(compact) > 120:
+            return None
+
+        markdown_match = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", stripped)
+        if markdown_match:
+            return {
+                "title": markdown_match.group(2).strip(),
+                "heading_level": len(markdown_match.group(1)),
+            }
+
+        if re.match(r"^第[0-9一二三四五六七八九十百千]+[章节部分篇].*$", compact):
+            return {"title": compact, "heading_level": 2}
+
+        ordered_match = re.match(r"^([0-9]+(?:\.[0-9]+){0,4})\s*[、.．)）]\s*(.+)$", compact)
+        if ordered_match:
+            return {
+                "title": compact,
+                "heading_level": ordered_match.group(1).count(".") + 1,
+            }
+
+        if len(lines) == 1 and compact.endswith((":", "：")) and len(compact) <= 40:
+            return {
+                "title": compact[:-1].strip(),
+                "heading_level": 3,
+            }
+
+        return None
+
+    def _split_large_segment(
+        self,
+        *,
+        content: str,
+        start_offset: int,
+        chunk_size: int,
+        chunk_overlap: int,
+        next_segment_index: int,
+        section_title: Optional[str],
+        heading_level: Optional[int],
+        label_base_index: int,
+    ) -> List[Dict[str, Any]]:
+        sub_segments = self._chunk_text_with_offsets(content, chunk_size, chunk_overlap)
+        total_parts = len(sub_segments)
+        chunks: List[Dict[str, Any]] = []
+        for part_index, sub_segment in enumerate(sub_segments, start=1):
+            chunks.append(
+                self._make_segment(
+                    segment_index=next_segment_index + part_index - 1,
+                    start_offset=start_offset + int(sub_segment["start_offset"]),
+                    end_offset=start_offset + int(sub_segment["end_offset"]),
+                    content=sub_segment["content"],
+                    segment_type="chunk",
+                    section_title=section_title,
+                    heading_level=heading_level,
+                    citation_label=self._build_segment_label(
+                        section_title=section_title,
+                        segment_type="chunk",
+                        local_index=label_base_index,
+                        total_parts=total_parts,
+                        part_index=part_index,
+                    ),
+                )
+            )
+        return chunks
+
+    def _segment_text_with_offsets(
+        self,
+        title: str,
+        text: str,
+        indexing_settings: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        method = self._normalize_indexing_method(indexing_settings.get("indexing_method"))
+        chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
+        chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
+        chunk_size, chunk_overlap = self._normalize_chunk_settings(chunk_size, chunk_overlap)
+
+        if not text:
+            return []
+
+        if method == "full":
+            return [
+                self._make_segment(
+                    segment_index=1,
+                    start_offset=0,
+                    end_offset=len(text),
+                    content=text,
+                    segment_type="full",
+                    section_title=title.strip() or None,
+                    citation_label="全文",
+                )
+            ]
+
+        if method == "chunk":
+            return [
+                self._make_segment(
+                    segment_index=int(segment["segment_index"]),
+                    start_offset=int(segment["start_offset"]),
+                    end_offset=int(segment["end_offset"]),
+                    content=segment["content"],
+                    segment_type="chunk",
+                    section_title=title.strip() or None,
+                    citation_label=self._build_segment_label(
+                        section_title=title.strip() or None,
+                        segment_type="chunk",
+                        local_index=int(segment["segment_index"]),
+                    ),
+                )
+                for segment in self._chunk_text_with_offsets(text, chunk_size, chunk_overlap)
+            ]
+
+        blocks = self._iter_text_blocks_with_offsets(text)
+        if not blocks:
+            blocks = [{"content": text, "start_offset": 0, "end_offset": len(text)}]
+
+        segments: List[Dict[str, Any]] = []
+        next_segment_index = 1
+        paragraph_index = 0
+        section_title = title.strip() or None
+        heading_level: Optional[int] = None
+
+        for block in blocks:
+            block_content = block["content"].strip()
+            if not block_content:
+                continue
+
+            if method == "structured":
+                heading = self._parse_heading_block(block_content)
+                if heading:
+                    section_title = heading["title"]
+                    heading_level = heading["heading_level"]
+                    continue
+
+            paragraph_index += 1
+            if len(block_content) > chunk_size:
+                split_segments = self._split_large_segment(
+                    content=block_content,
+                    start_offset=int(block["start_offset"]) + block["content"].find(block_content),
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    next_segment_index=next_segment_index,
+                    section_title=section_title,
+                    heading_level=heading_level,
+                    label_base_index=paragraph_index,
+                )
+                segments.extend(split_segments)
+                next_segment_index += len(split_segments)
+                continue
+
+            block_start = int(block["start_offset"]) + block["content"].find(block_content)
+            segments.append(
+                self._make_segment(
+                    segment_index=next_segment_index,
+                    start_offset=block_start,
+                    end_offset=block_start + len(block_content),
+                    content=block_content,
+                    segment_type="paragraph",
+                    section_title=section_title,
+                    heading_level=heading_level,
+                    citation_label=self._build_segment_label(
+                        section_title=section_title,
+                        segment_type="paragraph",
+                        local_index=paragraph_index,
+                    ),
+                )
+            )
+            next_segment_index += 1
+
+        if segments:
+            return segments
+
+        return [
+            self._make_segment(
+                segment_index=1,
+                start_offset=0,
+                end_offset=len(text),
+                content=text,
+                segment_type="full",
+                section_title=title.strip() or None,
+                citation_label="全文",
+            )
+        ]
+
+    def _extract_custom_terms(
+        self,
+        text: str,
+        indexing_settings: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        if not text:
+            return []
+
+        terms = indexing_settings.get("custom_terms") if indexing_settings else []
+        if not isinstance(terms, list):
+            return []
+
+        normalized = self._normalize_text_for_ai_processing(text)
+        if not normalized:
+            return []
+
+        matched: List[str] = []
+        seen: set[str] = set()
+        for raw_term in terms:
+            term = str(raw_term or "").strip()
+            if not term or term in seen:
+                continue
+            if term in normalized:
+                seen.add(term)
+                matched.append(term)
+        return matched
+
+    def _extract_cjk_search_tokens(self, text: str) -> List[str]:
+        normalized = self._normalize_text_for_ai_processing(text)
+        if not normalized:
+            return []
+
+        tokens: List[str] = []
+        if jieba is not None:
+            for token in jieba.cut_for_search(normalized):
+                item = re.sub(r"\s+", "", token.strip())
+                if len(item) < 2 or not re.search(r"[\u4e00-\u9fff]", item):
+                    continue
+                if item in CHINESE_STOPWORDS:
+                    continue
+                tokens.append(item)
+        else:
+            for block in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+                max_window = min(4, len(block))
+                for size in range(2, max_window + 1):
+                    for start in range(0, len(block) - size + 1):
+                        item = block[start:start + size]
+                        if item in CHINESE_STOPWORDS:
+                            continue
+                        tokens.append(item)
+
+        return tokens
+
+    def _build_search_terms(
+        self,
+        title: str,
+        content: str,
+        keywords: Optional[List[str]] = None,
+    ) -> str:
+        normalized_title = self._normalize_text_for_ai_processing(title or "")
+        normalized_content = self._normalize_text_for_ai_processing(content or "")
+        combined_text = "\n".join(part for part in (normalized_title, normalized_content) if part)
+
+        weighted_tokens: List[str] = []
+        if normalized_title:
+            weighted_tokens.extend(self._extract_cjk_search_tokens(normalized_title))
+            weighted_tokens.extend(re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,30}", normalized_title))
+
+        weighted_tokens.extend(self._extract_cjk_search_tokens(combined_text))
+        weighted_tokens.extend(re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,30}", combined_text))
+
+        for item in keywords or []:
+            if isinstance(item, str) and item.strip():
+                weighted_tokens.append(item.strip())
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for token in weighted_tokens:
+            normalized_token = token.strip()
+            if not normalized_token:
+                continue
+
+            if re.search(r"[\u4e00-\u9fff]", normalized_token):
+                if len(normalized_token) < 2 or normalized_token in CHINESE_STOPWORDS:
+                    continue
+            else:
+                lower_token = normalized_token.lower()
+                if len(lower_token) < 2 or lower_token in ENGLISH_STOPWORDS:
+                    continue
+                normalized_token = lower_token
+
+            if normalized_token in seen:
+                continue
+            seen.add(normalized_token)
+            deduped.append(normalized_token)
+            if len(deduped) >= 256:
+                break
+
+        return " ".join(deduped)
+
+    def _build_keyword_query(self, query: str) -> str:
+        normalized = self._normalize_text_for_ai_processing(query)
+        if not normalized:
+            return ""
+
+        if not re.search(r"[\u4e00-\u9fff]", normalized):
+            return normalized
+
+        tokenized_terms = self._build_search_terms("", normalized).split()
+        if not tokenized_terms:
+            return normalized
+
+        return " OR ".join(tokenized_terms[:12])
+
+    def _extract_query_terms(self, query: str) -> List[str]:
+        normalized = self._normalize_text_for_ai_processing(query)
+        if not normalized:
+            return []
+
+        terms = self._build_search_terms("", normalized).split()
+        if terms:
+            return terms
+
+        return [term.strip().lower() for term in normalized.split() if term.strip()]
+
+    def _deserialize_model_config(self, value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+                return decoded if isinstance(decoded, dict) else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+        return {}
+
+    def _rewrite_query(
+        self,
+        query: str,
+        indexing_settings: Dict[str, Any],
+        enabled: bool,
+    ) -> str:
+        normalized = self._normalize_text_for_ai_processing(query)
+        if not enabled or not normalized:
+            return normalized or query
+
+        synonym_map = indexing_settings.get("synonym_map") or {}
+        if not isinstance(synonym_map, dict):
+            synonym_map = {}
+
+        expanded_terms: List[str] = []
+        seen: set[str] = set()
+        for term in self._extract_query_terms(normalized)[:12]:
+            key = term.strip()
+            if not key:
+                continue
+
+            for candidate in [key, key.lower()]:
+                if candidate not in seen:
+                    seen.add(candidate)
+                    expanded_terms.append(candidate)
+
+            for synonym in synonym_map.get(key, []) or synonym_map.get(key.lower(), []):
+                synonym_value = str(synonym or "").strip()
+                if not synonym_value or synonym_value in seen:
+                    continue
+                seen.add(synonym_value)
+                expanded_terms.append(synonym_value)
+
+        return " ".join(expanded_terms) if expanded_terms else normalized
+
+    def _normalize_text_for_ai_processing(self, text: str) -> str:
+        if not text:
+            return ""
+        text = text.replace("\u3000", " ")
+        text = re.sub(r"\r\n?", "\n", text)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _split_sentences(self, text: str) -> List[str]:
+        normalized = self._normalize_text_for_ai_processing(text)
+        if not normalized:
+            return []
+
+        sentences = re.findall(r"[^。！？!?；;\n]+[。！？!?；;.]?|[^\n]+", normalized)
+        cleaned: List[str] = []
+        for sentence in sentences:
+            item = sentence.strip(" -*\t")
+            if len(item) >= 8:
+                cleaned.append(item)
+        return cleaned
+
+    def _truncate_text(self, text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 1].rstrip() + "…"
+
+    def _generate_ai_summary(self, title: str, text: str, max_chars: int = 180) -> str:
+        sentences = self._split_sentences(text)
+        summary_parts: List[str] = []
+        current_length = 0
+
+        for sentence in sentences[:5]:
+            piece = sentence
+            extra = 1 if summary_parts else 0
+            if current_length + len(piece) + extra > max_chars and summary_parts:
+                break
+            summary_parts.append(piece)
+            current_length += len(piece) + extra
+            if current_length >= int(max_chars * 0.7):
+                break
+
+        if summary_parts:
+            return self._truncate_text(" ".join(summary_parts), max_chars)
+
+        title = (title or "").strip()
+        normalized = self._normalize_text_for_ai_processing(text)
+        fallback = normalized[:max_chars] if normalized else title
+        return self._truncate_text(fallback, max_chars)
+
+    def _extract_candidate_phrases(self, title: str, text: str) -> List[str]:
+        candidates: List[str] = []
+
+        title_clean = re.sub(r"[^\w\u4e00-\u9fff-]", "", (title or "").strip())
+        if 2 <= len(title_clean) <= 20:
+            candidates.extend([title_clean, title_clean])
+
+        for raw_line in self._normalize_text_for_ai_processing(text).splitlines():
+            line = raw_line.strip(" -*#\t")
+            line = re.sub(r"[^\w\u4e00-\u9fff-]", "", line)
+            if 2 <= len(line) <= 16:
+                candidates.append(line)
+
+        segments = re.split(r"[，。！？；：,.!?:;\n/()（）\[\]【】]+", text)
+        for segment in segments:
+            phrase = re.sub(r"[^\w\u4e00-\u9fff-]", "", segment.strip())
+            if 2 <= len(phrase) <= 12:
+                candidates.append(phrase)
+
+        return candidates
+
+    def _extract_keywords(self, title: str, text: str, limit: int = 8) -> List[str]:
+        counter: Counter[str] = Counter()
+
+        for phrase in self._extract_candidate_phrases(title, text):
+            if re.search(r"[\u4e00-\u9fff]", phrase):
+                if phrase in CHINESE_STOPWORDS:
+                    continue
+                counter[phrase] += 1
+            elif re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{2,30}", phrase):
+                lower_phrase = phrase.lower()
+                if lower_phrase in ENGLISH_STOPWORDS:
+                    continue
+                counter[phrase] += 1
+
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,30}", text):
+            lower_token = token.lower()
+            if lower_token not in ENGLISH_STOPWORDS:
+                counter[token] += 1
+
+        keywords: List[str] = []
+        for item, _count in counter.most_common(limit * 3):
+            if item not in keywords:
+                keywords.append(item)
+            if len(keywords) >= limit:
+                break
+
+        return keywords
+
+    def _detect_document_type(
+        self,
+        title: str,
+        text: str,
+        source: Optional[str],
+        source_type: SourceType,
+    ) -> str:
+        haystack = f"{title}\n{text[:2000]}\n{source or ''}".lower()
+
+        patterns = [
+            ("API 文档", ("api", "endpoint", "请求参数", "响应参数", "curl", "鉴权")),
+            ("FAQ", ("faq", "常见问题", "q:", "a:", "问题解答")),
+            ("操作指南", ("安装", "部署", "步骤", "使用说明", "快速开始", "教程")),
+            ("设计方案", ("架构", "设计", "方案", "流程图", "模块设计")),
+            ("报告分析", ("报告", "分析", "复盘", "总结", "洞察")),
+            ("规范制度", ("规范", "标准", "制度", "要求", "约定")),
+        ]
+
+        for label, markers in patterns:
+            if any(marker in haystack for marker in markers):
+                return label
+
+        source_value = (source or "").lower()
+        if source_type == SourceType.URL:
+            return "网页资料"
+        if source_value.endswith((".xlsx", ".csv", ".tsv")):
+            return "数据表"
+        if source_value.endswith((".ppt", ".pptx")):
+            return "演示材料"
+        if source_value.endswith((".pdf", ".doc", ".docx")):
+            return "正式文档"
+        if source_value.endswith((".md", ".txt", ".log")):
+            return "文本资料"
+
+        return "综合文本"
+
+    def _build_simhash(self, values: List[str], bits: int = 64) -> str:
+        if not values:
+            return ""
+
+        vector = [0] * bits
+        for value in values:
+            digest = hashlib.sha1(value.encode("utf-8")).hexdigest()
+            hashed = int(digest[:16], 16)
+            weight = 2 if len(value) >= 4 else 1
+            for bit_index in range(bits):
+                bitmask = 1 << bit_index
+                vector[bit_index] += weight if hashed & bitmask else -weight
+
+        signature = 0
+        for bit_index, score in enumerate(vector):
+            if score >= 0:
+                signature |= 1 << bit_index
+
+        return f"{signature:016x}"
+
+    def _generate_faq(
+        self,
+        summary: str,
+        keywords: List[str],
+        document_type: str,
+        text: str,
+    ) -> List[Dict[str, str]]:
+        faq: List[Dict[str, str]] = []
+        sentences = self._split_sentences(text)
+
+        if summary:
+            faq.append({
+                "question": "这份文档主要讲什么？",
+                "answer": summary,
+            })
+
+        if keywords:
+            faq.append({
+                "question": "文档涉及哪些关键主题？",
+                "answer": "、".join(keywords[:5]),
+            })
+
+        if document_type:
+            faq.append({
+                "question": "这份文档属于什么类型？",
+                "answer": f"这是一份{document_type}。",
+            })
+
+        if sentences:
+            faq.append({
+                "question": "优先应该关注哪部分内容？",
+                "answer": self._truncate_text(sentences[0], 120),
+            })
+
+        return faq[:4]
+
+    def _build_ai_metadata(
+        self,
+        title: str,
+        content: str,
+        source: Optional[str],
+        source_type: SourceType,
+        base_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        normalized_content = self._normalize_text_for_ai_processing(content)
+        merged_metadata = dict(base_metadata or {})
+        for key in AI_METADATA_KEYS:
+            merged_metadata.pop(key, None)
+
+        summary = self._generate_ai_summary(title, normalized_content)
+        keywords = self._extract_keywords(title, normalized_content)
+        document_type = self._detect_document_type(title, normalized_content, source, source_type)
+        faq = self._generate_faq(summary, keywords, document_type, normalized_content)
+        content_hash = hashlib.sha1(normalized_content.encode("utf-8")).hexdigest() if normalized_content else ""
+        simhash = self._build_simhash(keywords or self._extract_candidate_phrases(title, normalized_content))
+
+        merged_metadata.update({
+            "ai_summary": summary,
+            "ai_keywords": keywords,
+            "ai_tags": keywords[:5],
+            "ai_faq": faq,
+            "ai_document_type": document_type,
+            "ai_processed_at": utc_now().isoformat(),
+            "ai_content_hash": content_hash,
+            "ai_simhash": simhash,
+            "ai_processing_version": "p1-v1",
+        })
+        return merged_metadata
+
+    def _normalize_duplicate_compare_value(self, value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return re.sub(r"\s+", "", value).strip().lower()
+
+    def _simhash_distance(self, left: str, right: str) -> Optional[int]:
+        if not left or not right:
+            return None
+
+        try:
+            left_value = int(left, 16)
+            right_value = int(right, 16)
+        except ValueError:
+            return None
+
+        return (left_value ^ right_value).bit_count()
+
+    def _build_duplicate_match(
+        self,
+        document: Document,
+        match_type: str,
+        reason: str,
+        similarity: Optional[float] = None,
+        distance: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        payload = {
+            "id": document.id,
+            "title": document.title,
+            "source": document.source,
+            "updated_at": document.updated_at.isoformat() if document.updated_at else None,
+            "created_at": document.created_at.isoformat() if document.created_at else None,
+            "match_type": match_type,
+            "reason": reason,
+        }
+        if similarity is not None:
+            payload["similarity"] = round(similarity, 3)
+        if distance is not None:
+            payload["simhash_distance"] = distance
+        return payload
+
+    def _extract_duplicate_signature(
+        self,
+        document: Document,
+    ) -> tuple[str, str]:
+        metadata = dict(document.metadata or {})
+        content_hash = metadata.get("ai_content_hash")
+        simhash = metadata.get("ai_simhash")
+
+        if content_hash and simhash:
+            return str(content_hash), str(simhash)
+
+        try:
+            derived_metadata = self._build_ai_metadata(
+                title=document.title,
+                content=document.content,
+                source=document.source,
+                source_type=document.source_type,
+                base_metadata=metadata,
+            )
+            return (
+                str(derived_metadata.get("ai_content_hash") or ""),
+                str(derived_metadata.get("ai_simhash") or ""),
+            )
+        except Exception as exc:
+            logger.error(f"Failed to derive duplicate signature for document {document.id}: {exc}")
+            return "", ""
+
+    async def _ensure_no_duplicate_document(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        knowledge_base_id: str,
+        title: str,
+        content: str,
+        source: Optional[str],
+        source_type: SourceType,
+    ) -> None:
+        metadata = self._build_ai_metadata(
+            title=title,
+            content=content,
+            source=source,
+            source_type=source_type,
+        )
+        content_hash = str(metadata.get("ai_content_hash") or "")
+        simhash = str(metadata.get("ai_simhash") or "")
+        normalized_title = self._normalize_duplicate_compare_value(title)
+        normalized_source = self._normalize_duplicate_compare_value(source)
+
+        exact_matches = [
+            self._build_duplicate_match(
+                document=doc,
+                match_type="exact",
+                reason="same_content",
+                similarity=1.0,
+                distance=0,
+            )
+            for doc in await self.repository.find_exact_duplicate_documents(
+                tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
+                content_hash=content_hash,
+                content=content,
+                user_id=user_id,
+                limit=SIMILARITY_LIMIT,
+            )
+        ]
+
+        exact_match_ids = {item["id"] for item in exact_matches}
+        similar_matches: List[Dict[str, Any]] = []
+
+        for candidate in await self.repository.list_documents_for_duplicate_check(
+            tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=user_id,
+            limit=CANDIDATE_SCAN_LIMIT,
+        ):
+            if candidate.id in exact_match_ids:
+                continue
+
+            candidate_hash, candidate_simhash = self._extract_duplicate_signature(candidate)
+            if content_hash and candidate_hash and candidate_hash == content_hash:
+                exact_matches.append(
+                    self._build_duplicate_match(
+                        document=candidate,
+                        match_type="exact",
+                        reason="same_content_hash",
+                        similarity=1.0,
+                        distance=0,
+                    )
+                )
+                exact_match_ids.add(candidate.id)
+                continue
+
+            distance = self._simhash_distance(simhash, candidate_simhash)
+            if distance is None:
+                continue
+
+            similarity = 1 - (distance / 64)
+            candidate_title = self._normalize_duplicate_compare_value(candidate.title)
+            candidate_source = self._normalize_duplicate_compare_value(candidate.source)
+            same_name = normalized_title and normalized_title == candidate_title
+            same_source = normalized_source and normalized_source == candidate_source
+
+            if distance > SIMHASH_MAX_DISTANCE and not ((same_name or same_source) and similarity >= 0.8):
+                continue
+
+            reason = "similar_content"
+            if same_name and same_source:
+                reason = "same_name_and_source"
+            elif same_name:
+                reason = "same_name_similar_content"
+            elif same_source:
+                reason = "same_source_similar_content"
+
+            similar_matches.append(
+                self._build_duplicate_match(
+                    document=candidate,
+                    match_type="similar",
+                    reason=reason,
+                    similarity=similarity,
+                    distance=distance,
+                )
+            )
+
+        unique_exact_matches = list({item["id"]: item for item in exact_matches}.values())
+        similar_matches.sort(
+            key=lambda item: (
+                item.get("similarity", 0.0),
+                item.get("updated_at") or "",
+            ),
+            reverse=True,
+        )
+        unique_similar_matches = []
+        seen_similar_ids = set()
+        for item in similar_matches:
+            if item["id"] in seen_similar_ids or item["id"] in exact_match_ids:
+                continue
+            seen_similar_ids.add(item["id"])
+            unique_similar_matches.append(item)
+            if len(unique_similar_matches) >= SIMILARITY_LIMIT:
+                break
+
+        if unique_exact_matches or unique_similar_matches:
+            raise DuplicateDocumentError({
+                "code": "duplicate_document_detected",
+                "message": "发现重复或高相似文档，请确认是否继续上传。",
+                "duplicate_check": {
+                    "exact_matches": unique_exact_matches[:SIMILARITY_LIMIT],
+                    "similar_matches": unique_similar_matches,
+                    "can_force_upload": True,
+                },
+            })
+
+    def _average_embeddings(self, embeddings: List[List[float]]) -> List[float]:
+        if not embeddings:
+            return []
+        length = len(embeddings[0])
+        sums = [0.0] * length
+        for emb in embeddings:
+            for idx, value in enumerate(emb):
+                sums[idx] += value
+        return [value / len(embeddings) for value in sums]
+
+    async def _get_embedding_service_for_model(
+        self,
+        tenant_id: str,
+        model_id: Optional[str],
+    ) -> Optional[EmbeddingService]:
+        if not model_id:
+            return None
+
+        if model_id in self._embedding_service_cache:
+            return self._embedding_service_cache[model_id]
+
+        query = """
+            SELECT provider, model_id, api_base, api_key_encrypted
+            FROM llm_models
+            WHERE id = $1
+              AND model_type = 'embedding'
+              AND (tenant_id = $2 OR tenant_id IS NULL)
+              AND enabled = true
+        """
+
+        try:
+            model_uuid = UUID(model_id)
+        except ValueError:
+            logger.warning(f"Invalid embedding model id: {model_id}")
+            return None
+
+        async with self.repository.db_pool.acquire() as conn:
+            row = await conn.fetchrow(query, model_uuid, tenant_id)
+
+        if not row:
+            return None
+
+        provider = row['provider']
+        model_name = row['model_id']
+        api_base = row['api_base']
+        api_key = row['api_key_encrypted']
+
+        service: Optional[EmbeddingService] = None
+
+        try:
+            if provider == "openai":
+                if not api_key:
+                    raise ValueError("Missing API key for OpenAI embedding model")
+                service = OpenAIEmbedding(
+                    api_key=api_key,
+                    model_name=model_name,
+                    api_base=api_base,
+                )
+            elif provider == "jina":
+                if not api_key:
+                    raise ValueError("Missing API key for Jina embedding model")
+                service = JinaEmbedding(
+                    api_key=api_key,
+                    model_name=model_name,
+                    api_base=api_base,
+                )
+            elif provider == "local":
+                service = SentenceTransformerEmbedding(
+                    model_name=model_name,
+                    device=self._app_config.embedding.device,
+                    cache_folder=self._app_config.embedding.cache_folder,
+                )
+            else:
+                logger.warning(f"Unsupported embedding provider: {provider}")
+                return None
+        except Exception as exc:
+            logger.error(f"Failed to initialize embedding model {model_id}: {exc}")
+            return None
+
+        if service:
+            self._embedding_service_cache[model_id] = service
+        return service
+
+    async def _select_embedding_service(
+        self,
+        tenant_id: str,
+        model_id: Optional[str],
+    ) -> EmbeddingService:
+        service = await self._get_embedding_service_for_model(tenant_id, model_id)
+        return service or self.embedding_service
+
+    async def _resolve_embedding_runtime(
+        self,
+        tenant_id: str,
+        model_id: Optional[str],
+    ) -> tuple[EmbeddingService, str]:
+        service = await self._get_embedding_service_for_model(tenant_id, model_id)
+        if service is not None and model_id:
+            return service, f"model:{model_id}"
+        default_service = service or self.embedding_service
+        return default_service, f"default:{default_service.get_model_name()}"
+
+    def _get_embedding_dimension(self, embedding: Optional[List[float]]) -> Optional[int]:
+        return len(embedding) if embedding else None
+
+    def _resolve_vector_dimension(
+        self,
+        document: Document,
+        chunk_payloads: List[Dict[str, Any]],
+    ) -> Optional[int]:
+        dimension = document.embedding_dimension
+        if dimension is not None:
+            return dimension
+
+        for chunk in chunk_payloads:
+            chunk_embedding = chunk.get("embedding")
+            if chunk_embedding:
+                return len(chunk_embedding)
+        return None
+
+    async def _sync_vector_document(
+        self,
+        *,
+        document: Document,
+        chunk_payloads: List[Dict[str, Any]],
+        embedding_model: Optional[str],
+        embedding_model_key: Optional[str],
+        previous_chunk_count: Optional[int] = None,
+    ) -> None:
+        _ = embedding_model
+        _ = previous_chunk_count
+        await self.vector_index.sync_document_chunks(
+            tenant_id=document.tenant_id,
+            knowledge_base_id=document.knowledge_base_id or "",
+            document_id=document.id,
+            user_id=document.user_id,
+            access_level=document.access_level.value,
+            source_type=document.source_type.value if document.source_type else None,
+            embedding_model_key=embedding_model_key,
+            embedding_dimension=self._resolve_vector_dimension(document, chunk_payloads),
+            chunks=chunk_payloads,
+        )
+
+    async def resolve_document_embedding_model_key(
+        self,
+        tenant_id: str,
+        document: Document,
+    ) -> Optional[str]:
+        metadata = dict(document.metadata or {})
+        stored_key = metadata.get("vector_embedding_model_key")
+        if isinstance(stored_key, str) and stored_key.strip():
+            return stored_key.strip()
+
+        embedding_model = (document.embedding_model or "").strip()
+        if not embedding_model:
+            return None
+
+        if document.knowledge_base_id:
+            indexing_settings = await self._get_indexing_settings(
+                tenant_id=tenant_id,
+                user_id=document.user_id,
+                knowledge_base_id=document.knowledge_base_id,
+            )
+            configured_model_id = indexing_settings.get("embedding_model_id")
+            if configured_model_id:
+                service = await self._get_embedding_service_for_model(tenant_id, configured_model_id)
+                if service is not None and service.get_model_name() == embedding_model:
+                    return f"model:{configured_model_id}"
+
+        query = """
+            SELECT id
+            FROM llm_models
+            WHERE model_type = 'embedding'
+              AND enabled = true
+              AND model_id = $1
+              AND (tenant_id = $2 OR tenant_id IS NULL)
+            ORDER BY CASE WHEN tenant_id = $2 THEN 0 ELSE 1 END, updated_at DESC
+            LIMIT 1
+        """
+        async with self.repository.db_pool.acquire() as conn:
+            row = await conn.fetchrow(query, embedding_model, tenant_id)
+
+        if row:
+            return f"model:{row['id']}"
+
+        if self.embedding_service.get_model_name() == embedding_model:
+            return f"default:{embedding_model}"
+
+        return None
+
+    async def _build_vector_chunk_payloads(
+        self,
+        *,
+        document: Document,
+        embedding_service: EmbeddingService,
+    ) -> List[Dict[str, Any]]:
+        stored_chunks = await self.repository.get_document_chunks_for_indexing(
+            document_id=document.id,
+            tenant_id=document.tenant_id,
+            user_id=document.user_id,
+        )
+        if not stored_chunks:
+            return []
+
+        texts = [chunk["content"] for chunk in stored_chunks]
+        if len(texts) == 1:
+            embeddings: List[Optional[List[float]]] = [await embedding_service.embed_text(texts[0])]
+        else:
+            embeddings = list(await embedding_service.embed_batch(texts))
+
+        payloads: List[Dict[str, Any]] = []
+        for index, chunk in enumerate(stored_chunks):
+            payload = dict(chunk)
+            payload["embedding"] = embeddings[index]
+            payloads.append(payload)
+        return payloads
+
+    async def _run_index_document(
+        self,
+        *,
+        document: Document,
+        target_version: Optional[int] = None,
+    ) -> None:
+        if target_version is not None and document.index_version != target_version:
+            logger.info(
+                "Skip stale index job for document %s: current version=%s target=%s",
+                document.id,
+                document.index_version,
+                target_version,
+            )
+            return
+
+        indexing_settings = await self._get_indexing_settings(
+            tenant_id=document.tenant_id,
+            user_id=document.user_id,
+            knowledge_base_id=document.knowledge_base_id,
+        )
+        embedding_service, embedding_model_key = await self._resolve_embedding_runtime(
+            tenant_id=document.tenant_id,
+            model_id=indexing_settings.get("embedding_model_id"),
+        )
+        chunk_payloads = await self._build_vector_chunk_payloads(
+            document=document,
+            embedding_service=embedding_service,
+        )
+
+        if chunk_payloads:
+            await self._sync_vector_document(
+                document=document,
+                chunk_payloads=chunk_payloads,
+                embedding_model=embedding_service.get_model_name(),
+                embedding_model_key=embedding_model_key,
+            )
+        else:
+            await self.vector_index.delete_document(document_id=document.id, embedding_dimension=None)
+
+        metadata = dict(document.metadata or {})
+        metadata["vector_backend"] = "qdrant"
+        metadata["search_terms_version"] = SEARCH_TERMS_VERSION
+        metadata["chunk_count"] = len(chunk_payloads)
+        if embedding_model_key:
+            metadata["vector_embedding_model_key"] = embedding_model_key
+        else:
+            metadata.pop("vector_embedding_model_key", None)
+
+        await self.repository.update_document(
+            document_id=document.id,
+            tenant_id=document.tenant_id,
+            user_id=document.user_id,
+            metadata=metadata,
+            embedding_model=embedding_service.get_model_name(),
+            embedding_model_key=embedding_model_key,
+            embedding_dimension=embedding_service.get_embedding_dimension(),
+        )
+        await self.repository.update_document_index_state(
+            document_id=document.id,
+            index_status="ready",
+            indexed=bool(chunk_payloads),
+            indexed_at=utc_now() if chunk_payloads else None,
+            last_index_error=None,
+        )
+
+    async def start_index_worker(self) -> None:
+        if self._index_worker_task and not self._index_worker_task.done():
+            return
+
+        self._index_worker_stop = asyncio.Event()
+        self._index_worker_task = asyncio.create_task(
+            self._index_worker_loop(),
+            name="document-index-worker",
+        )
+
+    async def stop_index_worker(self) -> None:
+        if not self._index_worker_task:
+            return
+
+        self._index_worker_stop.set()
+        try:
+            await asyncio.wait_for(self._index_worker_task, timeout=30)
+        except asyncio.TimeoutError:
+            self._index_worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._index_worker_task
+        self._index_worker_task = None
+
+    async def _index_worker_loop(self) -> None:
+        while not self._index_worker_stop.is_set():
+            try:
+                jobs = await self.repository.claim_index_jobs(limit=4)
+                if not jobs:
+                    try:
+                        await asyncio.wait_for(
+                            self._index_worker_stop.wait(),
+                            timeout=INDEX_JOB_POLL_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    break
+
+                for job in jobs:
+                    await self._process_index_job(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Document index worker loop failed")
+                try:
+                    await asyncio.wait_for(
+                        self._index_worker_stop.wait(),
+                        timeout=INDEX_JOB_POLL_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+    async def _process_index_job(self, job: Dict[str, Any]) -> None:
+        job_id = job["id"]
+        job_type = str(job.get("job_type") or "index")
+        document = await self.repository.get_document_for_indexing(job["document_id"])
+
+        if job_type != "index":
+            logger.warning("Unsupported index job type %s for job %s", job_type, job_id)
+            await self.repository.mark_index_job_completed(job_id)
+            return
+
+        if document is None:
+            await self.repository.mark_index_job_completed(job_id)
+            return
+
+        target_version = job.get("target_version")
+        if target_version is not None and document.index_version != target_version:
+            logger.info(
+                "Skip stale queued index job %s for document %s: current version=%s target=%s",
+                job_id,
+                document.id,
+                document.index_version,
+                target_version,
+            )
+            await self.repository.mark_index_job_completed(job_id)
+            return
+
+        try:
+            await self.repository.update_document_index_state(
+                document_id=document.id,
+                index_status="running",
+                indexed=False,
+                indexed_at=None,
+                last_index_error=None,
+            )
+            await self._run_index_document(
+                document=document,
+                target_version=target_version,
+            )
+            await self.repository.mark_index_job_completed(job_id)
+        except Exception as exc:
+            error_message = str(exc) or exc.__class__.__name__
+            logger.exception("Failed to process index job %s for document %s", job_id, document.id)
+
+            if int(job.get("attempts") or 0) >= INDEX_JOB_MAX_RETRIES:
+                await self.repository.mark_index_job_failed(job_id, error_message)
+                await self.repository.update_document_index_state(
+                    document_id=document.id,
+                    index_status="failed",
+                    indexed=False,
+                    indexed_at=None,
+                    last_index_error=error_message,
+                )
+            else:
+                await self.repository.mark_index_job_retry(
+                    job_id,
+                    error_message,
+                    delay_seconds=min(300, 15 * int(job.get("attempts") or 1)),
+                )
+                await self.repository.update_document_index_state(
+                    document_id=document.id,
+                    index_status="pending",
+                    indexed=False,
+                    indexed_at=None,
+                    last_index_error=error_message,
+                )
+
+    async def _fetch_documents_for_hits(
+        self,
+        *,
+        tenant_id: str,
+        user_id: Optional[str],
+        hits: List[VectorSearchHit],
+    ) -> List[tuple[Document, float]]:
+        ordered_ids: List[str] = []
+        for hit in hits:
+            if hit.document_id and hit.document_id not in ordered_ids:
+                ordered_ids.append(hit.document_id)
+
+        if not ordered_ids:
+            return []
+
+        document_map = await self.repository.get_documents_by_ids(
+            document_ids=ordered_ids,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        results: List[tuple[Document, float]] = []
+        for hit in hits:
+            document = document_map.get(hit.document_id)
+            if document is not None:
+                results.append((document, hit.score))
+        return results
+
+    async def _build_embedding(
+        self,
+        title: str,
+        content: str,
+        embedding_service: EmbeddingService,
+        indexing_settings: Dict[str, Any],
+    ) -> List[float]:
+        method = self._normalize_indexing_method(indexing_settings.get("indexing_method"))
+        if method == "full":
+            return await embedding_service.embed_text(content)
+
+        segments = self._segment_text_with_offsets(title, content, indexing_settings)
+        chunks = [segment["content"] for segment in segments]
+
+        if len(chunks) == 1:
+            return await embedding_service.embed_text(chunks[0])
+
+        embeddings = await embedding_service.embed_batch(chunks)
+        return self._average_embeddings(embeddings)
+
+    async def _build_chunk_index_payloads(
+        self,
+        title: str,
+        content: str,
+        source: Optional[str],
+        source_type: SourceType,
+        indexing_settings: Dict[str, Any],
+        embedding_service: Optional[EmbeddingService] = None,
+        keywords: Optional[List[str]] = None,
+    ) -> tuple[List[Dict[str, Any]], Optional[List[float]], Optional[str]]:
+        chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
+        chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
+        method = self._normalize_indexing_method(indexing_settings.get("indexing_method"))
+        segments = self._segment_text_with_offsets(title, content, indexing_settings)
+        custom_terms = self._extract_custom_terms(
+            "\n".join(part for part in (title or "", content or "") if part),
+            indexing_settings,
+        )
+
+        if not segments:
+            segments = [
+                self._make_segment(
+                    segment_index=1,
+                    start_offset=0,
+                    end_offset=len(content or ""),
+                    content=content or "",
+                    segment_type="full",
+                    section_title=title or None,
+                    citation_label="全文",
+                )
+            ]
+
+        segment_texts = []
+        for segment in segments:
+            embedding_parts = [title.strip()]
+            if segment.get("section_title") and segment["section_title"] != title.strip():
+                embedding_parts.append(str(segment["section_title"]).strip())
+            embedding_parts.append(segment["content"])
+            segment_texts.append("\n".join(part for part in embedding_parts if part))
+        embeddings: List[Optional[List[float]]] = [None] * len(segments)
+        embedding_model: Optional[str] = None
+        aggregate_embedding: Optional[List[float]] = None
+
+        if embedding_service is not None and segment_texts:
+            if len(segment_texts) == 1:
+                embedding_values = [await embedding_service.embed_text(segment_texts[0])]
+            else:
+                embedding_values = await embedding_service.embed_batch(segment_texts)
+            embeddings = list(embedding_values)
+            embedding_model = embedding_service.get_model_name()
+            aggregate_embedding = embedding_values[0] if len(embedding_values) == 1 else self._average_embeddings(embedding_values)
+
+        chunks: List[Dict[str, Any]] = []
+        for index, segment in enumerate(segments):
+            chunk_content = segment["content"]
+            chunk_keywords = self._extract_keywords(title, chunk_content, limit=6) + custom_terms
+            chunks.append(
+                {
+                    "chunk_index": segment["segment_index"],
+                    "start_offset": segment["start_offset"],
+                    "end_offset": segment["end_offset"],
+                    "char_count": segment["char_count"],
+                    "content": chunk_content,
+                    "embedding": embeddings[index],
+                    "chunk_hash": hashlib.sha256(chunk_content.encode("utf-8")).hexdigest(),
+                    "search_terms": self._build_search_terms(title, chunk_content, chunk_keywords + (keywords or [])[:4]),
+                    "metadata": {
+                        "source": source,
+                        "source_type": source_type.value,
+                        "chunking_method": method,
+                        "chunk_size": chunk_size,
+                        "chunk_overlap": chunk_overlap,
+                        "segment_index": segment["segment_index"],
+                        "segment_type": segment.get("segment_type"),
+                        "section_title": segment.get("section_title"),
+                        "heading_level": segment.get("heading_level"),
+                        "citation_label": segment.get("citation_label"),
+                    },
+                }
+            )
+
+        return chunks, aggregate_embedding, embedding_model
+
+    def _merge_results(
+        self,
+        vector_results: List[tuple[Document, float]],
+        keyword_results: List[tuple[Document, float]],
+        top_k: int,
+        fusion_algorithm: str = "rrf",
+        rrf_k: int = 60,
+        vector_weight: float = 0.65,
+        keyword_weight: float = 0.35,
+    ) -> List[tuple[Document, float]]:
+        if fusion_algorithm == "rrf":
+            doc_map: Dict[str, Document] = {}
+            combined_scores: Dict[str, float] = {}
+
+            for rank, (doc, _score) in enumerate(vector_results, start=1):
+                doc_map[doc.id] = doc
+                combined_scores[doc.id] = combined_scores.get(doc.id, 0.0) + (vector_weight / (rrf_k + rank))
+
+            for rank, (doc, _score) in enumerate(keyword_results, start=1):
+                doc_map[doc.id] = doc
+                combined_scores[doc.id] = combined_scores.get(doc.id, 0.0) + (keyword_weight / (rrf_k + rank))
+
+            if not combined_scores:
+                return []
+
+            max_score = max(combined_scores.values()) or 1.0
+            merged = [
+                (doc_map[doc_id], min(score / max_score, 1.0))
+                for doc_id, score in combined_scores.items()
+            ]
+            merged.sort(key=lambda item: item[1], reverse=True)
+            return merged[:top_k]
+
+        combined: Dict[str, tuple[Document, float]] = {}
+
+        for doc, score in vector_results:
+            combined[doc.id] = (doc, score)
+
+        for doc, score in keyword_results:
+            if doc.id in combined:
+                existing_doc, existing_score = combined[doc.id]
+                combined_score = max(existing_score, score * 0.8)
+                combined[doc.id] = (existing_doc, combined_score)
+            else:
+                combined[doc.id] = (doc, score * 0.8)
+
+        merged = list(combined.values())
+        merged.sort(key=lambda item: item[1], reverse=True)
+        return merged[:top_k]
+
+    async def _get_model_row(
+        self,
+        tenant_id: str,
+        selector: Optional[str],
+        model_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not selector:
+            return None
+
+        async with self.repository.db_pool.acquire() as conn:
+            try:
+                selector_uuid = UUID(selector)
+            except ValueError:
+                selector_uuid = None
+
+            if selector_uuid:
+                query = """
+                    SELECT id, name, display_name, provider, model_id, api_base,
+                           api_key_encrypted, config, enabled, is_default
+                    FROM llm_models
+                    WHERE model_type = $1
+                      AND enabled = true
+                      AND (tenant_id = $2 OR tenant_id IS NULL)
+                      AND (id = $3 OR model_id = $4 OR name = $4 OR display_name = $4)
+                    ORDER BY CASE WHEN tenant_id = $2 THEN 0 ELSE 1 END, is_default DESC, updated_at DESC
+                    LIMIT 1
+                """
+                row = await conn.fetchrow(query, model_type, tenant_id, selector_uuid, selector)
+            else:
+                query = """
+                    SELECT id, name, display_name, provider, model_id, api_base,
+                           api_key_encrypted, config, enabled, is_default
+                    FROM llm_models
+                    WHERE model_type = $1
+                      AND enabled = true
+                      AND (tenant_id = $2 OR tenant_id IS NULL)
+                      AND (model_id = $3 OR name = $3 OR display_name = $3)
+                    ORDER BY CASE WHEN tenant_id = $2 THEN 0 ELSE 1 END, is_default DESC, updated_at DESC
+                    LIMIT 1
+                """
+                row = await conn.fetchrow(query, model_type, tenant_id, selector)
+
+        if not row:
+            return None
+
+        return {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "display_name": row["display_name"],
+            "provider": row["provider"],
+            "model_id": row["model_id"],
+            "api_base": row["api_base"],
+            "api_key_encrypted": row["api_key_encrypted"],
+            "config": self._deserialize_model_config(row["config"]),
+        }
+
+    def _create_llm_instance(self, model_row: Dict[str, Any]) -> BaseLLM:
+        cache_key = model_row["id"]
+        cached = self._rerank_runtime_cache.get(cache_key)
+        if isinstance(cached, BaseLLM):
+            return cached
+
+        provider = (model_row.get("provider") or "").lower()
+        model_id = model_row.get("model_id") or "unknown-model"
+        api_key = model_row.get("api_key_encrypted")
+        api_base = model_row.get("api_base")
+        config = dict(model_row.get("config") or {})
+        llm_kwargs = dict(config)
+        if api_base:
+            llm_kwargs["api_base"] = api_base
+
+        if provider == "openai":
+            llm = OpenAILLM(model=model_id, api_key=api_key, **llm_kwargs)
+        elif provider == "deepseek":
+            llm = DeepseekLLM(model=model_id, api_key=api_key, **llm_kwargs)
+        elif provider == "jina":
+            llm = JinaLLM(model=model_id, api_key=api_key, **llm_kwargs)
+        elif provider in {"local", "mock"}:
+            llm = LocalLLM(model=model_id, **llm_kwargs)
+        else:
+            raise ValueError(f"Unsupported rerank LLM provider: {provider}")
+
+        self._rerank_runtime_cache[cache_key] = llm
+        return llm
+
+    async def _get_rerank_runtime(
+        self,
+        tenant_id: str,
+        selector: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        model_row = await self._get_model_row(tenant_id, selector, "rerank")
+        if not model_row:
+            return None
+
+        cache_key = model_row["id"]
+        cached = self._rerank_runtime_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+
+        provider = (model_row.get("provider") or "").lower()
+
+        if provider == "jina":
+            runtime = {
+                "kind": "jina",
+                "model_row": model_row,
+                "api_base": model_row.get("api_base") or "https://api.jina.ai/v1",
+                "api_key": model_row.get("api_key_encrypted"),
+                "model_id": model_row.get("model_id"),
+            }
+        else:
+            runtime = {
+                "kind": "llm",
+                "model_row": model_row,
+                "llm": self._create_llm_instance(model_row),
+            }
+
+        self._rerank_runtime_cache[cache_key] = runtime
+        return runtime
+
+    def _truncate_for_rerank(self, text: str, limit: int) -> str:
+        normalized = self._normalize_text_for_ai_processing(text)
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 1].rstrip() + "…"
+
+    def _build_rerank_candidate_payload(
+        self,
+        query: str,
+        results: List[tuple[Document, float]],
+    ) -> List[Dict[str, Any]]:
+        _ = query
+        payload: List[Dict[str, Any]] = []
+        for index, (doc, score) in enumerate(results):
+            payload.append(
+                {
+                    "index": index,
+                    "title": self._truncate_for_rerank(doc.title or "", RERANK_MAX_TITLE_CHARS),
+                    "content": self._truncate_for_rerank(doc.content or "", RERANK_MAX_CONTENT_CHARS),
+                    "source": self._truncate_for_rerank(doc.source or "", 200),
+                    "original_score": round(float(score), 4),
+                }
+            )
+        return payload
+
+    def _extract_json_payload(self, text: str) -> Optional[Any]:
+        if not text:
+            return None
+
+        candidates = [text.strip()]
+        fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+        candidates.extend(block.strip() for block in fenced_blocks if block.strip())
+
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start = text.find(opener)
+            end = text.rfind(closer)
+            if start != -1 and end != -1 and end > start:
+                candidates.append(text[start : end + 1].strip())
+
+        seen = set()
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                return json.loads(candidate)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return None
+
+    def _parse_rerank_scores(
+        self,
+        raw_response: str,
+        candidate_count: int,
+    ) -> Dict[int, float]:
+        payload = self._extract_json_payload(raw_response)
+        if payload is None:
+            return {}
+
+        if isinstance(payload, dict):
+            if isinstance(payload.get("results"), list):
+                entries = payload["results"]
+            elif isinstance(payload.get("scores"), list):
+                entries = payload["scores"]
+            else:
+                entries = [
+                    {"index": key, "score": value}
+                    for key, value in payload.items()
+                ]
+        elif isinstance(payload, list):
+            entries = payload
+        else:
+            return {}
+
+        scores: Dict[int, float] = {}
+        for entry in entries:
+            index_value: Any = None
+            score_value: Any = None
+
+            if isinstance(entry, dict):
+                index_value = entry.get("index", entry.get("id"))
+                score_value = entry.get("score", entry.get("relevance_score"))
+            elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                index_value, score_value = entry[0], entry[1]
+
+            try:
+                index = int(index_value)
+                score = float(score_value)
+            except (TypeError, ValueError):
+                continue
+
+            if 0 <= index < candidate_count:
+                scores[index] = max(0.0, min(score, 1.0))
+
+        return scores
+
+    def _finalize_reranked_results(
+        self,
+        results: List[tuple[Document, float]],
+        scores: Dict[int, float],
+    ) -> List[tuple[Document, float]]:
+        if not scores:
+            return results
+
+        rescored = []
+        for index, (doc, original_score) in enumerate(results):
+            rerank_score = scores.get(index)
+            display_score = rerank_score if rerank_score is not None else original_score
+            rescored.append(
+                {
+                    "doc": doc,
+                    "display_score": max(0.0, min(float(display_score), 1.0)),
+                    "rerank_score": rerank_score,
+                    "original_score": float(original_score),
+                }
+            )
+
+        rescored.sort(
+            key=lambda item: (
+                item["rerank_score"] is not None,
+                item["rerank_score"] if item["rerank_score"] is not None else -1.0,
+                item["original_score"],
+            ),
+            reverse=True,
+        )
+        return [(item["doc"], item["display_score"]) for item in rescored]
+
+    async def _apply_llm_rerank(
+        self,
+        llm: BaseLLM,
+        query: str,
+        results: List[tuple[Document, float]],
+    ) -> List[tuple[Document, float]]:
+        candidate_payload = self._build_rerank_candidate_payload(query, results)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a retrieval reranker. Score how well each candidate answers the query. "
+                    "Return strict JSON only in the form "
+                    "{\"results\":[{\"index\":0,\"score\":0.0}]}. "
+                    "Scores must be floats between 0 and 1. Use every candidate exactly once."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Query:\n{self._truncate_for_rerank(query, 800)}\n\n"
+                    f"Candidates:\n{json.dumps(candidate_payload, ensure_ascii=False)}"
+                ),
+            },
+        ]
+
+        raw_response = await llm.chat(
+            messages,
+            temperature=0,
+            max_tokens=RERANK_MAX_RESPONSE_TOKENS,
+        )
+        scores = self._parse_rerank_scores(raw_response, len(results))
+        if not scores:
+            raise ValueError("LLM rerank response did not contain usable scores")
+        return self._finalize_reranked_results(results, scores)
+
+    async def _apply_jina_rerank(
+        self,
+        runtime: Dict[str, Any],
+        query: str,
+        results: List[tuple[Document, float]],
+    ) -> List[tuple[Document, float]]:
+        api_key = runtime.get("api_key")
+        if not api_key:
+            raise ValueError("Missing API key for Jina rerank model")
+
+        try:
+            import httpx
+        except ImportError as exc:
+            raise RuntimeError("httpx library not installed") from exc
+
+        documents = [
+            (
+                f"Title: {self._truncate_for_rerank(doc.title or '', RERANK_MAX_TITLE_CHARS)}\n"
+                f"Source: {self._truncate_for_rerank(doc.source or '', 200)}\n"
+                f"Content: {self._truncate_for_rerank(doc.content or '', RERANK_MAX_CONTENT_CHARS)}"
+            )
+            for doc, _score in results
+        ]
+
+        payload = {
+            "model": runtime.get("model_id"),
+            "query": self._truncate_for_rerank(query, 800),
+            "documents": documents,
+            "top_n": len(documents),
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{runtime['api_base'].rstrip('/')}/rerank",
+                headers=headers,
+                json=payload,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = response.text.strip()
+                if detail:
+                    raise ValueError(f"Jina rerank API error: {detail}") from exc
+                raise
+            data = response.json()
+
+        entries = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError("Jina rerank response missing results list")
+
+        scores: Dict[int, float] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                index = int(entry.get("index"))
+                score = float(entry.get("relevance_score", entry.get("score")))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < len(results):
+                scores[index] = max(0.0, min(score, 1.0))
+
+        if not scores:
+            raise ValueError("Jina rerank response did not contain usable scores")
+        return self._finalize_reranked_results(results, scores)
+
+    async def _apply_rerank(
+        self,
+        results: List[tuple[Document, float]],
+        query: str,
+        tenant_id: str,
+        rerank_model_id: Optional[str],
+    ) -> List[tuple[Document, float]]:
+        if not results or not rerank_model_id:
+            return results
+
+        rerank_candidates = results[: min(len(results), RERANK_MAX_CANDIDATES)]
+        remaining_candidates = results[len(rerank_candidates):]
+        if not rerank_candidates:
+            return results
+
+        runtime = await self._get_rerank_runtime(tenant_id, rerank_model_id)
+        if not runtime:
+            logger.warning("Rerank model not found or unavailable: %s", rerank_model_id)
+            return results
+
+        model_row = runtime.get("model_row") or {}
+        model_name = model_row.get("display_name") or model_row.get("model_id") or rerank_model_id
+        logger.info(
+            "Applying rerank model %s (%s) to %d candidates",
+            model_name,
+            runtime.get("kind") or "unknown",
+            len(rerank_candidates),
+        )
+
+        try:
+            if runtime["kind"] == "jina":
+                reranked = await self._apply_jina_rerank(runtime, query, rerank_candidates)
+            else:
+                reranked = await self._apply_llm_rerank(runtime["llm"], query, rerank_candidates)
+        except Exception as exc:
+            logger.warning(
+                "Falling back to original retrieval order because rerank model %s failed: %s",
+                model_name,
+                exc,
+            )
+            return results
+
+        logger.info(
+            "Rerank completed with model %s: %d reranked candidates, %d total results",
+            model_name,
+            len(reranked),
+            len(reranked) + len(remaining_candidates),
+        )
+        return reranked + remaining_candidates
+
+    async def get_document_preview(
+        self,
+        document_id: str,
+        tenant_id: str,
+        user_id: Optional[str],
+        max_chars: int = 4000,
+    ) -> Optional[Dict[str, Any]]:
+        doc = await self.repository.get_document(document_id, tenant_id, user_id)
+        if not doc:
+            return None
+
+        total_chars = len(doc.content or "")
+        preview_chars = max(1, min(max_chars, 20000))
+        truncated = total_chars > preview_chars
+
+        return {
+            "document_id": doc.id,
+            "title": doc.title,
+            "source": doc.source,
+            "total_chars": total_chars,
+            "preview_chars": preview_chars,
+            "truncated": truncated,
+            "preview": (doc.content or "")[:preview_chars],
+            "indexed": doc.indexed,
+            "indexed_at": doc.indexed_at.isoformat() if doc.indexed_at else None,
+            "updated_at": doc.updated_at.isoformat(),
+        }
+
+    async def get_document_segments(
+        self,
+        document_id: str,
+        tenant_id: str,
+        user_id: Optional[str],
+        indexing_method: Optional[str] = None,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+        max_segments: int = 200,
+    ) -> Optional[Dict[str, Any]]:
+        doc = await self.repository.get_document(document_id, tenant_id, user_id)
+        if not doc:
+            return None
+
+        override_chunking = (
+            indexing_method is not None
+            or chunk_size is not None
+            or chunk_overlap is not None
+        )
+        if chunk_size is None or chunk_overlap is None:
+            indexing_settings = await self._get_indexing_settings(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                knowledge_base_id=doc.knowledge_base_id,
+            )
+            if chunk_size is None:
+                chunk_size = int(indexing_settings.get("chunk_size") or DEFAULT_INDEXING_SETTINGS["chunk_size"])
+            if chunk_overlap is None:
+                chunk_overlap = int(indexing_settings.get("chunk_overlap") or DEFAULT_INDEXING_SETTINGS["chunk_overlap"])
+        else:
+            indexing_settings = await self._get_indexing_settings(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                knowledge_base_id=doc.knowledge_base_id,
+            )
+
+        effective_indexing_method = self._normalize_indexing_method(
+            indexing_method if indexing_method is not None else indexing_settings.get("indexing_method")
+        )
+        safe_chunk_size, safe_chunk_overlap = self._normalize_chunk_settings(int(chunk_size), int(chunk_overlap))
+        segments: List[Dict[str, Any]] = []
+        if not override_chunking:
+            segments = await self.repository.list_document_chunks(document_id, tenant_id, user_id)
+        if not segments:
+            fallback_settings = dict(indexing_settings)
+            fallback_settings["indexing_method"] = effective_indexing_method
+            fallback_settings["chunk_size"] = safe_chunk_size
+            fallback_settings["chunk_overlap"] = safe_chunk_overlap
+            segments = self._segment_text_with_offsets(doc.title or "", doc.content or "", fallback_settings)
+
+        safe_max_segments = max(1, min(max_segments, 1000))
+        returned_segments = segments[:safe_max_segments]
+
+        return {
+            "document_id": doc.id,
+            "title": doc.title,
+            "indexing_method": effective_indexing_method,
+            "chunk_size": safe_chunk_size,
+            "chunk_overlap": safe_chunk_overlap,
+            "total_segments": len(segments),
+            "returned_segments": len(returned_segments),
+            "truncated": len(segments) > len(returned_segments),
+            "segments": returned_segments,
+        }
+
+    async def get_matched_segments(
+        self,
+        document: Document,
+        query: str,
+        tenant_id: str,
+        user_id: Optional[str],
+        max_segments: int = 3,
+    ) -> List[Dict[str, Any]]:
+        keyword_query = self._build_keyword_query(query)
+        direct_matches = await self.repository.search_document_chunks(
+            document_id=document.id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            query=keyword_query or query,
+            limit=max(1, min(max_segments, 10)),
+        )
+        if direct_matches:
+            return direct_matches
+
+        indexing_settings = await self._get_indexing_settings(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            knowledge_base_id=document.knowledge_base_id,
+        )
+        segments = await self.repository.list_document_chunks(document.id, tenant_id, user_id)
+        if not segments:
+            segments = self._segment_text_with_offsets(document.title or "", document.content or "", indexing_settings)
+
+        if not segments:
+            return []
+
+        terms = self._extract_query_terms(query)
+        scored_segments: List[Dict[str, Any]] = []
+
+        for segment in segments:
+            content_lower = segment["content"].lower()
+            occurrences = sum(content_lower.count(term) for term in terms) if terms else 0
+            if occurrences > 0:
+                segment_with_score = dict(segment)
+                segment_with_score["match_score"] = float(occurrences)
+                scored_segments.append(segment_with_score)
+
+        if not scored_segments:
+            fallback = dict(segments[0])
+            fallback["match_score"] = 0.0
+            return [fallback]
+
+        scored_segments.sort(key=lambda item: (item["match_score"], -item["segment_index"]), reverse=True)
+        return scored_segments[:max(1, min(max_segments, 10))]
+
+    async def create_document(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        request: CreateDocumentRequest,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Document:
+        """
+        创建文档
+
+        Args:
+            tenant_id: 租户ID
+            user_id: 用户ID
+            request: 创建请求
+            context: 请求上下文（用于审计日志）
+
+        Returns:
+            创建的文档对象
+        """
+        # 验证知识库存在且用户有权限访问
+        kb = await self.kb_repository.get_knowledge_base(
+            kb_id=request.knowledge_base_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+        if not kb:
+            raise ValueError(f"Knowledge base {request.knowledge_base_id} not found or access denied")
+
+        if not request.skip_duplicate_check:
+            try:
+                await self._ensure_no_duplicate_document(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    knowledge_base_id=request.knowledge_base_id,
+                    title=request.title,
+                    content=request.content,
+                    source=request.source,
+                    source_type=request.source_type,
+                )
+            except DuplicateDocumentError:
+                raise
+            except Exception as exc:
+                logger.error(f"Failed to run duplicate detection: {exc}")
+
+        # 检查配额
+        if self.quota_manager:
+            await self.quota_manager.check_document_quota(tenant_id)
+            await self.quota_manager.check_document_size(request.content)
+
+        chunk_payloads: List[Dict[str, Any]] = []
+        merged_metadata = dict(request.metadata or {})
+        indexing_settings = await self._get_indexing_settings(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            knowledge_base_id=request.knowledge_base_id,
+        )
+
+        try:
+            merged_metadata = self._build_ai_metadata(
+                title=request.title,
+                content=request.content,
+                source=request.source,
+                source_type=request.source_type,
+                base_metadata=merged_metadata,
+            )
+        except Exception as exc:
+            logger.error(f"Failed to generate AI metadata: {exc}")
+
+        chunk_payloads, _unused_embedding, _unused_embedding_model = await self._build_chunk_index_payloads(
+            title=request.title,
+            content=request.content,
+            source=request.source,
+            source_type=request.source_type,
+            indexing_settings=indexing_settings,
+            embedding_service=None,
+            keywords=list(merged_metadata.get("ai_keywords") or []) + self._extract_custom_terms(
+                "\n".join(part for part in (request.title, request.content) if part),
+                indexing_settings,
+            ),
+        )
+
+        merged_metadata["chunk_count"] = len(chunk_payloads)
+        merged_metadata["search_terms_version"] = SEARCH_TERMS_VERSION
+        merged_metadata["vector_backend"] = "qdrant"
+        document_search_terms = self._build_search_terms(
+            request.title,
+            request.content,
+            list(merged_metadata.get("ai_keywords") or []) + self._extract_custom_terms(
+                "\n".join(part for part in (request.title, request.content) if part),
+                indexing_settings,
+            ),
+        )
+
+        doc: Optional[Document] = None
+        async with self.repository.db_pool.acquire() as conn:
+            async with conn.transaction():
+                doc = await self.repository.create_document(
+                    tenant_id=tenant_id,
+                    user_id=user_id if request.access_level == AccessLevel.USER else None,
+                    knowledge_base_id=request.knowledge_base_id,
+                    access_level=request.access_level,
+                    title=request.title,
+                    content=request.content,
+                    source=request.source,
+                    source_type=request.source_type,
+                    embedding_model=None,
+                    embedding_model_key=None,
+                    embedding_dimension=None,
+                    indexed=False,
+                    index_status="pending",
+                    index_version=1,
+                    last_index_error=None,
+                    search_terms=document_search_terms,
+                    metadata=merged_metadata,
+                    conn=conn,
+                )
+                await self.repository.replace_document_chunks(
+                    document=doc,
+                    chunks=chunk_payloads,
+                    conn=conn,
+                )
+                if request.auto_index and doc is not None:
+                    await self.repository.enqueue_index_job(
+                        tenant_id=doc.tenant_id,
+                        knowledge_base_id=doc.knowledge_base_id,
+                        document_id=doc.id,
+                        job_type="index",
+                        target_version=doc.index_version,
+                        payload={"reason": "create"},
+                        conn=conn,
+                    )
+
+        if doc is None:
+            raise RuntimeError("Document creation failed")
+
+        # 审计日志
+        if self.audit_logger:
+            await self.audit_logger.log_document_create(
+                document_id=doc.id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title=request.title,
+                source_type=request.source_type.value,
+                ip_address=context.get("ip_address") if context else None,
+                user_agent=context.get("user_agent") if context else None,
+            )
+
+        # 更新配额追踪
+        if self.quota_manager:
+            await self.quota_manager.update_quota_tracking(tenant_id)
+
+        return doc
+
+    async def get_document(
+        self,
+        document_id: str,
+        tenant_id: str,
+        user_id: Optional[str],
+    ) -> Optional[Document]:
+        """获取文档"""
+        return await self.repository.get_document(document_id, tenant_id, user_id)
+
+    async def update_document(
+        self,
+        document_id: str,
+        tenant_id: str,
+        user_id: Optional[str],
+        request: UpdateDocumentRequest,
+    ) -> Optional[Document]:
+        """
+        更新文档
+
+        Args:
+            document_id: 文档ID
+            tenant_id: 租户ID
+            user_id: 用户ID
+            request: 更新请求
+
+        Returns:
+            更新后的文档，如果不存在或无权限则返回None
+        """
+        existing_doc = await self.repository.get_document(document_id, tenant_id, user_id)
+        if not existing_doc:
+            return None
+
+        if (
+            request.title is None
+            and request.content is None
+            and request.source is None
+            and request.metadata is None
+            and not request.re_index
+        ):
+            return existing_doc
+
+        effective_title = request.title if request.title is not None else existing_doc.title
+        effective_content = request.content if request.content is not None else existing_doc.content
+        effective_source = request.source if request.source is not None else existing_doc.source
+
+        should_refresh_index = bool(
+            request.re_index
+            or request.content is not None
+            or request.title is not None
+            or request.source is not None
+        )
+
+        metadata_to_update: Optional[Dict[str, Any]]
+        if request.metadata is not None or should_refresh_index:
+            base_metadata = dict(existing_doc.metadata or {})
+            if request.metadata is not None:
+                base_metadata.update(request.metadata)
+            try:
+                metadata_to_update = self._build_ai_metadata(
+                    title=effective_title,
+                    content=effective_content,
+                    source=effective_source,
+                    source_type=existing_doc.source_type,
+                    base_metadata=base_metadata,
+                )
+            except Exception as exc:
+                logger.error(f"Failed to refresh AI metadata: {exc}")
+                metadata_to_update = base_metadata
+        else:
+            metadata_to_update = None
+
+        chunk_payloads: Optional[List[Dict[str, Any]]] = None
+        search_terms_to_update: Optional[str] = None
+        next_index_version = existing_doc.index_version + 1 if should_refresh_index else existing_doc.index_version
+
+        if should_refresh_index:
+            indexing_settings = await self._get_indexing_settings(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                knowledge_base_id=existing_doc.knowledge_base_id,
+            )
+            custom_terms = self._extract_custom_terms(
+                "\n".join(part for part in (effective_title, effective_content) if part),
+                indexing_settings,
+            )
+            chunk_payloads, _unused_embedding, _unused_model = await self._build_chunk_index_payloads(
+                title=effective_title,
+                content=effective_content,
+                source=effective_source,
+                source_type=existing_doc.source_type,
+                indexing_settings=indexing_settings,
+                embedding_service=None,
+                keywords=list((metadata_to_update or {}).get("ai_keywords") or []) + custom_terms,
+            )
+            if metadata_to_update is None:
+                metadata_to_update = dict(existing_doc.metadata or {})
+            metadata_to_update["chunk_count"] = len(chunk_payloads)
+            metadata_to_update["search_terms_version"] = SEARCH_TERMS_VERSION
+            metadata_to_update["vector_backend"] = "qdrant"
+            metadata_to_update.pop("vector_embedding_model_key", None)
+            search_terms_to_update = self._build_search_terms(
+                effective_title,
+                effective_content,
+                list((metadata_to_update or {}).get("ai_keywords") or []) + custom_terms,
+            )
+
+        updated_doc: Optional[Document] = None
+        async with self.repository.db_pool.acquire() as conn:
+            async with conn.transaction():
+                updated_doc = await self.repository.update_document(
+                    document_id=document_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    title=request.title,
+                    content=request.content,
+                    source=request.source,
+                    metadata=metadata_to_update,
+                    indexed=False if should_refresh_index else None,
+                    index_status="pending" if should_refresh_index else None,
+                    index_version=next_index_version if should_refresh_index else None,
+                    search_terms=search_terms_to_update,
+                    conn=conn,
+                )
+
+                if updated_doc and chunk_payloads is not None:
+                    await self.repository.replace_document_chunks(
+                        document=updated_doc,
+                        chunks=chunk_payloads,
+                        conn=conn,
+                    )
+                    await self.repository.enqueue_index_job(
+                        tenant_id=updated_doc.tenant_id,
+                        knowledge_base_id=updated_doc.knowledge_base_id,
+                        document_id=updated_doc.id,
+                        job_type="index",
+                        target_version=next_index_version,
+                        payload={"reason": "update"},
+                        conn=conn,
+                    )
+
+        if updated_doc is None:
+            return None
+
+        if should_refresh_index:
+            await self.repository.update_document_index_state(
+                document_id=updated_doc.id,
+                index_status="pending",
+                indexed=False,
+                indexed_at=None,
+                last_index_error=None,
+            )
+            return await self.repository.get_document(updated_doc.id, tenant_id, user_id)
+
+        return updated_doc
+
+    async def delete_document(
+        self,
+        document_id: str,
+        tenant_id: str,
+        user_id: Optional[str],
+    ) -> bool:
+        """删除文档"""
+        existing_doc = await self.repository.get_document(document_id, tenant_id, user_id)
+        if not existing_doc:
+            return False
+
+        await self.vector_index.delete_document(
+            document_id=document_id,
+            embedding_dimension=None,
+        )
+
+        deleted = await self.repository.delete_document(document_id, tenant_id, user_id)
+        return deleted
+
+    async def list_documents(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        knowledge_base_id: Optional[str] = None,
+        access_level: Optional[AccessLevel] = None,
+        source_type: Optional[SourceType] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[List[Document], int]:
+        """列出文档（分页，可选筛选知识库）"""
+        return await self.repository.list_documents(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            access_level=access_level,
+            source_type=source_type,
+            page=page,
+            page_size=page_size,
+        )
+
+    async def search_documents(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        query: str,
+        top_k: int = 5,
+        knowledge_base_id: Optional[str] = None,
+        access_level: Optional[AccessLevel] = None,
+        source_type: Optional[SourceType] = None,
+        top_k_override: Optional[int] = None,
+        score_threshold_override: Optional[float] = None,
+        retrieval_method_override: Optional[str] = None,
+        enable_rerank_override: Optional[bool] = None,
+        rerank_model_id_override: Optional[str] = None,
+    ) -> List[tuple[Document, float]]:
+        """
+        搜索文档
+
+        Args:
+            tenant_id: 租户ID
+            user_id: 用户ID
+            query: 搜索查询
+            top_k: 返回结果数量
+            access_level: 筛选访问级别
+            source_type: 筛选来源类型
+
+        Returns:
+            [(文档, 相似度分数), ...]
+        """
+        retrieval_settings = dict(DEFAULT_RETRIEVAL_SETTINGS)
+        indexing_settings = dict(DEFAULT_INDEXING_SETTINGS)
+        if knowledge_base_id:
+            retrieval_settings.update(
+                await self._get_retrieval_settings(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    knowledge_base_id=knowledge_base_id,
+                )
+            )
+            indexing_settings.update(
+                await self._get_indexing_settings(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    knowledge_base_id=knowledge_base_id,
+                )
+            )
+
+        retrieval_method = retrieval_method_override or retrieval_settings.get("retrieval_method") or "hybrid"
+        if retrieval_method not in ("vector", "keyword", "hybrid"):
+            retrieval_method = "hybrid"
+
+        effective_top_k = int(top_k_override or retrieval_settings.get("top_k") or top_k)
+        score_threshold = float(
+            score_threshold_override
+            if score_threshold_override is not None
+            else retrieval_settings.get("score_threshold") or 0.0
+        )
+        enable_rerank = (
+            bool(enable_rerank_override)
+            if enable_rerank_override is not None
+            else bool(retrieval_settings.get("enable_rerank"))
+        )
+        rerank_model_id = rerank_model_id_override or retrieval_settings.get("rerank_model_id")
+        vector_top_k = max(effective_top_k, int(retrieval_settings.get("vector_top_k") or effective_top_k))
+        keyword_top_k = max(effective_top_k, int(retrieval_settings.get("keyword_top_k") or effective_top_k))
+        max_candidates = max(effective_top_k, int(retrieval_settings.get("max_candidates") or effective_top_k))
+        rerank_pool_size = min(
+            max_candidates,
+            max(effective_top_k, effective_top_k * RERANK_POOL_MULTIPLIER) if enable_rerank and rerank_model_id else effective_top_k,
+            RERANK_MAX_CANDIDATES,
+        )
+        fusion_algorithm = str(retrieval_settings.get("fusion_algorithm") or "rrf").lower()
+        rrf_k = int(retrieval_settings.get("rrf_k") or 60)
+        vector_weight = float(retrieval_settings.get("vector_weight") or 0.65)
+        keyword_weight = float(retrieval_settings.get("keyword_weight") or 0.35)
+        query_rewrite = bool(retrieval_settings.get("query_rewrite"))
+
+        rewritten_query = self._rewrite_query(query, indexing_settings, query_rewrite)
+        keyword_query = self._build_keyword_query(rewritten_query or query)
+
+        results: List[tuple[Document, float]] = []
+
+        if retrieval_method == "keyword":
+            results = await self.repository.search_by_keyword(
+                tenant_id=tenant_id,
+                query=keyword_query or rewritten_query or query,
+                user_id=user_id,
+                top_k=keyword_top_k,
+                knowledge_base_id=knowledge_base_id,
+                access_level=access_level,
+                source_type=source_type,
+            )
+            results = results[:rerank_pool_size]
+        else:
+            embedding_service, embedding_model_key = await self._resolve_embedding_runtime(
+                tenant_id=tenant_id,
+                model_id=indexing_settings.get("embedding_model_id"),
+            )
+            query_embedding = await embedding_service.embed_text(rewritten_query or query)
+            vector_hits = await self.vector_index.search(
+                tenant_id=tenant_id,
+                query_embedding=query_embedding,
+                user_id=user_id,
+                top_k=vector_top_k,
+                knowledge_base_id=knowledge_base_id,
+                access_level=access_level.value if access_level else None,
+                source_type=source_type.value if source_type else None,
+                score_threshold=score_threshold if score_threshold > 0 else None,
+                embedding_model_key=embedding_model_key,
+                embedding_dimension=embedding_service.get_embedding_dimension(),
+            )
+            vector_results = await self._fetch_documents_for_hits(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                hits=vector_hits[:max_candidates],
+            )
+
+            if retrieval_method == "vector":
+                results = vector_results[:rerank_pool_size]
+            else:
+                keyword_results = await self.repository.search_by_keyword(
+                    tenant_id=tenant_id,
+                    query=keyword_query or rewritten_query or query,
+                    user_id=user_id,
+                    top_k=keyword_top_k,
+                    knowledge_base_id=knowledge_base_id,
+                    access_level=access_level,
+                    source_type=source_type,
+                )
+                results = self._merge_results(
+                    vector_results[:max_candidates],
+                    keyword_results[:max_candidates],
+                    rerank_pool_size,
+                    fusion_algorithm=fusion_algorithm,
+                    rrf_k=rrf_k,
+                    vector_weight=vector_weight,
+                    keyword_weight=keyword_weight,
+                )
+
+        if score_threshold and score_threshold > 0:
+            results = [(doc, score) for doc, score in results if score >= score_threshold]
+
+        if enable_rerank and rerank_model_id:
+            results = await self._apply_rerank(results, query, tenant_id, rerank_model_id)
+
+        return results[:effective_top_k]
+
+    async def upload_file(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        file: UploadFile,
+        knowledge_base_id: str,
+        access_level: AccessLevel = AccessLevel.TENANT,
+        auto_index: bool = True,
+        skip_duplicate_check: bool = False,
+    ) -> Document:
+        """
+        上传文件并创建文档
+
+        Args:
+            tenant_id: 租户ID
+            user_id: 用户ID
+            file: 上传的文件
+            knowledge_base_id: 所属知识库ID
+            access_level: 访问级别
+            auto_index: 是否自动索引
+
+        Returns:
+            创建的文档对象
+
+        Raises:
+            ValueError: 文件类型不支持或解析失败
+        """
+        # 检查文件类型
+        if not FileParser.is_supported(file.filename):
+            raise ValueError(
+                f"Unsupported file type: {file.filename}. "
+                f"Supported: .txt, .text, .log, .md, .markdown, .pdf, .html, .htm, "
+                f".csv, .tsv, .json, .jsonl, .yaml, .yml, .xml, .rtf, "
+                f".docx, .pptx, .xlsx"
+            )
+
+        # 读取文件内容
+        file_content = await file.read()
+
+        # 解析文件
+        parser = FileParser.get_parser(file.filename)
+        try:
+            parsed_content = await parser.parse(file_content, file.filename)
+        except ImportError as e:
+            raise ValueError(str(e))
+
+        if not parsed_content.strip():
+            raise ValueError("File content is empty after parsing")
+
+        # 使用文件名作为标题（去除扩展名）
+        import os
+        title = os.path.splitext(file.filename)[0]
+
+        # 创建文档
+        request = CreateDocumentRequest(
+            knowledge_base_id=knowledge_base_id,
+            title=title,
+            content=parsed_content,
+            source=file.filename,
+            source_type=SourceType.FILE,
+            access_level=access_level,
+            auto_index=auto_index,
+            skip_duplicate_check=skip_duplicate_check,
+            metadata={
+                "file_size": len(file_content),
+                "file_type": file.content_type,
+            }
+        )
+
+        return await self.create_document(tenant_id, user_id, request)
+
+    async def create_from_url(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        url: str,
+        knowledge_base_id: str,
+        access_level: AccessLevel = AccessLevel.TENANT,
+        auto_index: bool = True,
+        skip_duplicate_check: bool = False,
+    ) -> Document:
+        """
+        从URL抓取内容并创建文档
+
+        Args:
+            tenant_id: 租户ID
+            user_id: 用户ID
+            url: 目标URL
+            knowledge_base_id: 所属知识库ID
+            access_level: 访问级别
+            auto_index: 是否自动索引
+
+        Returns:
+            创建的文档对象
+
+        Raises:
+            ValueError: URL抓取失败
+        """
+        # 抓取URL内容
+        content, title = await self.url_fetcher.fetch_text(url)
+
+        if not content.strip():
+            raise ValueError("No content extracted from URL")
+
+        # 创建文档
+        request = CreateDocumentRequest(
+            knowledge_base_id=knowledge_base_id,
+            title=title,
+            content=content,
+            source=url,
+            source_type=SourceType.URL,
+            access_level=access_level,
+            auto_index=auto_index,
+            skip_duplicate_check=skip_duplicate_check,
+            metadata={"url": url}
+        )
+
+        return await self.create_document(tenant_id, user_id, request)
+
+    async def batch_create_documents(
+        self,
+        tenant_id: str,
+        user_id: Optional[str],
+        requests: List[CreateDocumentRequest],
+    ) -> List[Dict[str, Any]]:
+        """
+        批量创建文档
+
+        Args:
+            tenant_id: 租户ID
+            user_id: 用户ID
+            requests: 创建请求列表
+
+        Returns:
+            结果列表，每项包含：{"index": int, "success": bool, "id": str, "error": str}
+        """
+        results = []
+
+        for idx, request in enumerate(requests):
+            try:
+                doc = await self.create_document(tenant_id, user_id, request)
+                results.append({
+                    "index": idx,
+                    "success": True,
+                    "id": doc.id,
+                    "error": None,
+                })
+            except Exception as e:
+                logger.error(f"Failed to create document at index {idx}: {e}")
+                results.append({
+                    "index": idx,
+                    "success": False,
+                    "id": None,
+                    "error": str(e),
+                })
+
+        return results

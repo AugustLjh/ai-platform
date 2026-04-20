@@ -112,9 +112,6 @@
             <label>
                 <input type="checkbox" id="useRAG"> Use RAG
             </label>
-            <label>
-                <input type="checkbox" id="useAgent"> Use Agent
-            </label>
         </div>
 
         <div id="chatBox" class="chat-box"></div>
@@ -136,7 +133,6 @@
         const sendBtn = document.getElementById('sendBtn');
         const connectBtn = document.getElementById('connectBtn');
         const useRAGCheckbox = document.getElementById('useRAG');
-        const useAgentCheckbox = document.getElementById('useAgent');
 
         let currentMessage = '';
 
@@ -211,7 +207,6 @@
                 message: message,
                 config: {
                     use_rag: useRAGCheckbox.checked,
-                    use_agent: useAgentCheckbox.checked,
                     tools: ['get_current_time', 'calculator']
                 }
             };

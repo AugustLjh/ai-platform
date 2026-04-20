@@ -1,0 +1,4 @@
+name: Project Context
+slug: engineering
+version: 1.0.0
+description: Read the current conversation history and mounted documents as project context for execution.

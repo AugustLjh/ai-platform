@@ -58,6 +58,15 @@ class QuotaManager:
 
         return True
 
+    async def check_knowledge_base_quota(self, tenant_id: str) -> bool:
+        """
+        Check if tenant can create more knowledge bases.
+
+        There is no dedicated knowledge base quota yet, so this is currently a
+        compatibility no-op used by the knowledge base service.
+        """
+        return True
+
     async def check_document_size(self, content: str) -> bool:
         """
         Check if document content size is within limits
@@ -150,10 +159,19 @@ class QuotaManager:
 
             # Update quotas table
             query = """
-                INSERT INTO quotas (tenant_id, quota_type, limit_value, current_value, period_start, period_end)
-                VALUES ($1, 'documents', $2, $3, NOW(), NOW() + INTERVAL '1 month')
+                INSERT INTO quotas (
+                    tenant_id,
+                    quota_type,
+                    limit_value,
+                    current_value,
+                    reset_period,
+                    period_start,
+                    period_end
+                )
+                VALUES ($1, 'documents', $2, $3, 'monthly', NOW(), NOW() + INTERVAL '1 month')
                 ON CONFLICT (tenant_id, quota_type)
                 DO UPDATE SET
+                    limit_value = $2,
                     current_value = $3,
                     updated_at = NOW()
             """

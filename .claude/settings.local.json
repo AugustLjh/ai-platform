@@ -1,7 +1,24 @@
 {
   "permissions": {
     "allow": [
-      "Bash(mkdir -p ai_runtime/api ai_runtime/core/prompt/templates ai_runtime/core/rag ai_runtime/core/llm ai_runtime/core/agent/tools ai_runtime/core/stream)"
+      "Bash(ls -la *.md *.txt)",
+      "Bash(wc -l *.md *.txt)",
+      "Bash(ls -la *.md)",
+      "Bash(ls -la \"D:\\\\project\\\\ai-platform\\\\frontend-vue\\\\src\\\\api\"\" 2>/dev/null || echo \"API directory not found \")",
+      "Bash(echo \"知识库架构重构完成！\n\n## 后端修改总结：\n\n### 1. 数据库层\n- ✅ 创建 knowledge_bases 表\n- ✅ documents 表添加 knowledge_base_id 外键\n- ✅ 自动创建默认知识库并迁移现有文档\n\n### 2. API 层\n- ✅ 新增知识库管理 API \\(/api/v1/knowledge-bases\\)\n- ✅ 文档 API 支持 knowledge_base_id 过滤\n- ✅ 聊天 API 支持 knowledge_base_ids 参数\n\n### 3. 服务层\n- ✅ Repository 层支持知识库过滤\n- ✅ Service 层支持知识库过滤\n- ✅ RAG 检索支持知识库过滤\n\n接下来需要更新前端...\")",
+      "Bash(cd /d D:projectai-platform)",
+      "Bash(find \"D:\\\\project\\\\ai-platform\\\\platform\" -name \"*.go\" -exec grep -l \"respondJSON\\\\|respondError\" {} ;)",
+      "Bash(find \"D:\\\\project\\\\ai-platform\\\\platform\\\\api\\\\http\" -name \"*.go\" -exec grep -l \"respondJSON\" {} ;)",
+      "Bash(find . -name \"*.py\" -type f -exec file {} ;)",
+      "Bash(grep -n \"CREATE OR REPLACE FUNCTION update_updated_at_column\" db/migrations/*.sql)",
+      "Bash(wc -l db/migrations/*.sql)",
+      "Bash(grep -n \"def search\" ai_runtime/core/services/*.py ai_runtime/core/repositories/*.py)",
+      "Bash(grep -n \"result.split\" platform/api/grpc/ai_client.go platform/service/*.go platform/api/http/*.go)",
+      "Bash(grep -n \"CheckOrigin.*return true\" platform/api/http/*.go)",
+      "Bash(grep -n \"insecure.NewCredentials\" platform/api/grpc/*.go)",
+      "Bash(find . -name \".gitattributes\" -type f -exec cat {} ;)",
+      "Bash(find . -name \"*.py\" -type f -exec dos2unix {} ;)",
+      "Bash(git add -A)"
     ]
   }
 }

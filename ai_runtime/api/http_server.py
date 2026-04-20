@@ -12,7 +12,12 @@ import json
 import logging
 
 from .chat_service import ChatServiceImpl
-from .knowledge_base import router as kb_router
+from .agents import router as agents_router
+from .documents import router as documents_router
+from .knowledge_bases import router as kb_router
+from .mcp import router as runtime_mcp_router
+from .models import router as models_router
+from .uploads import router as uploads_router
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +25,20 @@ logger = logging.getLogger(__name__)
 # Request/Response Models
 class ChatConfig(BaseModel):
     """Chat configuration"""
+    model: Optional[str] = Field(default=None, description="Requested model selector")
     use_rag: bool = Field(default=False, description="Enable RAG")
-    use_agent: bool = Field(default=False, description="Enable Agent")
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=2000, ge=1, le=8000)
+    knowledge_base_id: Optional[str] = Field(default=None, description="Knowledge base ID for RAG")
 
 
 class ChatRequest(BaseModel):
     """Chat request model"""
     session_id: str = Field(..., description="Session ID")
+    user_id: Optional[str] = Field(default=None, description="User ID")
+    tenant_id: Optional[str] = Field(default=None, description="Tenant ID")
     message: str = Field(..., min_length=1, description="User message")
+    metadata: Dict[str, str] = Field(default_factory=dict)
     config: ChatConfig = Field(default_factory=ChatConfig)
 
 
@@ -62,6 +71,42 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = None
 
 
+class InternalChatRequest:
+    """Internal request object for chat service"""
+    def __init__(
+        self,
+        session_id: str,
+        message: str,
+        config,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+    ):
+        self.session_id = session_id
+        self.message = message
+        self.config = config
+        self.user_id = user_id
+        self.tenant_id = tenant_id
+        self.metadata = metadata or {}
+
+
+class InternalChatConfig:
+    """Internal config object for chat service"""
+    def __init__(
+        self,
+        model: Optional[str],
+        use_rag: bool,
+        temperature: float,
+        max_tokens: int,
+        knowledge_base_id: Optional[str] = None,
+    ):
+        self.model = model
+        self.use_rag = use_rag
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.knowledge_base_id = knowledge_base_id
+
+
 def create_http_app() -> FastAPI:
     """Create and configure FastAPI application"""
 
@@ -85,8 +130,13 @@ def create_http_app() -> FastAPI:
     # Initialize chat service
     chat_service = ChatServiceImpl()
 
-    # Include knowledge base router
+    # Include routers
     app.include_router(kb_router)
+    app.include_router(documents_router)
+    app.include_router(models_router)
+    app.include_router(agents_router)
+    app.include_router(runtime_mcp_router)
+    app.include_router(uploads_router)
 
     @app.get("/", response_model=Dict[str, str])
     async def root():
@@ -122,16 +172,20 @@ def create_http_app() -> FastAPI:
             full_response = ""
 
             # Convert to internal request format
-            internal_request = type('Request', (), {
-                'session_id': request.session_id,
-                'message': request.message,
-                'config': type('Config', (), {
-                    'use_rag': request.config.use_rag,
-                    'use_agent': request.config.use_agent,
-                    'temperature': request.config.temperature,
-                    'max_tokens': request.config.max_tokens
-                })()
-            })()
+            internal_request = InternalChatRequest(
+                session_id=request.session_id,
+                message=request.message,
+                user_id=request.user_id,
+                tenant_id=request.tenant_id,
+                metadata=request.metadata,
+                config=InternalChatConfig(
+                    model=request.config.model,
+                    use_rag=request.config.use_rag,
+                    temperature=request.config.temperature,
+                    max_tokens=request.config.max_tokens,
+                    knowledge_base_id=request.config.knowledge_base_id
+                )
+            )
 
             # Collect all chunks
             async for chunk in chat_service.stream_chat(internal_request):
@@ -156,16 +210,20 @@ def create_http_app() -> FastAPI:
         async def event_generator():
             try:
                 # Convert to internal request format
-                internal_request = type('Request', (), {
-                    'session_id': request.session_id,
-                    'message': request.message,
-                    'config': type('Config', (), {
-                        'use_rag': request.config.use_rag,
-                        'use_agent': request.config.use_agent,
-                        'temperature': request.config.temperature,
-                        'max_tokens': request.config.max_tokens
-                    })()
-                })()
+                internal_request = InternalChatRequest(
+                    session_id=request.session_id,
+                    message=request.message,
+                    user_id=request.user_id,
+                    tenant_id=request.tenant_id,
+                    metadata=request.metadata,
+                    config=InternalChatConfig(
+                        model=request.config.model,
+                        use_rag=request.config.use_rag,
+                        temperature=request.config.temperature,
+                        max_tokens=request.config.max_tokens,
+                        knowledge_base_id=request.config.knowledge_base_id
+                    )
+                )
 
                 # Stream responses
                 async for chunk in chat_service.stream_chat(internal_request):
@@ -197,9 +255,17 @@ def create_http_app() -> FastAPI:
         """Get chat history for a session"""
         try:
             # Convert to internal request format
-            internal_request = type('Request', (), {
-                'session_id': session_id
-            })()
+            internal_request = InternalChatRequest(
+                session_id=session_id,
+                message="",
+                config=InternalChatConfig(
+                    model=None,
+                    use_rag=False,
+                    temperature=0.7,
+                    max_tokens=2000,
+                    knowledge_base_id=None
+                )
+            )
 
             history_data = await chat_service.get_chat_history(internal_request)
 

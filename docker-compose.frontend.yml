@@ -1,0 +1,21 @@
+# ============================================
+# 前端构建编排
+# 仅用于构建 Vue 静态资源并发布到 frontend-dist/
+# 启动站点请使用 docker-compose.infra.yml 中的 nginx
+# ============================================
+
+name: ai-platform-frontend
+
+services:
+  frontend-builder:
+    build:
+      context: ./frontend-vue
+      dockerfile: Dockerfile
+      target: builder
+      args:
+        FRONTEND_NODE_IMAGE: ${FRONTEND_NODE_IMAGE:-node:20-alpine}
+    image: ai-platform-frontend-builder
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./frontend-dist:/out

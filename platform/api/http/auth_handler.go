@@ -2,7 +2,9 @@ package http
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/ai-platform/platform/auth"
 	"github.com/ai-platform/platform/middleware"
@@ -23,14 +25,14 @@ func NewAuthHandler(authService *auth.AuthService) *AuthHandler {
 // HandleRegister handles user registration
 func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		respondError(w, "请求方法不允许", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Parse request
 	var req auth.RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, "Invalid request body", http.StatusBadRequest)
+		respondError(w, "请求数据格式错误", http.StatusBadRequest)
 		return
 	}
 
@@ -40,6 +42,14 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		statusCode := http.StatusInternalServerError
 		if err == auth.ErrUserAlreadyExists {
 			statusCode = http.StatusConflict
+		} else if err.Error() == "邮箱不能为空" ||
+			err.Error() == "邮箱格式不正确" ||
+			err.Error() == "密码不能为空" ||
+			err.Error() == "密码长度至少为8个字符" ||
+			err.Error() == "密码必须包含至少一个大写字母" ||
+			err.Error() == "密码必须包含至少一个小写字母" ||
+			err.Error() == "密码必须包含至少一个数字" {
+			statusCode = http.StatusBadRequest
 		}
 		respondError(w, err.Error(), statusCode)
 		return
@@ -52,14 +62,14 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 // HandleLogin handles user login
 func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		respondError(w, "请求方法不允许", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Parse request
 	var req auth.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, "Invalid request body", http.StatusBadRequest)
+		respondError(w, "请求数据格式错误", http.StatusBadRequest)
 		return
 	}
 
@@ -70,7 +80,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		if err == auth.ErrInvalidCredentials {
 			statusCode = http.StatusUnauthorized
 		}
-		respondError(w, "Invalid credentials", statusCode)
+		respondError(w, err.Error(), statusCode)
 		return
 	}
 
@@ -81,7 +91,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 // HandleRefresh handles token refresh
 func (h *AuthHandler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		respondError(w, "请求方法不允许", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -90,19 +100,19 @@ func (h *AuthHandler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, "Invalid request body", http.StatusBadRequest)
+		respondError(w, "请求数据格式错误", http.StatusBadRequest)
 		return
 	}
 
 	if req.RefreshToken == "" {
-		respondError(w, "refresh_token is required", http.StatusBadRequest)
+		respondError(w, "刷新令牌不能为空", http.StatusBadRequest)
 		return
 	}
 
 	// Refresh token
 	resp, err := h.authService.RefreshToken(req.RefreshToken)
 	if err != nil {
-		respondError(w, "Invalid refresh token", http.StatusUnauthorized)
+		respondError(w, "刷新令牌无效或已过期", http.StatusUnauthorized)
 		return
 	}
 
@@ -113,14 +123,14 @@ func (h *AuthHandler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 // HandleMe returns current user info
 func (h *AuthHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		respondError(w, "请求方法不允许", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Get user from context (set by auth middleware)
 	user, ok := middleware.GetUser(r.Context())
 	if !ok {
-		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		respondError(w, "未授权访问", http.StatusUnauthorized)
 		return
 	}
 
@@ -136,33 +146,28 @@ func (h *AuthHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
 // HandleLogout handles user logout (client-side token deletion in most cases)
 func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		respondError(w, "请求方法不允许", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// In a JWT system, logout is typically handled client-side by deleting the token
-	// For more sophisticated systems, you might want to:
-	// 1. Maintain a token blacklist
-	// 2. Store active sessions in Redis
-	// 3. Implement token revocation
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			respondError(w, "请求数据格式错误", http.StatusBadRequest)
+			return
+		}
+	}
+
+	accessToken := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if err := h.authService.Logout(accessToken, req.RefreshToken); err != nil {
+		respondError(w, "退出登录失败", http.StatusInternalServerError)
+		return
+	}
 
 	respondJSON(w, map[string]string{
-		"message": "Logout successful. Please delete your tokens.",
+		"message": "退出登录成功",
 	}, http.StatusOK)
-}
-
-// respondJSON sends a JSON response
-func respondJSON(w http.ResponseWriter, data interface{}, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-// respondError sends a JSON error response
-func respondError(w http.ResponseWriter, message string, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]string{
-		"error": message,
-	})
 }

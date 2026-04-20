@@ -14,8 +14,7 @@ curl -X POST http://localhost:8080/api/v1/chat \
       "model": "gpt-4",
       "temperature": 0.7,
       "max_tokens": 1000,
-      "use_rag": false,
-      "use_agent": false
+      "use_rag": false
     }
   }'
 
@@ -29,12 +28,11 @@ curl -X POST http://localhost:8080/api/v1/chat/sse \
     "config": {
       "model": "gpt-4",
       "temperature": 0.9,
-      "use_rag": false,
-      "use_agent": false
+      "use_rag": false
     }
   }'
 
-## Chat with Agent Tools
+## Chat with Tools
 curl -X POST http://localhost:8080/api/v1/chat \
   -H "Authorization: Bearer demo-token-12345" \
   -H "Content-Type: application/json" \
@@ -42,7 +40,6 @@ curl -X POST http://localhost:8080/api/v1/chat \
     "session_id": "session_003",
     "message": "What is the current time?",
     "config": {
-      "use_agent": true,
       "tools": ["get_current_time", "calculator"]
     }
   }'
@@ -55,7 +52,6 @@ curl -X POST http://localhost:8080/api/v1/chat \
     "session_id": "session_004",
     "message": "What do you know about our product documentation?",
     "config": {
-      "use_rag": true,
-      "use_agent": false
+      "use_rag": true
     }
   }'

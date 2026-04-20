@@ -1,0 +1,50 @@
+{
+  "type": "object",
+  "required": [
+    "answer",
+    "review_findings",
+    "test_gaps"
+  ],
+  "properties": {
+    "answer": {
+      "type": "string"
+    },
+    "review_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "title",
+          "severity",
+          "description"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "test_gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

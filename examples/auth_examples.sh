@@ -60,8 +60,7 @@ curl -s -X POST "$BASE_URL/api/v1/chat" \
     "session_id": "session_001",
     "message": "Hello, this is a test message with JWT auth!",
     "config": {
-      "use_rag": false,
-      "use_agent": false
+      "use_rag": false
     }
   }' | jq '.'
 echo ""

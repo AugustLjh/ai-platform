@@ -29,8 +29,9 @@ message ChatConfig {
   float temperature = 2;
   int32 max_tokens = 3;
   bool use_rag = 4;
-  bool use_agent = 5;
   repeated string tools = 6;
+  reserved 5;
+  reserved "use_agent";
 }
 
 // Chat response message (streaming)

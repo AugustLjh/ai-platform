@@ -1,698 +1,255 @@
-# AI Platform - Enterprise AI Application Platform
+# AI Platform
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)](https://golang.org/)
-[![Python Version](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python)](https://www.python.org/)
+English | [简体中文](./README_CN.md)
 
-A production-ready AI application platform with microservices architecture using Go (Platform Layer) and Python (AI Runtime), communicating via gRPC streaming.
+AI Platform is a full-stack application platform for chat, knowledge base workflows, and agent runtime orchestration.
 
-## 🌟 Key Features
+## Services
 
-### Platform Layer (Go)
-- ✅ **JWT Authentication** - Complete user registration/login system
-- ✅ **Multi-Tenancy** - Tenant isolation and management
-- ✅ **Rate Limiting** - Token bucket algorithm
-- ✅ **Content Security** - Request filtering and safety checks
-- ✅ **Cost Tracking** - Token usage metering and cost calculation
-- ✅ **Multi-Protocol** - HTTP/SSE/WebSocket support
-- ✅ **Database Integration** - PostgreSQL + Redis + Elasticsearch
+- `frontend-vue`: Vue 3 frontend
+- `platform`: Go API gateway, auth layer, session layer, and runtime proxy
+- `ai_runtime`: Python FastAPI + gRPC runtime for chat, knowledge base, models, and agent execution
 
-### AI Runtime (Python)
-- ✅ **Prompt Builder** - Template-based prompt management
-- ✅ **RAG Pipeline** - Retrieval-Augmented Generation
-- ✅ **LLM Integration** - OpenAI and local model support
-- ✅ **Agent System** - Tool-using agents
-- ✅ **Streaming** - Complete streaming output support
-- ✅ **Middleware Pipeline** - Extensible processing chain
+## Current Status
 
-### Databases
-- ✅ **PostgreSQL** - Users, sessions, messages storage
-- ✅ **Redis** - Cache, token blacklist, rate limiting
-- ✅ **Elasticsearch** - Vector search, RAG support
+The repository is active and already includes a usable mainline for:
 
-### Frontend (Web UI)
-- ✅ **Modern Interface** - Clean and responsive design
-- ✅ **Real-time Chat** - Streaming responses with SSE
-- ✅ **Session Management** - Multiple chat sessions
-- ✅ **Mobile Friendly** - Works on all devices
+- user auth, chat, session history, usage stats, and feedback
+- knowledge base CRUD, document upload/import/search, preview, chunk inspection, and retrieval testing
+- model configuration for `openai`, `deepseek`, `local`, `mock`, and `jina`
+- agent workspace, run history, structured artifacts, run tree, MCP management, and subagent governance pages
+- agent runtime result contracts, tool/provider bootstrap, MCP integration, skill binding, review flow, and delegation governance
+- PostgreSQL schema management with Alembic
+- deployment around PostgreSQL, Redis, and Qdrant
 
-## 📋 Table of Contents
+## Architecture
 
-- [Architecture](#architecture)
-- [Quick Start](#quick-start)
-- [Frontend UI](#frontend-ui)
-- [Project Structure](#project-structure)
-- [Features](#features)
-- [API Documentation](#api-documentation)
-- [Database Setup](#database-setup)
-- [Development](#development)
-- [Deployment](#deployment)
-- [FAQ](#faq)
+```text
+Browser
+  |
+  v
+Vue 3 frontend
+  |
+  v
+Go platform (:8080)
+  |- JWT auth
+  |- chat/session APIs
+  |- usage and feedback APIs
+  |- agent APIs and governance endpoints
+  |- proxy for knowledge base and model APIs
+  |
+  +--> Python AI runtime HTTP (:8000)
+  |      |- knowledge base / documents / models
+  |      |- optional HTTP chat endpoint
+  |      |- agent runtime APIs
+  |
+  +--> Python AI runtime gRPC (:50051)
+         |- streaming chat backend
 
-## 🏗️ Architecture
-
-```
-┌──────────────────────────────┐
-│   Client (Web/App/CLI)        │
-└────────────▲─────────────────┘
-             │ SSE / WebSocket
-┌────────────┴─────────────────┐
-│    Go Platform Layer (Hub)    │
-│                               │
-│  ✓ JWT Authentication         │
-│  ✓ Rate Limiting/Quotas       │
-│  ✓ Cost Tracking              │
-│  ✓ Content Security           │
-│  ✓ Audit Logging              │
-└────────────▲─────────────────┘
-             │ gRPC Streaming
-┌────────────┴─────────────────┐
-│  Python AI Runtime (Brain)    │
-│                               │
-│  ✓ Prompt Builder             │
-│  ✓ RAG Pipeline               │
-│  ✓ LLM Integration            │
-│  ✓ Agent Executor             │
-│  ✓ Stream Processing          │
-└────────────▲─────────────────┘
-             │
-┌────────────┴─────────────────┐
-│    Database Infrastructure    │
-│  PostgreSQL | Redis | ES      │
-└──────────────────────────────┘
+PostgreSQL + Redis + Qdrant
 ```
 
-## 🚀 Quick Start
+## Project Layout
 
-### Prerequisites
+```text
+.
+|-- ai_runtime/               # Python runtime service
+|-- db/alembic/               # Alembic migrations
+|-- frontend-vue/             # Vue 3 frontend
+|-- frontend-dist/            # Published frontend static releases
+|-- nginx/                    # Nginx config
+|-- platform/                 # Go platform service
+|-- proto/                    # Shared proto definitions
+|-- scripts/                  # Helper scripts
+|-- docker-compose.infra.yml
+|-- docker-compose.backend.yml
+|-- docker-compose.frontend.yml
+|-- Makefile
+|-- README.md
+`-- README_CN.md
+```
 
-- **Docker & Docker Compose** (recommended)
-- **Go 1.21+** (if running locally)
-- **Python 3.11+** (if running locally)
-- **PostgreSQL 16** (if not using Docker)
-- **Redis 7** (if not using Docker)
-- **Elasticsearch 8** (if not using Docker)
+## Requirements
 
-### Option 1: Docker Compose (Recommended)
+- Docker Engine with Compose plugin
+- GNU Make
+- Git
+- Node.js 20+ for local frontend work
+- Go 1.24+ for local platform work
+- Python 3.11+ for local runtime work
+
+## Local Development
+
+Run each service from its own directory.
+
+Frontend:
 
 ```bash
-# 1. Clone repository
-git clone <repository-url>
-cd ai-platform
-
-# 2. Configure environment
-cp .env.example .env
-# Edit .env with your settings
-
-# 3. Start all services
-docker-compose --profile full up -d
-
-# 4. View logs
-docker-compose logs -f
+cd frontend-vue
+npm install
+npm run dev -- --host 0.0.0.0
 ```
 
-Access:
-- **API Service**: http://localhost:8080
-- **Kibana** (optional): http://localhost:5601
-
-### Option 2: Databases Only
+Platform:
 
 ```bash
-# Start databases
-./scripts/init-databases.sh  # Linux/Mac
-# or
-scripts\init-databases.bat   # Windows
-
-# Start Python AI Runtime
-cd ai_runtime
-pip install -r requirements.txt
-python main.py
-
-# Start Go Platform (new terminal)
 cd platform
-go mod download
 go run main.go
 ```
 
-### Option 3: Development Scripts
+AI Runtime:
 
 ```bash
-# Linux/Mac
-chmod +x start_dev.sh
-./start_dev.sh
-
-# Windows
-start_dev.bat
+pip install -r ai_runtime/requirements.txt
+python -m ai_runtime.main --mode both --http-port 8000 --grpc-port 50051
 ```
 
-## 🎨 Frontend UI
-
-### Access the Web Interface
-
-After starting the services, access the web interface:
-
-**Option 1: Direct File Access**
-```bash
-cd frontend
-open index.html  # Mac
-start index.html # Windows
-xdg-open index.html # Linux
-```
-
-**Option 2: Local Server**
-```bash
-cd frontend
-python -m http.server 3000
-# Visit http://localhost:3000
-```
-
-**Option 3: Via Platform** (add to platform/main.go)
-```go
-r.PathPrefix("/").Handler(http.FileServer(http.Dir("../frontend")))
-```
-Then visit: http://localhost:8080
-
-### Demo Credentials
-
-Use these credentials to test:
-- **Email**: `demo@example.com`
-- **Password**: `demo123456`
-
-### Features
-
-- **📱 Responsive Design**: Works on desktop, tablet, and mobile
-- **💬 Real-time Chat**: Streaming AI responses
-- **🎛️ Configurable**: Toggle RAG, Agent, adjust temperature
-- **💾 Session History**: Multiple chat sessions with persistence
-- **🎨 Modern UI**: Clean, intuitive interface
-
-See [frontend/README.md](frontend/README.md) for more details.
-
-## 📁 Project Structure
-
-```
-ai-platform/
-├── platform/                    # Go Platform Layer
-│   ├── api/
-│   │   ├── http/               # HTTP/SSE/WebSocket handlers
-│   │   │   ├── auth_handler.go
-│   │   │   └── chat_handler.go
-│   │   └── grpc/               # gRPC client
-│   │       └── ai_client.go
-│   ├── auth/                    # JWT authentication
-│   │   ├── jwt.go
-│   │   ├── user.go
-│   │   └── service.go
-│   ├── database/                # Database integration
-│   │   ├── postgres.go
-│   │   ├── redis.go
-│   │   ├── elasticsearch.go
-│   │   ├── user_store.go
-│   │   └── session_store.go
-│   ├── middleware/              # Middleware
-│   │   ├── auth.go
-│   │   ├── rate_limit.go
-│   │   ├── guard.go
-│   │   └── cost.go
-│   ├── service/                 # Business logic
-│   │   ├── chat_service.go
-│   │   └── session_service.go
-│   ├── main.go
-│   └── go.mod
-│
-├── ai_runtime/                  # Python AI Runtime
-│   ├── api/
-│   │   └── chat_service.py
-│   ├── core/
-│   │   ├── prompt/             # Prompt management
-│   │   ├── rag/                # RAG pipeline
-│   │   ├── llm/                # LLM integration
-│   │   ├── agent/              # Agent executor
-│   │   └── stream/             # Stream processing
-│   ├── main.py
-│   └── requirements.txt
-│
-├── frontend/                    # Web UI
-│   ├── index.html
-│   ├── assets/
-│   │   ├── css/
-│   │   │   └── main.css        # Styles
-│   │   └── js/
-│   │       ├── config.js       # Configuration
-│   │       ├── auth.js         # Authentication
-│   │       ├── chat.js         # Chat logic
-│   │       └── app.js          # Main app
-│   └── README.md
-│
-├── db/
-│   └── migrations/             # Database migrations
-│       └── 001_initial_schema.sql
-│
-├── docs/                        # Documentation
-│   ├── DATABASE_GUIDE.md
-│   ├── JWT_AUTHENTICATION.md
-│   └── JWT_IMPLEMENTATION_SUMMARY.md
-│
-├── examples/                    # Examples
-│   ├── auth_examples.sh
-│   ├── api_examples.sh
-│   └── websocket_client_jwt.html
-│
-├── scripts/                     # Utility scripts
-│   ├── init-databases.sh
-│   └── generate_proto.sh
-│
-├── proto/                       # gRPC protocol definitions
-│   └── chat_service.proto
-│
-├── docker-compose.yml
-├── .env.example
-└── README.md                    # This file
-```
-
-## ✨ Features
-
-### 1. JWT Authentication System
-
-Complete user authentication and authorization:
+Common local verification:
 
 ```bash
-# Register user
-curl -X POST http://localhost:8080/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"password123"}'
-
-# Login
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"demo@example.com","password":"demo123456"}'
+make test
+make test-agent-runtime
+make test-platform
+make test-frontend
 ```
 
-**Demo User:**
-- Email: `demo@example.com`
-- Password: `demo123456`
+## Deployment
 
-Details: [docs/JWT_AUTHENTICATION.md](docs/JWT_AUTHENTICATION.md)
+The repository uses split compose files:
 
-### 2. Chat API
+- `docker-compose.infra.yml`
+- `docker-compose.backend.yml`
+- `docker-compose.frontend.yml`
 
-Three modes of chat interface:
-
-#### Synchronous Chat
-```bash
-curl -X POST http://localhost:8080/api/v1/chat \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "session_001",
-    "message": "Hello!",
-    "config": {"use_rag": false, "use_agent": false}
-  }'
-```
-
-#### Streaming Chat (SSE)
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/sse \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"session_002","message":"Tell me a story"}'
-```
-
-#### WebSocket Chat
-```javascript
-const ws = new WebSocket('ws://localhost:8080/api/v1/chat/ws');
-// See examples/websocket_client_jwt.html
-```
-
-### 3. Database Integration
-
-#### PostgreSQL
-- User management
-- Session history
-- Message storage
-- Token usage tracking
-- Audit logging
-
-#### Redis
-- API response caching
-- JWT token blacklist
-- Session data
-- Distributed rate limiting
-
-#### Elasticsearch
-- Vector search (RAG)
-- Document indexing
-- Semantic search
-
-Details: [docs/DATABASE_GUIDE.md](docs/DATABASE_GUIDE.md)
-
-### 4. RAG (Retrieval-Augmented Generation)
-
-```python
-# Add documents to vector store
-from core.rag import RAGPipeline, Document
-
-documents = [
-    Document(content="Document content...", metadata={"source": "doc1.pdf"}),
-]
-await rag_pipeline.add_documents(documents)
-
-# Query with RAG
-context = await rag_pipeline.process("User question", top_k=5)
-```
-
-### 5. Agent Tool System
-
-```python
-# Built-in tools
-- get_current_time: Get current time
-- calculator: Perform calculations
-
-# Use agent
-curl -X POST http://localhost:8080/api/v1/chat \
-  -H "Authorization: Bearer <token>" \
-  -d '{
-    "message": "What time is it?",
-    "config": {"use_agent": true, "tools": ["get_current_time"]}
-  }'
-```
-
-## 📚 API Documentation
-
-### Authentication Endpoints
-
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/v1/auth/register` | User registration | No |
-| POST | `/api/v1/auth/login` | User login | No |
-| POST | `/api/v1/auth/refresh` | Refresh token | No |
-| GET | `/api/v1/auth/me` | Get current user | Yes |
-| POST | `/api/v1/auth/logout` | Logout | Yes |
-
-### Chat Endpoints
-
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/v1/chat` | Synchronous chat | Yes |
-| POST | `/api/v1/chat/sse` | Streaming chat (SSE) | Yes |
-| WS | `/api/v1/chat/ws` | WebSocket chat | Yes |
-
-### Health Check
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-
-Full API documentation: [docs/JWT_AUTHENTICATION.md](docs/JWT_AUTHENTICATION.md)
-
-## 💾 Database Setup
-
-### Connection Information
-
-**PostgreSQL:**
-```
-Host: localhost:5432
-Database: ai_platform
-User: ai_platform
-Password: ai_platform_password
-```
-
-**Redis:**
-```
-Host: localhost:6379
-```
-
-**Elasticsearch:**
-```
-URL: http://localhost:9200
-```
-
-### Initialize Databases
+Recommended startup sequence:
 
 ```bash
-# Linux/Mac
-./scripts/init-databases.sh
-
-# Windows
-scripts\init-databases.bat
-
-# Or use Docker Compose
-docker-compose up -d postgres redis elasticsearch
+make infra-up
+make db-upgrade
+make backend-up
+make frontend-build
 ```
 
-### Database Migrations
-
-Migrations run automatically on PostgreSQL startup. To run manually:
+If all required images are already present locally:
 
 ```bash
-psql -h localhost -U ai_platform -d ai_platform -f db/migrations/001_initial_schema.sql
+make prod-check
+make prod
 ```
 
-Details: [docs/DATABASE_GUIDE.md](docs/DATABASE_GUIDE.md)
-
-## 🔧 Development
-
-### Environment Configuration
-
-1. **Copy environment template**
-```bash
-cp .env.example .env
-```
-
-2. **Configure key variables**
-```bash
-# JWT secret (MUST change in production!)
-JWT_SECRET=your-super-secret-key-change-in-production
-
-# Database
-POSTGRES_HOST=localhost
-POSTGRES_PASSWORD=your-secure-password
-
-# OpenAI (optional)
-OPENAI_API_KEY=your-openai-api-key
-```
-
-### Generate gRPC Stubs
+Build and publish helpers:
 
 ```bash
-# Linux/Mac
-chmod +x generate_proto.sh
-./generate_proto.sh
-
-# Windows
-generate_proto.bat
+make infra-build
+make backend-build
+make frontend-build
 ```
 
-### Local Development
+Low-I/O variants:
 
-**Start AI Runtime:**
 ```bash
-cd ai_runtime
-pip install -r requirements.txt
-python main.py
+make infra-build-safe
+make ai-runtime-build-safe
+make platform-build-safe
+make frontend-build-safe
 ```
 
-**Start Platform:**
+Operations:
+
+```bash
+make infra-logs
+make backend-logs
+make frontend-logs
+make prod-down
+```
+
+## Environment Files
+
+Main templates:
+
+- `./.env.example`
+- `./ai_runtime/.env.example`
+- `./platform/.env.example`
+
+Important settings:
+
+- `JWT_SECRET`: must be replaced in production
+- `EMBEDDING_PROVIDER`: supports `local`, `openai`, `jina`
+- `LLM_PROVIDER`: supports `openai`, `deepseek`, `local`, `mock`
+- `QDRANT_HOST` / `QDRANT_PORT`: vector database address
+- `AI_RUNTIME_HTTP_ADDR`: required for platform access to runtime HTTP APIs
+- `AI_RUNTIME_CHAT_TRANSPORT`: selects `grpc` or `http` for chat transport on the Go service
+
+## Frontend
+
+The current frontend includes:
+
+- login and registration
+- chat workspace and session history
+- usage and cost statistics
+- model management
+- knowledge base list, create, edit, detail, settings, and retrieval test pages
+- agent list, agent chat workspace, run history, run detail, extension binding, MCP management, and subagent management pages
+
+Production frontend publishing writes static assets into `frontend-dist/releases/<version>` and updates `frontend-dist/current`.
+
+## Platform
+
+The Go platform is the user-facing backend. It provides auth, chat/session APIs, agent APIs, usage and feedback endpoints, and proxies runtime knowledge-base/model APIs.
+
+Local run:
+
 ```bash
 cd platform
-go mod download
 go run main.go
 ```
 
-### Run Tests
+The platform seeds a demo user at startup:
 
-**Go tests:**
-```bash
-cd platform
-go test ./...
+```text
+Email: demo@example.com
+Password: demo123456
 ```
 
-**Python tests:**
-```bash
-cd ai_runtime
-pytest
-```
+## AI Runtime
 
-### Code Style
+The Python runtime owns AI-side execution and serves both HTTP and gRPC.
 
-**Go:**
-```bash
-gofmt -w .
-go vet ./...
-```
+Main responsibilities:
 
-**Python:**
-```bash
-black .
-flake8
-```
+- chat generation
+- agent runtime orchestration, events, and tracing
+- skill loading and tool/provider bootstrap
+- MCP catalog, discovery, sessions, and runtime integration
+- subagent delegation, review flow, and governance state
+- knowledge base management
+- document parsing, chunking, retrieval, and evaluation
+- model storage and selection
 
-## 🚢 Deployment
-
-### Docker Deployment
+Recommended targeted verification for agent-runtime changes:
 
 ```bash
-# Build images
-docker-compose build
-
-# Start all services
-docker-compose --profile full up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop services
-docker-compose down
+.venv/bin/python -m pytest ai_runtime/tests/test_agent_runtime_executor.py \
+  ai_runtime/tests/test_agent_runtime_schema_utils.py \
+  ai_runtime/tests/test_agent_runtime_summarizer.py \
+  ai_runtime/tests/test_agent_runtime_skill_registry.py -q
 ```
 
-### Kubernetes Deployment
+## Database
+
+Database schema is managed through Alembic in `db/alembic/`.
+
+Common commands:
 
 ```bash
-# Apply configuration
-kubectl apply -f k8s/
-
-# Check status
-kubectl get pods
-kubectl get services
+make db-upgrade
+make db-current
+make db-history
+make db-revision m=describe_change
+make db-reset-to-alembic
+make qdrant-backfill
 ```
 
-### Production Checklist
+## License
 
-- [ ] Change all default passwords
-- [ ] Set strong JWT secret
-- [ ] Enable HTTPS/TLS
-- [ ] Configure firewall rules
-- [ ] Set up database backups
-- [ ] Configure log collection
-- [ ] Set up monitoring & alerts
-- [ ] Configure CDN (if needed)
-- [ ] Enable rate limiting
-- [ ] Configure error tracking
-
-### Environment Variables (Production)
-
-```bash
-# Security
-JWT_SECRET=<strong-random-string>
-POSTGRES_PASSWORD=<strong-password>
-REDIS_PASSWORD=<strong-password>
-
-# Databases (use managed services)
-POSTGRES_HOST=<RDS-address>
-REDIS_HOST=<ElastiCache-address>
-ELASTICSEARCH_URL=<OpenSearch-address>
-
-# Feature flags
-ENVIRONMENT=production
-LOG_LEVEL=INFO
-ENABLE_TELEMETRY=true
-```
-
-## ❓ FAQ
-
-### Q: How to change JWT secret?
-
-A: Set `JWT_SECRET` in `.env` file or as environment variable:
-```bash
-export JWT_SECRET="your-new-secret-key"
-```
-
-### Q: How to add new agent tools?
-
-A: Create new tool class in `ai_runtime/core/agent/tools/`:
-```python
-class MyTool(Tool):
-    def __init__(self):
-        super().__init__("my_tool", "Tool description")
-
-    async def execute(self, **kwargs):
-        # Implement tool logic
-        return result
-```
-
-### Q: How to switch to OpenAI?
-
-A: Modify `ai_runtime/main.py`:
-```python
-from core.llm import OpenAILLM
-
-# Replace LocalLLM
-self.llm = OpenAILLM(
-    model="gpt-4",
-    api_key=os.getenv("OPENAI_API_KEY")
-)
-```
-
-### Q: How to add RAG documents?
-
-A: Use Elasticsearch API or code:
-```python
-from database import ElasticsearchVectorStore
-
-# Index document
-doc = VectorDocument(
-    id="doc-1",
-    tenant_id="tenant-1",
-    title="Document Title",
-    content="Document content",
-    embedding=vector  # Get from embedding model
-)
-await vector_store.IndexDocument(ctx, doc)
-```
-
-### Q: Database connection failed?
-
-A: Check:
-1. Database services running: `docker-compose ps`
-2. Connection info correct: check `.env`
-3. Firewall rules
-4. View logs: `docker-compose logs postgres`
-
-### Q: How to backup data?
-
-A:
-```bash
-# PostgreSQL backup
-docker-compose exec postgres pg_dump -U ai_platform ai_platform > backup.sql
-
-# Restore
-docker-compose exec -T postgres psql -U ai_platform ai_platform < backup.sql
-
-# Redis backup
-docker-compose exec redis redis-cli SAVE
-```
-
-## 📖 Documentation Index
-
-- **[Quick Start](QUICKSTART.md)** - 5-minute guide
-- **[JWT Authentication](docs/JWT_AUTHENTICATION.md)** - Complete auth guide
-- **[Database Guide](docs/DATABASE_GUIDE.md)** - Database setup and usage
-- **[API Reference](docs/API_REFERENCE.md)** - Complete API docs
-- **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment
-- **[Development Guide](docs/DEVELOPMENT.md)** - Developer docs
-
-## 🤝 Contributing
-
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## 📄 License
-
-This project is licensed under the MIT License - see [LICENSE](LICENSE) file
-
-## 🙏 Acknowledgments
-
-- OpenAI - LLM support
-- LangChain - AI framework
-- PostgreSQL - Database
-- Redis - Cache
-- Elasticsearch - Search engine
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/your-org/ai-platform/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/ai-platform/discussions)
-- **Documentation**: [docs/](docs/)
-
----
-
-**Enjoy! Check docs or submit issues for any questions.** 🚀
+This project is licensed under the Apache License 2.0. See [LICENSE](./LICENSE) and [LICENSE.zh-CN](./LICENSE.zh-CN).

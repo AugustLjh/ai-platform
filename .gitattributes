@@ -1,0 +1,59 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Documents
+*.md text
+*.txt text
+
+# Source code
+*.py text eol=lf
+*.go text
+*.js text
+*.vue text
+*.ts text
+*.tsx text
+*.jsx text
+*.json text
+*.yaml text
+*.yml text
+*.toml text
+*.ini text
+*.conf text
+
+# Shell scripts
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# SQL
+*.sql text
+
+# Proto
+*.proto text
+
+# Docker
+Dockerfile text
+.dockerignore text
+
+# Git
+.gitignore text
+.gitattributes text
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
