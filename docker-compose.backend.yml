@@ -35,10 +35,12 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_GRPC_PORT=6334
-      - AGENT_TOOL_PROVIDERS=${AGENT_TOOL_PROVIDERS:-builtin,knowledge,mcp,engineering}
+      - AGENT_TOOL_PROVIDERS=${AGENT_TOOL_PROVIDERS:-builtin,knowledge,mcp,engineering,workspace}
       - AGENT_ENGINEERING_ENABLED=${AGENT_ENGINEERING_ENABLED:-true}
-      - AGENT_ENGINEERING_WORKSPACE_ROOTS=${AGENT_ENGINEERING_WORKSPACE_ROOTS:-/app}
-      - AGENT_ENGINEERING_TOOLS=${AGENT_ENGINEERING_TOOLS:-workspace_list_files,workspace_read_file,workspace_search_text,git_status,git_diff}
+      - AGENT_ENGINEERING_TOOLS=${AGENT_ENGINEERING_TOOLS:-project_list_context,project_search_context,project_read_context_item,project_list_uploaded_files,project_search_uploaded_files,project_read_uploaded_file}
+      - AGENT_WORKSPACE_ENABLED=${AGENT_WORKSPACE_ENABLED:-false}
+      - AGENT_WORKSPACE_ROOTS=${AGENT_WORKSPACE_ROOTS:-/tmp/ai-platform-workspaces}
+      - AGENT_WORKSPACE_TOOLS=${AGENT_WORKSPACE_TOOLS:-workspace_list_files,workspace_read_file,workspace_search_text,git_status,git_diff}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     healthcheck:

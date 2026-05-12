@@ -68,6 +68,13 @@ class ToolResultCache:
         "project_list_uploaded_files",
         "project_search_uploaded_files",
         "project_read_uploaded_file",
+        "workspace_list_files",
+        "workspace_read_file",
+        "workspace_search_text",
+        "git_status",
+        "git_diff",
+        "git_show",
+        "git_log",
     }
 
     def __init__(self, max_entries: int = 128) -> None:
@@ -105,6 +112,7 @@ class ToolResultCache:
         allowed_knowledge_base_ids: tuple[str, ...] = (),
         allowed_mcp_server_ids: tuple[str, ...] = (),
         allowed_mcp_tool_names: tuple[str, ...] = (),
+        workspace_root: str | None = None,
         arguments: dict[str, Any] | None = None,
     ) -> str:
         scope = self.resolve_scope(tool_name=tool_name, session_id=session_id)
@@ -119,6 +127,7 @@ class ToolResultCache:
             "allowed_knowledge_base_ids": list(allowed_knowledge_base_ids),
             "allowed_mcp_server_ids": list(allowed_mcp_server_ids),
             "allowed_mcp_tool_names": list(allowed_mcp_tool_names),
+            "workspace_root": workspace_root,
             "arguments": self._normalize_argument_value(arguments or {}),
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

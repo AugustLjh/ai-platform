@@ -116,8 +116,8 @@ class SubagentInvocationRepository:
                 $9,
                 $10,
                 $11,
-                CASE WHEN $8::varchar = 'running' THEN now() ELSE NULL END,
-                CASE WHEN $8::varchar IN ('completed', 'failed', 'cancelled') THEN now() ELSE NULL END
+                CASE WHEN $8::varchar IN ('queued', 'running') THEN now() ELSE NULL END,
+                CASE WHEN $8::varchar IN ('completed', 'failed', 'cancelled', 'waiting_user') THEN now() ELSE NULL END
             )
             RETURNING *
             """,
@@ -155,11 +155,11 @@ class SubagentInvocationRepository:
                 result_payload = COALESCE($5, result_payload),
                 error_message = $6,
                 started_at = CASE
-                    WHEN $2::varchar = 'running' AND started_at IS NULL THEN now()
+                    WHEN $2::varchar IN ('queued', 'running') AND started_at IS NULL THEN now()
                     ELSE started_at
                 END,
                 completed_at = CASE
-                    WHEN $2::varchar IN ('completed', 'failed', 'cancelled') THEN now()
+                    WHEN $2::varchar IN ('completed', 'failed', 'cancelled', 'waiting_user') THEN now()
                     ELSE completed_at
                 END
             WHERE id = $1

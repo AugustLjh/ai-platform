@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 SubagentRunStatus = Literal["queued", "running", "waiting_user", "completed", "failed", "cancelled"]
+SubagentInvocationStatus = Literal["queued", "running", "waiting_user", "completed", "failed", "cancelled"]
 
 
 class SubagentTarget(BaseModel):
@@ -100,6 +101,30 @@ class SubagentTarget(BaseModel):
             or ""
         )
         return str(value).strip().lower()
+
+    def uses_async_execution(self) -> bool:
+        value = (
+            self.runtime_policy.get("async_execution")
+            or self.runtime_policy.get("non_blocking")
+            or self.runtime_policy.get("background")
+            or self.metadata.get("async_execution")
+        )
+        if value is not None:
+            if isinstance(value, bool):
+                return value
+            text = str(value).strip().lower()
+            if text in {"true", "1", "yes", "y", "on"}:
+                return True
+            if text in {"false", "0", "no", "n", "off"}:
+                return False
+
+        wait_for_completion = self.runtime_policy.get("wait_for_completion")
+        if wait_for_completion is not None:
+            if isinstance(wait_for_completion, bool):
+                return not wait_for_completion
+            return str(wait_for_completion).strip().lower() in {"false", "0", "no", "n", "off"}
+
+        return self.delegation_mode() in {"parallel_worker", "parallel", "worker"}
 
     def max_delegation_depth(self) -> int | None:
         value = (

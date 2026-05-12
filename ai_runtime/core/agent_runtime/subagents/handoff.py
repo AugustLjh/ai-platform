@@ -11,6 +11,7 @@ from ai_runtime.core.agent_runtime.subagents.governance import (
     build_governance_policy,
     extract_governance_usage,
     merge_governance_usage_snapshots,
+    resolve_budget_hard_limit_enabled,
     resolve_timeout_seconds,
 )
 from ai_runtime.core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
@@ -325,7 +326,7 @@ class SubagentHandoff:
             publication_id=target.publication_id,
             version_id=target.version_id,
             authorization_id=target.authorization_id,
-            status="pending",
+            status="queued",
             request_payload=request_payload,
         )
 
@@ -427,7 +428,7 @@ class SubagentHandoff:
             return await self._wait_for_terminal_status(child_run_id)
         return await asyncio.wait_for(self._wait_for_terminal_status(child_run_id), timeout=timeout_seconds)
 
-    async def delegate(
+    async def start_delegate(
         self,
         *,
         parent_run,
@@ -510,84 +511,214 @@ class SubagentHandoff:
             )
             await self.start_run(child_run["id"])
 
-            completed = await self._wait_for_terminal_status_with_policy(
-                child_run["id"],
-                target=target,
+            progress = build_requested_progress_payload(
+                summary=f"{target.name} child run is running asynchronously.",
+                delegate_task=str(planner_action.delegate_task or "").strip(),
+                delegate_input=planner_action.delegate_input or {},
             )
-            artifacts = await self.run_repository.list_artifacts(child_run["id"])
-            hydrated = hydrate_legacy_result(
-                final_output=completed.get("final_output"),
-                final_output_text=completed.get("final_output_text"),
-                final_output_json=completed.get("final_output_json"),
-                artifacts=artifacts,
-            )
-            summary = str(hydrated.get("final_output_text") or hydrated.get("final_output") or "").strip()
-            if not summary:
-                summary = f"{target.name} finished with status {completed['status']}."
-            review_result = build_review_result(
-                target=target,
-                status=completed["status"],
-                hydrated=hydrated,
-                error_message=completed.get("error_message"),
-                child_run_id=child_run["id"],
-            )
-            governance_policy = annotate_governance_policy(
-                build_governance_policy(target),
-                last_invocation_usage=extract_governance_usage(
-                    child_run=completed,
-                    hydrated=hydrated,
-                ),
-            )
-            progress = build_progress_payload(
-                status=completed["status"],
-                hydrated=hydrated,
-                summary=summary,
-            )
-            clarification = build_clarification_payload(
-                status=completed["status"],
-                hydrated=hydrated,
-                question=hydrated.get("final_output") if completed["status"] == "waiting_user" else None,
-            )
-
-            invocation_status = completed["status"]
-            if invocation_status == "waiting_user":
-                invocation_status = "completed"
-            await self._update_invocation(
-                invocation_id,
-                status=invocation_status,
-                child_run_id=child_run["id"],
-                result_payload=self._build_terminal_result_payload(
-                    status=completed["status"],
-                    summary=summary,
-                    hydrated=hydrated,
-                    review_result=review_result,
-                    governance_policy=governance_policy,
-                    error_message=completed.get("error_message"),
-                ),
-                error_message=completed.get("error_message"),
-            )
-
             return SubagentDelegationResult(
                 child_run_id=child_run["id"],
-                status=completed["status"],
+                status="running",
                 target=target,
                 input=child_input,
-                summary=summary,
-                final_output=hydrated.get("final_output"),
-                final_output_text=hydrated.get("final_output_text"),
-                final_output_json=hydrated.get("final_output_json"),
-                artifacts=hydrated.get("artifacts") or [],
+                summary=f"{target.name} child run started.",
                 progress=progress,
-                clarification=clarification or {},
+                clarification={},
                 metadata={
                     "parent_step_id": parent_step_id,
                     "invocation_id": invocation_id,
                     "protocol_version": handoff_envelope.get("protocol_version"),
                     "handoff_envelope": handoff_envelope,
-                    "review_result": review_result,
-                    "governance_policy": governance_policy,
+                    "governance_policy": annotate_governance_policy(build_governance_policy(target)),
+                    "async_execution": True,
                 },
             )
+        except asyncio.CancelledError:
+            review_result = build_review_result(
+                target=target,
+                status="cancelled",
+                hydrated={},
+                error_message="Run cancelled",
+            )
+            await self._update_invocation(
+                invocation_id,
+                status="cancelled",
+                error_message="Run cancelled",
+                result_payload={
+                    "protocol_version": "managed-subagent.v1",
+                    "status": "cancelled",
+                    "review_result": review_result,
+                    "partial_result": None,
+                    "final_result": None,
+                    "error": "Run cancelled",
+                    "governance_policy": annotate_governance_policy(build_governance_policy(target)),
+                },
+            )
+            raise
+        except Exception as exc:
+            review_result = build_review_result(
+                target=target,
+                status="failed",
+                hydrated={},
+                error_message=str(exc),
+            )
+            await self._update_invocation(
+                invocation_id,
+                status="failed",
+                error_message=str(exc),
+                result_payload={
+                    "protocol_version": "managed-subagent.v1",
+                    "status": "failed",
+                    "review_result": review_result,
+                    "partial_result": None,
+                    "final_result": None,
+                    "error": str(exc),
+                    "governance_policy": annotate_governance_policy(build_governance_policy(target)),
+                },
+            )
+            raise
+
+    async def resolve_delegation_result(
+        self,
+        *,
+        child_run_id: str,
+        target: SubagentTarget,
+        child_input: dict[str, Any] | None = None,
+        parent_step_id: str | None = None,
+        invocation_id: str | None = None,
+        handoff_envelope: dict[str, Any] | None = None,
+    ) -> SubagentDelegationResult | None:
+        child_run = await self.run_repository.get_run(child_run_id)
+        if child_run is None:
+            raise ValueError(f"subagent child run {child_run_id} not found")
+
+        status = str(child_run.get("status") or "").strip().lower()
+        if status not in {"completed", "failed", "cancelled", "waiting_user"}:
+            return None
+
+        artifacts = await self.run_repository.list_artifacts(child_run_id)
+        hydrated = hydrate_legacy_result(
+            final_output=child_run.get("final_output"),
+            final_output_text=child_run.get("final_output_text"),
+            final_output_json=child_run.get("final_output_json"),
+            artifacts=artifacts,
+        )
+        summary = str(hydrated.get("final_output_text") or hydrated.get("final_output") or "").strip()
+        if not summary:
+            summary = f"{target.name} finished with status {status}."
+        review_result = build_review_result(
+            target=target,
+            status=status,
+            hydrated=hydrated,
+            error_message=child_run.get("error_message"),
+            child_run_id=child_run_id,
+        )
+        governance_policy = annotate_governance_policy(
+            build_governance_policy(target),
+            last_invocation_usage=extract_governance_usage(
+                child_run=child_run,
+                hydrated=hydrated,
+            ),
+        )
+        if (
+            resolve_budget_hard_limit_enabled(target)
+            and governance_policy.get("enforcement", {}).get("budget_hard_limit_exceeded")
+        ):
+            status = "failed"
+            if not child_run.get("error_message"):
+                child_run["error_message"] = governance_policy["enforcement"].get(
+                    "budget_hard_limit_reason",
+                    "Subagent exceeded hard budget limit",
+                )
+            review_result = build_review_result(
+                target=target,
+                status=status,
+                hydrated=hydrated,
+                error_message=child_run.get("error_message"),
+                child_run_id=child_run_id,
+            )
+        progress = build_progress_payload(
+            status=status,
+            hydrated=hydrated,
+            summary=summary,
+        )
+        clarification = build_clarification_payload(
+            status=status,
+            hydrated=hydrated,
+            question=hydrated.get("final_output") if status == "waiting_user" else None,
+        )
+
+        invocation_status = status
+        await self._update_invocation(
+            invocation_id,
+            status=invocation_status,
+            child_run_id=child_run_id,
+            result_payload=self._build_terminal_result_payload(
+                status=status,
+                summary=summary,
+                hydrated=hydrated,
+                review_result=review_result,
+                governance_policy=governance_policy,
+                error_message=child_run.get("error_message"),
+            ),
+            error_message=child_run.get("error_message"),
+        )
+
+        return SubagentDelegationResult(
+            child_run_id=child_run_id,
+            status=status,
+            target=target,
+            input=child_input or {},
+            summary=summary,
+            final_output=hydrated.get("final_output"),
+            final_output_text=hydrated.get("final_output_text"),
+            final_output_json=hydrated.get("final_output_json"),
+            artifacts=hydrated.get("artifacts") or [],
+            progress=progress,
+            clarification=clarification or {},
+            metadata={
+                "parent_step_id": parent_step_id,
+                "invocation_id": invocation_id,
+                "protocol_version": (handoff_envelope or {}).get("protocol_version"),
+                "handoff_envelope": handoff_envelope or {},
+                "review_result": review_result,
+                "governance_policy": governance_policy,
+            },
+        )
+
+    async def delegate(
+        self,
+        *,
+        parent_run,
+        parent_step_id: str,
+        planner_action: PlannerAction,
+        runtime_context: dict[str, Any],
+        target: SubagentTarget,
+    ) -> SubagentDelegationResult:
+        started = await self.start_delegate(
+            parent_run=parent_run,
+            parent_step_id=parent_step_id,
+            planner_action=planner_action,
+            runtime_context=runtime_context,
+            target=target,
+        )
+        invocation_id = started.metadata.get("invocation_id") if isinstance(started.metadata, dict) else None
+        try:
+            completed = await self._wait_for_terminal_status_with_policy(
+                started.child_run_id,
+                target=target,
+            )
+            resolved = await self.resolve_delegation_result(
+                child_run_id=completed["id"],
+                target=target,
+                child_input=started.input,
+                parent_step_id=parent_step_id,
+                invocation_id=invocation_id,
+                handoff_envelope=started.metadata.get("handoff_envelope") if isinstance(started.metadata, dict) else None,
+            )
+            if resolved is None:
+                raise RuntimeError(f"subagent child run {completed['id']} did not reach a terminal status")
+            return resolved
         except asyncio.TimeoutError:
             timeout_seconds = resolve_timeout_seconds(target)
             message = f"Subagent execution exceeded timeout of {timeout_seconds:g}s" if timeout_seconds else "Subagent execution timed out"

@@ -50,6 +50,7 @@ class AgentExecutor:
                 allowed_knowledge_base_ids=tool_context.allowed_knowledge_base_ids,
                 allowed_mcp_server_ids=tool_context.allowed_mcp_server_ids,
                 allowed_mcp_tool_names=tool_context.allowed_mcp_tool_names,
+                workspace_root=tool_context.workspace_root,
             ),
         )
         if tool is None:
@@ -69,6 +70,7 @@ class AgentExecutor:
                 allowed_knowledge_base_ids=tool_context.allowed_knowledge_base_ids,
                 allowed_mcp_server_ids=tool_context.allowed_mcp_server_ids,
                 allowed_mcp_tool_names=tool_context.allowed_mcp_tool_names,
+                workspace_root=tool_context.workspace_root,
                 arguments=action.tool_arguments,
             )
             result, cached = await cache.get_or_compute(cache_key, lambda: tool.execute(tool_context, action.tool_arguments))

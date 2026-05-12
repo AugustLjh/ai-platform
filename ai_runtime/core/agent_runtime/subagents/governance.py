@@ -75,6 +75,22 @@ def _coerce_bool(value: Any) -> bool | None:
     return None
 
 
+def resolve_budget_hard_limit_enabled(target: SubagentTarget) -> bool:
+    policy = target.budget_policy or {}
+    runtime_policy = target.runtime_policy or {}
+    metadata = target.metadata or {}
+    explicit = _first_value(
+        policy.get("hard_limit"),
+        policy.get("enforce_hard_limit"),
+        policy.get("hard_limits"),
+        runtime_policy.get("budget_hard_limit"),
+        runtime_policy.get("enforce_budget_hard_limit"),
+        metadata.get("budget_hard_limit"),
+    )
+    parsed = _coerce_bool(explicit)
+    return bool(parsed)
+
+
 def resolve_timeout_seconds(target: SubagentTarget) -> float | None:
     policy = target.runtime_policy or {}
     budget_policy = target.budget_policy or {}
@@ -702,6 +718,7 @@ def record_delegation_outcome(
     waiting_user_counts_as_active_child: bool = True,
     question: str | None = None,
     waiting_user_path: list[dict[str, Any]] | None = None,
+    count_attempt: bool = True,
 ) -> dict[str, Any]:
     existing = _get_ledger_target_entry(runtime_context, target_slug=target_slug)
     if existing is None:
@@ -752,11 +769,15 @@ def record_delegation_outcome(
             elif invocation_id and child.get("invocation_id") == invocation_id:
                 active_children.pop(key, None)
 
-    history = append_delegation_outcome(
-        existing.get("history"),
-        status=normalized_status,
-        waiting_user_propagation=waiting_user_propagation,
-        waiting_user_counts_as_active_child=waiting_user_counts_as_active_child,
+    history = (
+        append_delegation_outcome(
+            existing.get("history"),
+            status=normalized_status,
+            waiting_user_propagation=waiting_user_propagation,
+            waiting_user_counts_as_active_child=waiting_user_counts_as_active_child,
+        )
+        if count_attempt
+        else _normalize_history(existing.get("history"), target_slug=target_slug)
     )
     history["active_child_count"] = sum(
         1 for child in active_children.values() if bool(child.get("counts_as_active_child"))
@@ -976,6 +997,19 @@ def annotate_governance_policy(
     elif enriched["enforcement"].get("advisory_limits"):
         budget_status = "advisory"
     budget["usage_status"] = budget_status
+    hard_budget_limit = bool(
+        _coerce_bool(
+            _first_value(
+                budget.get("hard_limit"),
+                budget.get("enforce_hard_limit"),
+                budget.get("hard_limits"),
+            )
+        )
+    )
+    budget["hard_limit"] = hard_budget_limit
+    if hard_budget_limit and budget_status == "over_budget":
+        enriched["enforcement"]["budget_hard_limit_exceeded"] = True
+        enriched["enforcement"]["budget_hard_limit_reason"] = "; ".join(merged_warnings)
 
     if history is not None:
         enriched["history"] = history
@@ -1030,6 +1064,10 @@ def build_governance_policy(target: SubagentTarget) -> dict[str, Any]:
         }.items()
         if value is not None
     ]
+    if resolve_budget_hard_limit_enabled(target):
+        for key in advisory_limits:
+            if key not in hard_limits:
+                hard_limits.append(key)
 
     return {
         "protocol_version": GOVERNANCE_PROTOCOL_VERSION,
@@ -1047,6 +1085,7 @@ def build_governance_policy(target: SubagentTarget) -> dict[str, Any]:
             **dict(budget_policy),
             "max_tokens": max_tokens,
             "max_cost_usd": max_cost_usd,
+            "hard_limit": resolve_budget_hard_limit_enabled(target),
         },
         "waiting_user": {
             "propagation": resolve_waiting_user_propagation(target),

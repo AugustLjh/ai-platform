@@ -137,6 +137,14 @@ class FakeHandoff:
         self.calls.append(payload)
         return self.result
 
+    async def start_delegate(self, **payload):
+        self.calls.append(payload)
+        return self.result
+
+    async def resolve_delegation_result(self, **payload):
+        self.calls.append(payload)
+        return self.result if self.result.status not in {"queued", "running"} else None
+
 
 class FakeInvocationRepository:
     def __init__(self):
@@ -535,6 +543,95 @@ async def test_subagent_handoff_enforces_timeout_policy():
         raise AssertionError("Expected timeout enforcement to raise TimeoutError")
 
 
+async def test_subagent_handoff_hard_budget_limit_marks_result_failed():
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    state_store = FakeStateStore()
+
+    async def start_run(run_id):
+        run_repository.rows[run_id]["status"] = "completed"
+        run_repository.rows[run_id]["metadata"] = {
+            **run_repository.rows[run_id].get("metadata", {}),
+            "governance_usage": {"total_tokens": 250},
+        }
+        run_repository.rows[run_id]["final_output_text"] = "Child work complete."
+
+    handoff = SubagentHandoff(
+        run_repository,
+        tracer,
+        state_store,
+        start_run=start_run,
+    )
+    target = SubagentTarget(
+        slug="budget-worker",
+        name="Budget Worker",
+        agent_definition_id="agent-worker",
+        budget_policy={"max_tokens": 100, "hard_limit": True},
+    )
+
+    result = await handoff.delegate(
+        parent_run=_build_run(),
+        parent_step_id="step-parent",
+        planner_action=PlannerAction(
+            type="delegate",
+            title="Ask budget worker",
+            delegate_target="budget-worker",
+            delegate_task="Run a bounded task",
+        ),
+        runtime_context={"step_history": [{"title": "Collected context"}]},
+        target=target,
+    )
+
+    assert result.status == "failed"
+    assert result.metadata["governance_policy"]["budget"]["usage_status"] == "over_budget"
+    assert result.metadata["governance_policy"]["enforcement"]["budget_hard_limit_exceeded"] is True
+
+
+async def test_subagent_handoff_start_delegate_returns_running_without_waiting():
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    state_store = FakeStateStore()
+
+    async def start_run(run_id):
+        async def _complete_later():
+            await asyncio.sleep(0.2)
+            run_repository.rows[run_id]["status"] = "completed"
+            run_repository.rows[run_id]["final_output_text"] = "Async completion."
+
+        state_store.register_task(run_id, asyncio.create_task(_complete_later()))
+
+    handoff = SubagentHandoff(
+        run_repository,
+        tracer,
+        state_store,
+        start_run=start_run,
+    )
+    target = SubagentTarget(
+        slug="parallel-worker",
+        name="Parallel Worker",
+        agent_definition_id="agent-worker",
+        runtime_policy={"async_execution": True},
+    )
+
+    result = await handoff.start_delegate(
+        parent_run=_build_run(),
+        parent_step_id="step-parent",
+        planner_action=PlannerAction(
+            type="delegate",
+            title="Ask parallel worker",
+            delegate_target="parallel-worker",
+            delegate_task="Run an independent check",
+        ),
+        runtime_context={"step_history": [{"title": "Collected context"}]},
+        target=target,
+    )
+
+    assert result.status == "running"
+    assert result.child_run_id == "child-run-1"
+    assert run_repository.rows[result.child_run_id]["status"] == "queued"
+    assert result.metadata["async_execution"] is True
+
+
 async def test_orchestrator_execute_delegate_action_records_step_and_subagent_events():
     target = SubagentTarget(
         slug="review-specialist",
@@ -656,6 +753,201 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
     assert completed_event["payload"]["governance_policy"]["budget"]["usage"]["total_tokens"] == 640
     assert completed_event["payload"]["governance_policy"]["budget"]["last_invocation_usage"]["total_tokens"] == 640
     assert run_repository.updated_steps[0]["output_payload"]["governance_policy"]["history"]["active_child_count"] == 0
+
+
+async def test_orchestrator_async_delegate_registers_pending_child_without_blocking_parent():
+    target = SubagentTarget(
+        slug="parallel-worker",
+        name="Parallel Worker",
+        agent_definition_id="agent-worker",
+        runtime_policy={"delegation_mode": "parallel_worker"},
+    )
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-1",
+        status="running",
+        target=target,
+        summary="Parallel Worker child run started.",
+        progress={
+            "protocol_version": "managed-subagent.progress.v1",
+            "state": "in_progress",
+            "summary": "Parallel worker is running.",
+        },
+        metadata={
+            "invocation_id": "invocation-1",
+            "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+            "governance_policy": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "target_slug": "parallel-worker",
+                "waiting_user": {"propagation": "continue_parent"},
+            },
+            "async_execution": True,
+        },
+    )
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    handoff = FakeHandoff(delegation)
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=handoff,
+    )
+    runtime_context = {"step_history": []}
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context=runtime_context,
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask parallel worker",
+                delegate_target="parallel-worker",
+                delegate_task="Run the independent verification",
+            ),
+            reasoning="Parallelizable verification.",
+            iteration=2,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert delegated_result is None
+    assert observation["status"] == "running"
+    assert runtime_context["pending_subagent_invocations"][0]["child_run_id"] == "child-run-1"
+    assert runtime_context["subagent_governance_ledger"]["targets"]["parallel-worker"]["history"]["active_child_count"] == 1
+    assert run_repository.updated_steps[0]["status"] == "running"
+
+
+async def test_orchestrator_collects_pending_subagent_completion_without_double_counting_attempt():
+    target = SubagentTarget(
+        slug="parallel-worker",
+        name="Parallel Worker",
+        agent_definition_id="agent-worker",
+        runtime_policy={"delegation_mode": "parallel_worker"},
+    )
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-1",
+        status="completed",
+        target=target,
+        summary="Async worker complete.",
+        final_output_text="Async worker complete.",
+        progress={
+            "protocol_version": "managed-subagent.progress.v1",
+            "state": "completed",
+            "summary": "Async worker complete.",
+        },
+        metadata={
+            "invocation_id": "invocation-1",
+            "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+            "review_result": {"protocol_version": "managed-subagent.review-result.v1", "decision": "not_required"},
+            "governance_policy": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "target_slug": "parallel-worker",
+                "budget": {
+                    "last_invocation_usage": {"total_tokens": 120},
+                    "usage": {"total_tokens": 120},
+                },
+            },
+        },
+    )
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    handoff = FakeHandoff(delegation)
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=handoff,
+    )
+    runtime_context = {
+        "step_history": [],
+        "pending_subagent_invocations": [
+            {
+                "child_run_id": "child-run-1",
+                "target": target.model_dump(mode="json"),
+                "parent_step_id": "step-1",
+                "planner_result": PlannerResult(
+                    action=PlannerAction(
+                        type="delegate",
+                        title="Ask parallel worker",
+                        delegate_target="parallel-worker",
+                        delegate_task="Run the independent verification",
+                    ),
+                    reasoning="Parallelizable verification.",
+                    iteration=2,
+                ).model_dump(mode="json"),
+                "delegation_gate": {
+                    "governance": {
+                        "prior_usage": {},
+                        "history": {
+                            "target_slug": "parallel-worker",
+                            "attempt_count": 1,
+                            "active_child_count": 1,
+                            "statuses": ["running"],
+                        },
+                    }
+                },
+                "invocation_id": "invocation-1",
+                "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+                "child_input": {"message": "Run the independent verification"},
+            }
+        ],
+        "subagent_governance_ledger": {
+            "protocol_version": "managed-subagent.governance.v1",
+            "targets": {
+                "parallel-worker": {
+                    "target_slug": "parallel-worker",
+                    "history": {
+                        "target_slug": "parallel-worker",
+                        "attempt_count": 1,
+                        "failed_attempt_count": 0,
+                        "active_child_count": 1,
+                        "waiting_user_count": 0,
+                        "statuses": ["running"],
+                    },
+                    "usage": {},
+                    "last_invocation_usage": {},
+                    "active_children": {
+                        "child:child-run-1": {
+                            "child_run_id": "child-run-1",
+                            "invocation_id": "invocation-1",
+                            "status": "running",
+                            "counts_as_active_child": True,
+                        }
+                    },
+                    "latest_waiting_user": {},
+                    "recent_outcomes": [],
+                }
+            },
+        },
+    }
+
+    terminal = await orchestrator._collect_pending_subagent_invocations(
+        run=_build_run(),
+        runtime_context=runtime_context,
+    )
+
+    assert terminal is None
+    assert runtime_context["pending_subagent_invocations"] == []
+    assert runtime_context["step_history"][0]["result"]["status"] == "completed"
+    history = runtime_context["subagent_governance_ledger"]["targets"]["parallel-worker"]["history"]
+    assert history["attempt_count"] == 1
+    assert history["active_child_count"] == 0
+    assert runtime_context["subagent_governance_ledger"]["targets"]["parallel-worker"]["usage"]["total_tokens"] == 120
+    completed_event = next(event for event in tracer.events if event["event_type"] == "subagent.completed")
+    assert completed_event["payload"]["child_run_id"] == "child-run-1"
 
 
 async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_question():
