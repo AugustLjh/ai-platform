@@ -295,6 +295,90 @@ async def test_orchestrator_promotes_tool_result_artifacts_into_final_run_result
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_emits_tool_policy_approval_events():
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({"text": "ok"}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=FakeRunRepository(),
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+
+    observation = await orchestrator._execute_tool_action(
+        definition=_build_definition(),
+        run=_build_run(),
+        runtime_context={"step_history": [], "tool_failures": 0},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="tool_call",
+                title="Search docs",
+                tool_name="search_docs",
+                tool_arguments={"query": "runtime", "api_key": "secret-value"},
+            ),
+            reasoning="Need docs.",
+            iteration=1,
+        ),
+        runtime_policy=RuntimePolicy(["search_docs"]),
+    )
+
+    assert observation["status"] == "completed"
+    event_types = [event["event_type"] for event in tracer.events]
+    assert "policy.requested" in event_types
+    assert "policy.approved" in event_types
+    requested = next(event for event in tracer.events if event["event_type"] == "policy.requested")
+    assert requested["payload"]["decision"] == "approved"
+    assert requested["payload"]["policy"]["runtime_policy_allows"] is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_denies_tool_before_tool_call_when_policy_blocks_it():
+    tracer = FakeTracer()
+    tool_call_repository = FakeToolCallRepository()
+    run_repository = FakeRunRepository()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({"text": "should not run"}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=tool_call_repository,
+        state_store=FakeStateStore(),
+    )
+
+    observation = await orchestrator._execute_tool_action(
+        definition=_build_definition(),
+        run=_build_run(),
+        runtime_context={"step_history": [], "tool_failures": 0},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="tool_call",
+                title="Search docs",
+                tool_name="search_docs",
+                tool_arguments={"query": "runtime"},
+            ),
+            reasoning="Need docs.",
+            iteration=1,
+        ),
+        runtime_policy=RuntimePolicy(["calculator"]),
+    )
+
+    assert observation["status"] == "failed"
+    assert "not allowed" in observation["error"]
+    assert tool_call_repository.updated_calls == []
+    assert run_repository.updated_steps[-1]["status"] == "failed"
+    denied = next(event for event in tracer.events if event["event_type"] == "policy.denied")
+    assert denied["payload"]["policy"]["runtime_policy_allows"] is False
+    assert denied["payload"]["recovery_actions"]
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_persists_partial_artifacts_and_terminal_payload_when_run_fails():
     run_row = _build_run().model_dump(mode="json")
     definition_row = _build_definition().model_dump(mode="json")

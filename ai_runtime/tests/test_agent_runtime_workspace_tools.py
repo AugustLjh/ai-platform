@@ -69,14 +69,22 @@ async def test_workspace_list_search_and_read_are_bounded(tmp_path):
     (workspace / "src" / "app.py").write_text("alpha\nneedle is here\n", encoding="utf-8")
     (workspace / "large.txt").write_text("x" * 1200, encoding="utf-8")
     provider = WorkspaceToolProvider(
-        enabled_tool_names=["workspace_list_files", "workspace_search_text", "workspace_read_file"],
+        enabled_tool_names=[
+            "workspace_list_files",
+            "workspace_search_text",
+            "workspace_read_file",
+            "workspace_file_info",
+            "workspace_tree",
+        ],
         roots=[workspace],
     )
 
     list_tool = await provider.get("workspace_list_files", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
     search_tool = await provider.get("workspace_search_text", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
     read_tool = await provider.get("workspace_read_file", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
-    assert list_tool is not None and search_tool is not None and read_tool is not None
+    info_tool = await provider.get("workspace_file_info", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    tree_tool = await provider.get("workspace_tree", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    assert list_tool is not None and search_tool is not None and read_tool is not None and info_tool is not None and tree_tool is not None
 
     listing = await list_tool.execute(_context(workspace), {"recursive": True, "max_entries": 2})
     assert len(listing["entries"]) == 2
@@ -90,6 +98,13 @@ async def test_workspace_list_search_and_read_are_bounded(tmp_path):
     assert len(read["content"]) == 100
     assert read["truncated"] is True
 
+    info = await info_tool.execute(_context(workspace), {"path": "src/app.py", "include_hash": True})
+    assert info["type"] == "file"
+    assert info["sha256"]
+
+    tree = await tree_tool.execute(_context(workspace), {"max_depth": 2, "max_entries": 10})
+    assert any(entry["path"] == "src/app.py" for entry in tree["entries"])
+
 
 async def test_workspace_git_tools_are_read_only_and_bounded(tmp_path):
     workspace = tmp_path / "workspace"
@@ -101,12 +116,13 @@ async def test_workspace_git_tools_are_read_only_and_bounded(tmp_path):
     subprocess.run(["git", "add", "app.py"], cwd=workspace, check=True)
     subprocess.run(["git", "commit", "-m", "initial"], cwd=workspace, check=True, capture_output=True, text=True)
     (workspace / "app.py").write_text("print('v2')\n", encoding="utf-8")
-    provider = WorkspaceToolProvider(enabled_tool_names=["git_status", "git_diff", "git_log"], roots=[workspace])
+    provider = WorkspaceToolProvider(enabled_tool_names=["git_status", "git_diff", "git_log", "git_branch"], roots=[workspace])
 
     status_tool = await provider.get("git_status", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
     diff_tool = await provider.get("git_diff", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
     log_tool = await provider.get("git_log", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
-    assert status_tool is not None and diff_tool is not None and log_tool is not None
+    branch_tool = await provider.get("git_branch", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    assert status_tool is not None and diff_tool is not None and log_tool is not None and branch_tool is not None
 
     status = await status_tool.execute(_context(workspace), {})
     assert status["exit_code"] == 0
@@ -123,6 +139,10 @@ async def test_workspace_git_tools_are_read_only_and_bounded(tmp_path):
     assert log["exit_code"] == 0
     assert "initial" in log["stdout"]
 
+    branch = await branch_tool.execute(_context(workspace), {})
+    assert branch["exit_code"] == 0
+    assert "master" in branch["stdout"] or "main" in branch["stdout"]
+
 
 async def test_workspace_specs_include_policy_metadata(tmp_path):
     workspace = tmp_path / "workspace"
@@ -136,3 +156,28 @@ async def test_workspace_specs_include_policy_metadata(tmp_path):
     assert metadata_by_name["workspace_read_file"]["access_level"] == "read"
     assert metadata_by_name["git_diff"]["capability"] == "git"
     assert metadata_by_name["git_diff"]["side_effect"] == "none"
+
+
+async def test_default_workspace_tool_set_covers_internal_alpha_mvp(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.delenv("AGENT_WORKSPACE_TOOLS", raising=False)
+    monkeypatch.delenv("AGENT_WORKSPACE_ROOTS", raising=False)
+    provider = WorkspaceToolProvider.from_env()
+    provider.policy = provider.policy.__class__(roots=(workspace,))
+
+    specs = await provider.list_specs(ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    names = {spec["name"] for spec in specs}
+
+    assert {
+        "workspace_list_files",
+        "workspace_read_file",
+        "workspace_search_text",
+        "workspace_file_info",
+        "workspace_tree",
+        "git_status",
+        "git_diff",
+        "git_show",
+        "git_log",
+        "git_branch",
+    }.issubset(names)

@@ -285,7 +285,25 @@
             <span>内置 {{ countToolsByKind('builtin') }}</span>
             <span>知识库 {{ countToolsByKind('knowledge') }}</span>
             <span>MCP {{ countToolsByKind('mcp') }}</span>
-            <span>项目上下文 {{ countToolsByKind('engineering') }}</span>
+            <span>项目上下文 {{ countToolsByKind('project-context') }}</span>
+            <span>Workspace {{ countToolsByKind('workspace') }}</span>
+            <span>Sandbox {{ countToolsByKind('sandbox-exec') }}</span>
+          </div>
+
+          <div class="execution-mode-panel">
+            <span>执行模式</span>
+            <strong>{{ executionModeLabel }}</strong>
+            <p>{{ executionModeSummary }}</p>
+          </div>
+
+          <div class="capability-grid">
+            <article v-for="capability in effectiveCapabilities" :key="capability.key" :class="['capability-item', `status-${capability.status}`]">
+              <div>
+                <strong>{{ capability.label }}</strong>
+                <p>{{ capability.summary }}</p>
+              </div>
+              <span>{{ capability.statusLabel }}</span>
+            </article>
           </div>
 
           <div v-if="availableTools.length === 0" class="panel-empty">当前没有加载到任何工具。</div>
@@ -295,14 +313,24 @@
                 <div>
                   <strong>{{ tool.name }}</strong>
                   <p>{{ tool.description || '暂无描述' }}</p>
-                  <p v-if="tool.kind === 'engineering'" class="tool-source">
+                  <p v-if="tool.kind === 'project-context' || tool.kind === 'engineering'" class="tool-source">
                     内部项目上下文能力 · 当前仅访问会话历史与已挂载文档
+                  </p>
+                  <p v-if="tool.kind === 'workspace'" class="tool-source">
+                    隔离 workspace 只读能力 · {{ tool.metadata?.capability || 'workspace' }} · {{ accessLevelLabel(tool.metadata?.access_level) }}
                   </p>
                   <p v-if="tool.kind === 'mcp' && tool.metadata?.server_name" class="tool-source">
                     来源 {{ tool.metadata.server_name }} · {{ tool.metadata.source_tool_name || tool.name }}
                   </p>
                 </div>
                 <span :class="['tool-kind', `kind-${tool.kind}`]">{{ toolKindLabel(tool.kind) }}</span>
+              </div>
+
+              <div class="tool-policy-tags">
+                <span v-if="tool.metadata?.requires_workspace">需要 Workspace</span>
+                <span v-if="tool.metadata?.requires_sandbox">需要 Sandbox</span>
+                <span v-if="tool.metadata?.side_effect">副作用: {{ sideEffectLabel(tool.metadata.side_effect) }}</span>
+                <span v-if="tool.metadata?.risk_level">风险: {{ riskLevelLabel(tool.metadata.risk_level) }}</span>
               </div>
 
               <div class="tool-schema">
@@ -373,6 +401,7 @@ const selectedSubagentIds = ref([])
 const agent = computed(() => agentsStore.currentAgent)
 const skills = computed(() => agentsStore.skills)
 const availableTools = computed(() => agentsStore.availableTools)
+const executionMode = computed(() => agentsStore.availableToolsExecutionMode || agent.value?.config?.execution_mode || agent.value?.config?.runtime_policy?.execution_mode || null)
 const mcpServers = computed(() => agentsStore.mcpServers)
 const subagents = computed(() => agentsStore.subagents)
 const knowledgeBases = computed(() => knowledgeStore.knowledgeBases)
@@ -552,14 +581,121 @@ const skillCapabilitySummary = (skill) => {
   return ''
 }
 
+const toolsByProvider = computed(() => {
+  const groups = {}
+  availableTools.value.forEach((tool) => {
+    const provider = String(tool.metadata?.provider || tool.kind || 'unknown')
+    groups[provider] = groups[provider] || []
+    groups[provider].push(tool)
+  })
+  return groups
+})
+
+const capabilityToolCount = (predicate) => availableTools.value.filter(predicate).length
+
+const executionModeLabelMap = {
+  context_only: '只读上下文',
+  read_only_workspace: 'Workspace 只读',
+  patch_proposal: 'Patch 提案',
+  sandbox_verified: 'Sandbox 验证',
+  network_research: '联网研究'
+}
+
+const executionModeName = computed(() => {
+  const raw = typeof executionMode.value === 'string'
+    ? executionMode.value
+    : executionMode.value?.name
+  return String(raw || 'context_only').trim().replaceAll('-', '_')
+})
+
+const executionModeLabel = computed(() => {
+  if (typeof executionMode.value === 'object' && executionMode.value?.label) {
+    return executionMode.value.label
+  }
+  return executionModeLabelMap[executionModeName.value] || executionModeName.value
+})
+
+const executionModeSummary = computed(() => {
+  if (typeof executionMode.value === 'object' && executionMode.value?.summary) {
+    return executionMode.value.summary
+  }
+  const fallback = {
+    context_only: '只能使用会话、上传文件、知识库上下文和已授权外部工具。',
+    read_only_workspace: '允许读取绑定 workspace 和 git 只读信息。',
+    patch_proposal: '允许生成可审查 patch artifact，但不直接合并。',
+    sandbox_verified: '允许在受控 sandbox 内运行测试、构建或验证任务。',
+    network_research: '允许按策略联网检索和提取网页来源。'
+  }
+  return fallback[executionModeName.value] || '当前 agent 未声明执行模式，按只读上下文处理。'
+})
+
+const effectiveCapabilities = computed(() => {
+  const projectContextCount = capabilityToolCount((tool) => tool.kind === 'project-context' || tool.kind === 'engineering' || tool.metadata?.provider === 'project-context')
+  const workspaceCount = capabilityToolCount((tool) => tool.kind === 'workspace' || tool.metadata?.capability === 'workspace')
+  const gitCount = capabilityToolCount((tool) => tool.kind === 'workspace' && tool.metadata?.capability === 'git')
+  const sandboxCount = capabilityToolCount((tool) => tool.metadata?.requires_sandbox || tool.metadata?.capability === 'sandbox')
+  const webCount = capabilityToolCount((tool) => tool.metadata?.capability === 'web' || tool.metadata?.access_level === 'network')
+  const mcpCount = toolsByProvider.value.mcp?.length || 0
+
+  const item = (key, label, count, enabledSummary, disabledSummary) => ({
+    key,
+    label,
+    status: count > 0 ? 'ready' : 'missing',
+    statusLabel: count > 0 ? `${count} 个工具` : '未配置',
+    summary: count > 0 ? enabledSummary(count) : disabledSummary
+  })
+
+  return [
+    item('project-context', '项目上下文', projectContextCount, () => '可读取会话历史、上传文件和已挂载文档。', '未启用 project-context provider。'),
+    item('workspace', 'Workspace 只读', workspaceCount, () => '可在绑定 workspace 内列目录、读文件和搜索文本。', '未绑定或未启用 workspace，不能读取项目副本。'),
+    item('git', 'Git 只读', gitCount, () => '可查看 status、diff、log、show 和 branch。', '缺少 workspace git 工具或当前未配置 workspace。'),
+    item('sandbox', 'Sandbox 执行', sandboxCount, () => '可在受控执行面运行命令或验证任务。', '当前未开放 sandbox/test/build 执行能力。'),
+    item('web', '联网研究', webCount, () => '可按策略访问网络或网页来源。', '当前未开放 web/browser 网络能力。'),
+    item('mcp', 'MCP 外部工具', mcpCount, () => '已绑定 MCP 工具，可按 server 治理状态调用。', '未绑定可用 MCP server。')
+  ]
+})
+
 const toolKindLabel = (kind) => {
   const mapping = {
     builtin: '内置',
     knowledge: '知识库',
     mcp: 'MCP',
-    engineering: '项目上下文'
+    engineering: '项目上下文',
+    'project-context': '项目上下文',
+    'sandbox-exec': 'Sandbox',
+    workspace: 'Workspace'
   }
   return mapping[kind] || kind || '未知'
+}
+
+const accessLevelLabel = (value) => {
+  const mapping = {
+    read: '只读',
+    write: '写入',
+    execute: '执行',
+    network: '网络'
+  }
+  return mapping[value] || value || '未知权限'
+}
+
+const sideEffectLabel = (value) => {
+  const mapping = {
+    none: '无',
+    workspace_write: '写 workspace',
+    process: '进程',
+    network: '网络',
+    external_system: '外部系统'
+  }
+  return mapping[value] || value
+}
+
+const riskLevelLabel = (value) => {
+  const mapping = {
+    low: '低',
+    medium: '中',
+    high: '高'
+  }
+  return mapping[value] || value
 }
 
 const skillIntentSummary = (skill) => {
@@ -656,7 +792,7 @@ const subagentReviewSummary = (subagent) => {
   return requiresReview ? '要求 reviewer/judge' : ''
 }
 
-const countToolsByKind = (kind) => availableTools.value.filter((tool) => tool.kind === kind).length
+const countToolsByKind = (kind) => availableTools.value.filter((tool) => tool.kind === kind || tool.metadata?.legacy_provider === kind).length
 
 const isServerSelected = (serverId) => selectedMCPServerIds.value.includes(serverId)
 
@@ -1000,6 +1136,83 @@ onMounted(async () => {
   font-weight: 600;
 }
 
+.execution-mode-panel {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  background: rgba(14, 165, 233, 0.06);
+}
+
+.execution-mode-panel span {
+  display: block;
+  color: var(--gray-500);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.execution-mode-panel strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--gray-900);
+}
+
+.execution-mode-panel p {
+  margin-top: 4px;
+  color: var(--gray-600);
+  font-size: 13px;
+}
+
+.capability-grid {
+  margin-top: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.capability-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(248, 250, 252, 0.75);
+}
+
+.capability-item strong {
+  color: var(--gray-900);
+}
+
+.capability-item p {
+  margin-top: 4px;
+  color: var(--gray-600);
+  font-size: 13px;
+}
+
+.capability-item > span {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 5px 8px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.capability-item.status-ready {
+  border-color: rgba(16, 185, 129, 0.24);
+  background: rgba(16, 185, 129, 0.06);
+}
+
+.capability-item.status-ready > span {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+}
+
+.capability-item.status-missing > span {
+  background: rgba(148, 163, 184, 0.18);
+  color: #475569;
+}
+
 .tool-item {
   display: grid;
   gap: 12px;
@@ -1044,6 +1257,39 @@ onMounted(async () => {
 .kind-mcp {
   background: rgba(16, 185, 129, 0.12);
   color: #047857;
+}
+
+.kind-project-context,
+.kind-engineering {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0369a1;
+}
+
+.kind-workspace {
+  background: rgba(124, 58, 237, 0.12);
+  color: #5b21b6;
+}
+
+.kind-sandbox-exec {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
+.tool-policy-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tool-policy-tags span {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: var(--radius-full);
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--gray-700);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .tool-schema {

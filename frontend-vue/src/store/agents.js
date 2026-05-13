@@ -295,6 +295,18 @@ const normalizeToolSpec = (raw = {}) => ({
   metadata: parseJSON(raw.metadata, {})
 })
 
+const normalizeExecutionMode = (raw = {}) => ({
+  name: raw.name || 'context_only',
+  label: raw.label || 'Context Only',
+  summary: raw.summary || '',
+  capabilities: Array.isArray(raw.capabilities) ? [...raw.capabilities] : [],
+  riskLevel: raw.risk_level || raw.riskLevel || 'low',
+  source: raw.source || 'default',
+  allowedModes: Array.isArray(raw.allowed_modes || raw.allowedModes)
+    ? [...(raw.allowed_modes || raw.allowedModes)]
+    : []
+})
+
 const sortByUpdatedDesc = (items) => [...items].sort((a, b) => {
   const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime()
   const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime()
@@ -316,6 +328,7 @@ export const useAgentsStore = defineStore('agents', {
     artifacts: [],
     executionSurface: null,
     availableTools: [],
+    availableToolsExecutionMode: null,
     skills: [],
     mcpServers: [],
     mcpGovernanceSummary: null,
@@ -909,6 +922,7 @@ export const useAgentsStore = defineStore('agents', {
       try {
         const { data } = await agentsAPI.listTools(agentDefinitionId)
         this.availableTools = (data.tools || []).map(normalizeToolSpec)
+        this.availableToolsExecutionMode = normalizeExecutionMode(data.execution_mode || data.executionMode || {})
         return this.availableTools
       } catch (error) {
         this.setError(error, 'Failed to fetch agent tools')

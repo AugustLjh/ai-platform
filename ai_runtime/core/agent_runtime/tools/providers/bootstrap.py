@@ -9,11 +9,12 @@ from ai_runtime.core.agent_runtime.tools.providers.builtin import register_built
 from ai_runtime.core.agent_runtime.tools.providers.engineering import EngineeringToolProvider
 from ai_runtime.core.agent_runtime.tools.providers.knowledge import register_knowledge_tools
 from ai_runtime.core.agent_runtime.tools.providers.mcp import MCPToolProvider
+from ai_runtime.core.agent_runtime.tools.providers.sandbox_exec import SandboxExecToolProvider
 from ai_runtime.core.agent_runtime.tools.providers.workspace import WorkspaceToolProvider
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOOL_PROVIDERS = ("builtin", "knowledge", "mcp", "engineering", "workspace")
+DEFAULT_TOOL_PROVIDERS = ("builtin", "knowledge", "mcp", "project-context", "workspace", "sandbox-exec")
 
 
 def _parse_csv(value: str | None, default: Iterable[str]) -> list[str]:
@@ -39,14 +40,37 @@ def configure_tool_registry(registry, *, mcp_registry: MCPRegistry) -> None:
         register_knowledge_tools(registry)
     if "mcp" in enabled_providers:
         registry.register_provider(MCPToolProvider(mcp_registry))
-    if "engineering" in enabled_providers and _env_bool("AGENT_ENGINEERING_ENABLED", True):
+    project_context_enabled = (
+        "project-context" in enabled_providers
+        or "project_context" in enabled_providers
+        or "engineering" in enabled_providers
+    )
+    if project_context_enabled and _env_bool("AGENT_PROJECT_CONTEXT_ENABLED", _env_bool("AGENT_ENGINEERING_ENABLED", True)):
         registry.register_provider(EngineeringToolProvider.from_env())
     if "workspace" in enabled_providers and _env_bool("AGENT_WORKSPACE_ENABLED", False):
         registry.register_provider(WorkspaceToolProvider.from_env())
+    sandbox_exec_enabled = (
+        "sandbox-exec" in enabled_providers
+        or "sandbox_exec" in enabled_providers
+        or "sandbox" in enabled_providers
+    )
+    if sandbox_exec_enabled and _env_bool("AGENT_SANDBOX_EXEC_ENABLED", False):
+        registry.register_provider(SandboxExecToolProvider.from_env())
 
     unknown_providers = sorted(
         name for name in enabled_providers
-        if name not in {"builtin", "knowledge", "mcp", "engineering", "workspace"}
+        if name not in {
+            "builtin",
+            "knowledge",
+            "mcp",
+            "engineering",
+            "project-context",
+            "project_context",
+            "workspace",
+            "sandbox-exec",
+            "sandbox_exec",
+            "sandbox",
+        }
     )
     if unknown_providers:
         logger.warning("Unknown agent tool providers ignored: %s", ", ".join(unknown_providers))

@@ -22,6 +22,9 @@ ArtifactType = Literal[
     "task_plan",
     "table",
     "document_excerpt",
+    "directory_tree",
+    "document_pages",
+    "archive_bundle",
 ]
 
 

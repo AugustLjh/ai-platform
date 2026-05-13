@@ -195,6 +195,12 @@ type AgentToolSpec struct {
 	Metadata    json.RawMessage `json:"metadata"`
 }
 
+type AgentToolListResponse struct {
+	Tools         []*AgentToolSpec `json:"tools"`
+	Total         int              `json:"total"`
+	ExecutionMode map[string]any   `json:"execution_mode,omitempty"`
+}
+
 type MCPServerUpsertRequest struct {
 	Name      string          `json:"name"`
 	Transport string          `json:"transport"`
@@ -646,14 +652,14 @@ func (s *AgentService) ResumeRun(ctx context.Context, tenantID, runID string, re
 	return s.aiClient.ResumeAgentRun(ctx, runID, tenantID, req.InputPatch)
 }
 
-func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDefinitionID string) ([]*AgentToolSpec, error) {
-	items, err := s.aiClient.ListAgentTools(ctx, tenantID, agentDefinitionID)
+func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDefinitionID string) (*AgentToolListResponse, error) {
+	response, err := s.aiClient.ListAgentTools(ctx, tenantID, agentDefinitionID)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make([]*AgentToolSpec, 0, len(items))
-	for _, item := range items {
+	result := make([]*AgentToolSpec, 0, len(response.Tools))
+	for _, item := range response.Tools {
 		spec := item
 		result = append(result, &AgentToolSpec{
 			Name:        spec.Name,
@@ -663,7 +669,11 @@ func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDe
 			Metadata:    spec.Metadata,
 		})
 	}
-	return result, nil
+	return &AgentToolListResponse{
+		Tools:         result,
+		Total:         len(result),
+		ExecutionMode: response.ExecutionMode,
+	}, nil
 }
 
 func (s *AgentService) ListSkills(tenantID string) ([]*database.Skill, error) {

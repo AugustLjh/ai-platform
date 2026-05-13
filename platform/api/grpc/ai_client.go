@@ -270,9 +270,9 @@ type AgentRunTreeRunSummary struct {
 }
 
 type AgentRunTreeNode struct {
-	Run         *AgentRunTreeRunSummary     `json:"run"`
-	Depth       int                         `json:"depth"`
-	Invocations []*AgentRunTreeInvocation   `json:"invocations"`
+	Run         *AgentRunTreeRunSummary   `json:"run"`
+	Depth       int                       `json:"depth"`
+	Invocations []*AgentRunTreeInvocation `json:"invocations"`
 }
 
 type AgentRunTreeInvocation struct {
@@ -297,8 +297,9 @@ type AgentToolSpec struct {
 }
 
 type runtimeAgentToolListResponse struct {
-	Tools []AgentToolSpec `json:"tools"`
-	Total int             `json:"total"`
+	Tools         []AgentToolSpec `json:"tools"`
+	Total         int             `json:"total"`
+	ExecutionMode map[string]any  `json:"execution_mode"`
 }
 
 type runtimeMCPServerTestResponse map[string]any
@@ -506,7 +507,7 @@ func (c *AIClient) GetAgentRunTree(ctx context.Context, runID, tenantID string, 
 	return &response, nil
 }
 
-func (c *AIClient) ListAgentTools(ctx context.Context, tenantID, agentDefinitionID string) ([]AgentToolSpec, error) {
+func (c *AIClient) ListAgentTools(ctx context.Context, tenantID, agentDefinitionID string) (*runtimeAgentToolListResponse, error) {
 	path := "/api/v1/agents/tools"
 	if strings.TrimSpace(agentDefinitionID) != "" {
 		path += "?agent_definition_id=" + url.QueryEscape(agentDefinitionID)
@@ -515,7 +516,7 @@ func (c *AIClient) ListAgentTools(ctx context.Context, tenantID, agentDefinition
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, tenantID, "", &response); err != nil {
 		return nil, err
 	}
-	return response.Tools, nil
+	return &response, nil
 }
 
 func (c *AIClient) TestMCPServer(ctx context.Context, tenantID, serverID string) (map[string]any, error) {

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ai_runtime.core.agent_runtime import AgentRuntime
+from ai_runtime.core.agent_runtime.execution_modes import normalize_execution_mode
 from ai_runtime.core.agent_runtime.models import (
     AgentRunEventListResponse,
     AgentRunListResponse,
@@ -52,12 +53,18 @@ async def list_tools(
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
     runtime = get_agent_runtime()
+    agent_definition = None
+    if agent_definition_id:
+        agent_definition = await runtime.agent_repository.get_definition(agent_definition_id, tenant_id)
+    execution_mode = normalize_execution_mode(
+        agent_definition.get("config") if isinstance(agent_definition, dict) else None
+    ).model_dump()
     tools = await runtime.list_tools(
         tenant_id=tenant_id,
         user_id=user_id,
         agent_definition_id=agent_definition_id,
     )
-    return {"tools": tools, "total": len(tools)}
+    return {"tools": tools, "total": len(tools), "execution_mode": execution_mode}
 
 
 @router.get("/runs", response_model=AgentRunListResponse)

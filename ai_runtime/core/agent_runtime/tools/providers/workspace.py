@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import os
 import subprocess
 from dataclasses import dataclass
@@ -14,10 +15,13 @@ DEFAULT_WORKSPACE_TOOL_NAMES = (
     "workspace_list_files",
     "workspace_read_file",
     "workspace_search_text",
+    "workspace_file_info",
+    "workspace_tree",
     "git_status",
     "git_diff",
     "git_show",
     "git_log",
+    "git_branch",
 )
 
 DEFAULT_EXCLUDE_PATTERNS = (
@@ -136,6 +140,13 @@ class WorkspaceTool(BaseTool):
         text = data.decode("utf-8", errors="replace")
         text, char_truncated = self._truncate_text(text, max_chars)
         return text, byte_truncated or char_truncated or stat.st_size > len(data), stat.st_size
+
+    def _file_digest(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
 
     def _run_git(self, context: ToolContext, args: list[str], *, max_chars: int) -> dict[str, Any]:
         workspace_root = self._resolve_workspace_root(context)
@@ -324,6 +335,124 @@ class WorkspaceSearchTextTool(WorkspaceTool):
         }
 
 
+class WorkspaceFileInfoTool(WorkspaceTool):
+    spec = ToolSpec(
+        name="workspace_file_info",
+        description="Return bounded metadata for a file or directory inside the configured workspace root.",
+        input_schema={
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": {"type": "string"},
+                "include_hash": {"type": "boolean"},
+            },
+        },
+        kind="workspace",
+        metadata=_tool_metadata(capability="workspace", access_level="read"),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        workspace_root = self._resolve_workspace_root(context)
+        path = self._resolve_path(context, str(arguments.get("path") or ""))
+        rel = self._relative_path(workspace_root, path)
+        if self._excluded(rel):
+            raise PermissionError("path is excluded from workspace reads")
+
+        stat = path.stat()
+        result: dict[str, Any] = {
+            "path": rel,
+            "type": "directory" if path.is_dir() else "file",
+            "size_bytes": stat.st_size if path.is_file() else None,
+            "modified_at": int(stat.st_mtime),
+            "is_symlink": path.is_symlink(),
+        }
+        if path.is_file():
+            result["extension"] = path.suffix
+            result["readable_text"] = stat.st_size <= self.policy.max_read_bytes
+            if bool(arguments.get("include_hash")) and stat.st_size <= self.policy.max_read_bytes:
+                result["sha256"] = self._file_digest(path)
+        if path.is_dir():
+            visible_children = 0
+            for child in path.iterdir():
+                child_rel = self._relative_path(workspace_root, child)
+                if not self._excluded(child_rel):
+                    visible_children += 1
+            result["visible_child_count"] = visible_children
+        return result
+
+
+class WorkspaceTreeTool(WorkspaceTool):
+    spec = ToolSpec(
+        name="workspace_tree",
+        description="Return a bounded directory tree inside the configured workspace root.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "max_depth": {"type": "integer", "minimum": 1, "maximum": 8},
+                "max_entries": {"type": "integer", "minimum": 1, "maximum": 1000},
+            },
+        },
+        kind="workspace",
+        metadata=_tool_metadata(capability="workspace", access_level="read"),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        workspace_root = self._resolve_workspace_root(context)
+        base_path = self._resolve_path(context, arguments.get("path"))
+        if not base_path.is_dir():
+            raise ValueError("path must be a directory")
+
+        max_depth = _clamp_int(arguments.get("max_depth"), default=3, minimum=1, maximum=8)
+        max_entries = _clamp_int(arguments.get("max_entries"), default=200, minimum=1, maximum=1000)
+        entries: list[dict[str, Any]] = []
+        truncated = False
+
+        def walk(directory: Path, depth: int) -> None:
+            nonlocal truncated
+            if truncated or depth > max_depth:
+                return
+            try:
+                children = sorted(directory.iterdir(), key=lambda value: (not value.is_dir(), value.name.lower()))
+            except OSError:
+                return
+            for child in children:
+                if truncated:
+                    break
+                rel = self._relative_path(workspace_root, child)
+                if self._excluded(rel):
+                    continue
+                try:
+                    resolved = child.resolve(strict=True)
+                except FileNotFoundError:
+                    continue
+                if resolved != workspace_root and workspace_root not in resolved.parents:
+                    continue
+                stat = child.stat()
+                entries.append(
+                    {
+                        "path": rel,
+                        "depth": depth,
+                        "type": "directory" if child.is_dir() else "file",
+                        "size_bytes": stat.st_size if child.is_file() else None,
+                    }
+                )
+                if len(entries) >= max_entries:
+                    truncated = True
+                    break
+                if child.is_dir():
+                    walk(child, depth + 1)
+
+        walk(base_path, 1)
+        return {
+            "workspace_root": str(workspace_root),
+            "path": self._relative_path(workspace_root, base_path),
+            "max_depth": max_depth,
+            "entries": entries,
+            "truncated": truncated,
+        }
+
+
 class GitStatusTool(WorkspaceTool):
     spec = ToolSpec(
         name="git_status",
@@ -408,14 +537,31 @@ class GitLogTool(WorkspaceTool):
         return self._run_git(context, ["log", f"--max-count={limit}", "--date=iso", "--pretty=format:%h %ad %an %s"], max_chars=max_chars)
 
 
+class GitBranchTool(WorkspaceTool):
+    spec = ToolSpec(
+        name="git_branch",
+        description="Return local branch information for the configured workspace root.",
+        input_schema={"type": "object", "properties": {"max_chars": {"type": "integer", "minimum": 100, "maximum": 50000}}},
+        kind="workspace",
+        metadata=_tool_metadata(capability="git", access_level="read"),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        max_chars = _clamp_int(arguments.get("max_chars"), default=12000, minimum=100, maximum=50000)
+        return self._run_git(context, ["branch", "--list", "--verbose", "--no-abbrev"], max_chars=max_chars)
+
+
 WORKSPACE_TOOL_TYPES = {
     "workspace_list_files": WorkspaceListFilesTool,
     "workspace_read_file": WorkspaceReadFileTool,
     "workspace_search_text": WorkspaceSearchTextTool,
+    "workspace_file_info": WorkspaceFileInfoTool,
+    "workspace_tree": WorkspaceTreeTool,
     "git_status": GitStatusTool,
     "git_diff": GitDiffTool,
     "git_show": GitShowTool,
     "git_log": GitLogTool,
+    "git_branch": GitBranchTool,
 }
 
 

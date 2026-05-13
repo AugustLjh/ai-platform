@@ -200,7 +200,7 @@ func (h *AgentHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.agentService.ListAvailableTools(
+	result, err := h.agentService.ListAvailableTools(
 		r.Context(),
 		user.TenantID,
 		strings.TrimSpace(r.URL.Query().Get("agent_definition_id")),
@@ -209,7 +209,7 @@ func (h *AgentHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	respondJSON(w, map[string]any{"tools": items, "total": len(items)}, http.StatusOK)
+	respondJSON(w, result, http.StatusOK)
 }
 
 func (h *AgentHandler) HandleRuns(w http.ResponseWriter, r *http.Request) {

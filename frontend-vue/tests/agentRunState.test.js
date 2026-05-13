@@ -188,6 +188,39 @@ test('buildRunEventPatch preserves derived artifacts when final event carries on
   )
 })
 
+test('deriveRunState promotes workspace.bound event into context and artifacts', () => {
+  const derived = deriveRunState({
+    id: 'run-workspace',
+    context: {},
+    artifacts: [],
+    toolCalls: []
+  }, [
+    {
+      id: 'event-workspace',
+      runId: 'run-workspace',
+      sequence: 1,
+      eventType: 'workspace.bound',
+      createdAt: '2026-05-13T00:00:00.000Z',
+      payload: {
+        id: 'tenant/run-workspace',
+        root: '/workspace',
+        status: 'ready',
+        source: { type: 'upload_bundle' },
+        snapshot: {
+          file_count: 2,
+          total_size_bytes: 42,
+          snapshot_at: '2026-05-13T00:00:00.000Z'
+        }
+      }
+    }
+  ])
+
+  assert.equal(derived.context.workspace.root, '/workspace')
+  assert.equal(derived.runPatch.context.workspace_root, '/workspace')
+  assert.equal(derived.artifacts[0].artifactType, 'workspace_summary')
+  assert.equal(derived.artifacts[0].payload.snapshot.file_count, 2)
+})
+
 test('buildRunEventPatch for waiting_user keeps question text and promoted artifacts together', () => {
   const patch = buildRunEventPatch({
     id: 'run-3',

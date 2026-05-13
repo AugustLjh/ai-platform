@@ -61,6 +61,7 @@ export const deriveRunState = (run, events) => {
   let finalOutputText = run?.finalOutputText || ''
   let finalOutputJson = run?.finalOutputJson || null
   let artifacts = Array.isArray(run?.artifacts) ? [...run.artifacts] : []
+  let context = run?.context && typeof run.context === 'object' ? { ...run.context } : {}
   const { boundaryIndex, activeEvents } = getExecutionBoundary(events)
 
   const captureResultPayload = (payload = {}) => {
@@ -114,6 +115,9 @@ export const deriveRunState = (run, events) => {
       finalOutputText = ''
       finalOutputJson = null
       artifacts = []
+      context = {
+        ...context
+      }
       stepsMap.clear()
       toolCallMap.clear()
     }
@@ -122,6 +126,25 @@ export const deriveRunState = (run, events) => {
 
     if (event.eventType === 'plan.created' && payload.plan) {
       plan = payload.plan
+    }
+
+    if (event.eventType === 'workspace.bound') {
+      context = {
+        ...context,
+        workspace: payload,
+        workspace_root: payload.root || context.workspace_root || ''
+      }
+      artifacts = mergeArtifacts(artifacts, [normalizeArtifact({
+        artifact_type: 'workspace_summary',
+        name: 'Workspace Binding',
+        payload,
+        metadata: {
+          source: 'run_event',
+          event_type: event.eventType,
+          event_sequence: event.sequence
+        },
+        created_at: event.createdAt
+      })])
     }
 
     if (event.eventType.startsWith('step.')) {
@@ -240,10 +263,12 @@ export const deriveRunState = (run, events) => {
     steps: derivedSteps,
     toolCalls: derivedToolCalls,
     artifacts,
+    context,
     runPatch: {
       finalOutput: finalOutputText || finalOutput,
       finalOutputText: finalOutputText || finalOutput,
       finalOutputJson,
+      context,
       steps: derivedSteps,
       toolCalls: derivedToolCalls,
       artifacts: mergeArtifacts(artifacts)

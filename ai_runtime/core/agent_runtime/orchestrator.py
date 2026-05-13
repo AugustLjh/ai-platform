@@ -39,6 +39,7 @@ from ai_runtime.core.agent_runtime.subagents.router import SubagentRouter
 from ai_runtime.core.agent_runtime.summarizer import AgentSummarizer
 from ai_runtime.core.agent_runtime.tools.base import ToolContext, ToolLookupContext
 from ai_runtime.core.agent_runtime.tracing import AgentTracer
+from ai_runtime.core.agent_runtime.workspace_manager import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +52,24 @@ def apply_skill_tool_policy(
         return available_tools, RuntimePolicy(), None
 
     effective_allowlist = [tool_name for tool_name in skill_context.tool_allowlist if str(tool_name).strip()]
-    if not effective_allowlist:
+    managed_tool_kinds = {
+        str(kind).strip()
+        for contract in skill_context.metadata.get("skill_contracts", [])
+        if isinstance(contract, dict)
+        for kind in contract.get("managed_tool_kinds", [])
+        if str(kind).strip()
+    }
+    if not effective_allowlist and not managed_tool_kinds:
         return available_tools, RuntimePolicy(), None
 
-    runtime_policy = RuntimePolicy(effective_allowlist)
     filtered_tools = [
         tool for tool in available_tools
-        if runtime_policy.is_tool_allowed(tool["name"])
+        if tool["name"] in effective_allowlist
+        or str(tool.get("kind") or "").strip() in managed_tool_kinds
+        or str((tool.get("metadata") or {}).get("legacy_provider") or "").strip() in managed_tool_kinds
     ]
-    return filtered_tools, runtime_policy, effective_allowlist
+    managed_tool_names = [tool["name"] for tool in filtered_tools if tool["name"] not in effective_allowlist]
+    return filtered_tools, RuntimePolicy([*effective_allowlist, *managed_tool_names]), [*effective_allowlist, *managed_tool_names]
 
 
 class AgentOrchestrator:
@@ -79,6 +89,7 @@ class AgentOrchestrator:
         subagent_registry: SubagentRegistry | None = None,
         subagent_router: SubagentRouter | None = None,
         subagent_handoff: SubagentHandoff | None = None,
+        workspace_manager: WorkspaceManager | None = None,
     ) -> None:
         self.planner = planner
         self.executor = executor
@@ -95,6 +106,7 @@ class AgentOrchestrator:
         self.subagent_registry = subagent_registry
         self.subagent_router = subagent_router or SubagentRouter()
         self.subagent_handoff = subagent_handoff
+        self.workspace_manager = workspace_manager
         self.optimization_config = AgentRuntimeOptimizationConfig.from_env()
         self.tool_result_cache = ToolResultCache(self.optimization_config.tool_cache_max_entries)
 
@@ -619,6 +631,68 @@ class AgentOrchestrator:
         if delegate_target:
             observation["delegate_target"] = delegate_target
         return observation
+
+    def _tool_recovery_actions(self, *, metadata: dict[str, Any], denied: bool = False) -> list[str]:
+        configured_actions = metadata.get("recovery_actions")
+        actions = [str(item).strip() for item in configured_actions if str(item).strip()] if isinstance(configured_actions, list) else []
+        requires_workspace = bool(metadata.get("requires_workspace"))
+        requires_sandbox = bool(metadata.get("requires_sandbox"))
+        if requires_workspace:
+            actions.append("Bind a run workspace or upload a project bundle before using this tool.")
+        if requires_sandbox:
+            actions.append("Configure and enable a sandbox runner before using execution tools.")
+        if denied:
+            actions.append("Enable the tool in the agent skill/runtime policy or choose a lower-risk execution mode.")
+        return list(dict.fromkeys(actions))
+
+    async def _evaluate_tool_policy(
+        self,
+        *,
+        run: AgentRun,
+        tool_name: str,
+        runtime_policy: RuntimePolicy,
+        mounted_knowledge_base_ids: list[str] | None = None,
+        managed_subagent: SubagentTarget | None = None,
+    ) -> dict[str, Any]:
+        lookup_context = self._build_tool_lookup_context(
+            run,
+            mounted_knowledge_base_ids=mounted_knowledge_base_ids,
+            managed_subagent=managed_subagent,
+        )
+        spec = await self.executor.registry.get_spec(tool_name, context=lookup_context)
+        metadata = dict((spec or {}).get("metadata") or {})
+        reasons: list[str] = []
+        unavailable_reasons: list[str] = []
+        allowed_by_policy = runtime_policy.is_tool_allowed(tool_name)
+        if not allowed_by_policy:
+            reasons.append("tool is not allowed by the active runtime policy")
+        if spec is None:
+            unavailable_reasons.append("tool is not registered or is hidden by provider configuration")
+        if metadata.get("requires_workspace") and not lookup_context.workspace_root:
+            unavailable_reasons.append("workspace is not bound to this run")
+        if metadata.get("status") == "unavailable" and metadata.get("unavailable_reason"):
+            unavailable_reasons.append(str(metadata.get("unavailable_reason")))
+
+        allowed = allowed_by_policy and spec is not None and not unavailable_reasons
+        return {
+            "allowed": allowed,
+            "decision": "approved" if allowed else "denied",
+            "tool_name": tool_name,
+            "tool_kind": str((spec or {}).get("kind") or "builtin"),
+            "metadata": metadata,
+            "policy": {
+                "runtime_policy_allows": allowed_by_policy,
+                "requires_workspace": bool(metadata.get("requires_workspace")),
+                "requires_sandbox": bool(metadata.get("requires_sandbox")),
+                "capability": metadata.get("capability"),
+                "access_level": metadata.get("access_level"),
+                "side_effect": metadata.get("side_effect"),
+                "risk_level": metadata.get("risk_level"),
+            },
+            "reasons": reasons,
+            "unavailable_reasons": unavailable_reasons,
+            "recovery_actions": self._tool_recovery_actions(metadata=metadata, denied=not allowed_by_policy),
+        }
 
     def _resolve_current_delegation_depth(self, run: AgentRun) -> int:
         delegation = run.metadata.get("delegation")
@@ -1351,6 +1425,84 @@ class AgentOrchestrator:
 
         tool_name = action.tool_name or ""
         tool_arguments = action.tool_arguments
+        policy_decision = await self._evaluate_tool_policy(
+            run=run,
+            tool_name=tool_name,
+            runtime_policy=runtime_policy,
+            mounted_knowledge_base_ids=mounted_knowledge_base_ids,
+            managed_subagent=managed_subagent,
+        )
+        tool_kind = policy_decision["tool_kind"]
+        await self.tracer.emit_event(
+            run.id,
+            "policy.requested",
+            step_id=step["id"],
+            policy_type="tool",
+            subject=tool_name,
+            decision=policy_decision["decision"],
+            tool_name=tool_name,
+            tool_kind=tool_kind,
+            policy=policy_decision["policy"],
+            metadata=policy_decision["metadata"],
+        )
+        if policy_decision["allowed"]:
+            await self.tracer.emit_event(
+                run.id,
+                "policy.approved",
+                step_id=step["id"],
+                policy_type="tool",
+                subject=tool_name,
+                tool_name=tool_name,
+                tool_kind=tool_kind,
+                policy=policy_decision["policy"],
+            )
+        else:
+            error_message = "; ".join(
+                [
+                    *(policy_decision.get("reasons") or []),
+                    *(policy_decision.get("unavailable_reasons") or []),
+                ]
+            ) or f"Tool {tool_name} is unavailable under the active policy"
+            await self.tracer.emit_event(
+                run.id,
+                "policy.denied",
+                step_id=step["id"],
+                policy_type="tool",
+                subject=tool_name,
+                tool_name=tool_name,
+                tool_kind=tool_kind,
+                policy=policy_decision["policy"],
+                reasons=policy_decision.get("reasons") or [],
+                unavailable_reasons=policy_decision.get("unavailable_reasons") or [],
+                recovery_actions=policy_decision.get("recovery_actions") or [],
+                error=error_message,
+            )
+            await self.run_repository.update_step(
+                step["id"],
+                status="failed",
+                error_message=error_message,
+                metadata={
+                    "iteration": planner_result.iteration,
+                    "reasoning": planner_result.reasoning,
+                    "policy_decision": policy_decision,
+                },
+            )
+            await self._emit_step_event(
+                run.id,
+                "step.failed",
+                step,
+                error=error_message,
+                policy_decision=policy_decision,
+            )
+            runtime_context["tool_failures"] = int(runtime_context.get("tool_failures", 0)) + 1
+            return self._build_observation(
+                step=step,
+                planner_result=planner_result,
+                status="failed",
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                error=error_message,
+            )
         tool_kind = await self._get_tool_kind(
             run,
             tool_name,
@@ -1908,6 +2060,24 @@ class AgentOrchestrator:
         definition = self._apply_managed_subagent_definition(definition, managed_subagent)
         raw_skill_context = await self._resolve_skill_context(run, managed_subagent)
         available_subagents = await self._resolve_subagent_targets(definition, managed_subagent)
+        runtime_context = self._prepare_runtime_context(run)
+        if self.workspace_manager is not None:
+            runtime_context, workspace_events = self.workspace_manager.ensure_workspace_context(
+                run_id=run.id,
+                tenant_id=run.tenant_id,
+                user_id=run.user_id,
+                run_input=run.input,
+                metadata=run.metadata,
+                existing_context=runtime_context,
+            )
+            for event in workspace_events:
+                await self.tracer.emit_event(
+                    run.id,
+                    event["event_type"],
+                    **event["payload"],
+                )
+            if workspace_events:
+                run = run.model_copy(update={"context": runtime_context})
 
         mounted_knowledge_base_ids = await self._resolve_accessible_mounted_knowledge_base_ids(run, managed_subagent)
         available_tools = await self.executor.registry.list_specs(
@@ -1927,7 +2097,6 @@ class AgentOrchestrator:
             if managed_subagent is not None
             else RuntimePolicy()
         )
-        runtime_context = self._prepare_runtime_context(run)
         runtime_context["mounted_knowledge_base_ids"] = mounted_knowledge_base_ids
         runtime_context["available_subagents"] = [target.model_dump(mode="json") for target in available_subagents]
         if managed_subagent is not None:

@@ -270,6 +270,125 @@ def test_build_structured_run_result_promotes_directory_tree_document_pages_and_
     assert archive_bundle["payload"]["format"] == "zip"
 
 
+def test_workspace_tool_results_promote_to_run_artifacts():
+    tree_artifacts = build_artifacts_from_tool_result(
+        {
+            "workspace_root": "/workspace",
+            "path": ".",
+            "entries": [
+                {"path": "src", "type": "directory", "depth": 1},
+                {"path": "src/app.py", "type": "file", "depth": 2, "size_bytes": 12},
+            ],
+            "truncated": False,
+        },
+        tool_name="workspace_tree",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert tree_artifacts[0]["artifact_type"] == "directory_tree"
+    assert tree_artifacts[0]["metadata"]["workspace_root"] == "/workspace"
+
+    read_artifacts = build_artifacts_from_tool_result(
+        {"path": "src/app.py", "content": "print('ok')\n", "size_bytes": 12, "truncated": False},
+        tool_name="workspace_read_file",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert read_artifacts[0]["artifact_type"] == "code_files"
+    assert read_artifacts[0]["payload"]["files"][0]["path"] == "src/app.py"
+
+    search_artifacts = build_artifacts_from_tool_result(
+        {
+            "query": "needle",
+            "matches": [{"path": "src/app.py", "line": 2, "preview": "needle here"}],
+            "truncated": False,
+        },
+        tool_name="workspace_search_text",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert search_artifacts[0]["artifact_type"] == "document_excerpt"
+    assert search_artifacts[0]["payload"]["items"][0]["source"] == "src/app.py"
+
+    info_artifacts = build_artifacts_from_tool_result(
+        {
+            "path": "src/app.py",
+            "type": "file",
+            "size_bytes": 12,
+            "extension": ".py",
+            "sha256": "abc",
+        },
+        tool_name="workspace_file_info",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert info_artifacts[0]["artifact_type"] == "file_bundle"
+    assert info_artifacts[0]["payload"]["files"][0]["metadata"]["sha256"] == "abc"
+
+
+def test_workspace_status_tool_result_promotes_workspace_summary_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "workspace": {
+                "id": "tenant/run",
+                "root": "/workspace",
+                "status": "ready",
+                "source": {"type": "upload_bundle", "bundle_ids": ["bundle-1"]},
+                "snapshot": {
+                    "file_count": 2,
+                    "total_size_bytes": 42,
+                    "snapshot_at": "2026-05-13T00:00:00+00:00",
+                },
+            }
+        },
+        tool_name="workspace_status",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+
+    assert artifacts[0]["artifact_type"] == "workspace_summary"
+    assert artifacts[0]["payload"]["source"]["type"] == "upload_bundle"
+
+
+def test_git_tool_results_promote_to_document_excerpt_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "command": ["git", "diff"],
+            "exit_code": 0,
+            "stdout": "diff --git a/app.py b/app.py\n",
+            "stderr": "",
+            "truncated": False,
+        },
+        tool_name="git_diff",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+
+    assert artifacts[0]["artifact_type"] == "document_excerpt"
+    assert artifacts[0]["payload"]["items"][0]["source"] == "git"
+
+    empty_artifacts = build_artifacts_from_tool_result(
+        {
+            "command": ["git", "diff"],
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "truncated": False,
+        },
+        tool_name="git_diff",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert empty_artifacts[0]["payload"]["items"][0]["text"] == "No changes."
+
+
 def test_build_artifacts_from_tool_result_merges_structured_content_with_code_resources():
     artifacts = build_artifacts_from_tool_result(
         {

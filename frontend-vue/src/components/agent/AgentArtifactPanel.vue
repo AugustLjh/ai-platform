@@ -36,6 +36,34 @@
         :artifact="artifact"
       />
 
+      <article v-for="artifact in workspaceArtifacts" :key="artifact.clientKey" class="artifact-card workspace-card">
+        <div class="artifact-head">
+          <div>
+            <div class="artifact-kicker">Workspace</div>
+            <h4>{{ artifact.name || 'Workspace Binding' }}</h4>
+          </div>
+          <span class="artifact-meta">{{ workspaceStatusLabel(artifact.payload?.status) }}</span>
+        </div>
+        <dl class="workspace-facts">
+          <div>
+            <dt>来源</dt>
+            <dd>{{ workspaceSourceLabel(artifact.payload?.source) }}</dd>
+          </div>
+          <div>
+            <dt>快照</dt>
+            <dd>{{ formatWorkspaceSnapshot(artifact.payload?.snapshot) }}</dd>
+          </div>
+          <div>
+            <dt>文件数</dt>
+            <dd>{{ artifact.payload?.snapshot?.file_count ?? 0 }}</dd>
+          </div>
+          <div>
+            <dt>大小</dt>
+            <dd>{{ formatBytes(artifact.payload?.snapshot?.total_size_bytes) }}</dd>
+          </div>
+        </dl>
+      </article>
+
       <AgentCodeFilesCard
         v-for="artifact in codeFileArtifacts"
         :key="artifact.clientKey"
@@ -166,6 +194,7 @@ const props = defineProps({
 const answerArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'answer'))
 const findingArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'review_findings'))
 const citationArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'citations'))
+const workspaceArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'workspace_summary'))
 const codeFileArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'code_files'))
 const directoryTreeArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'directory_tree'))
 const pagedArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'paged_collection'))
@@ -202,6 +231,31 @@ const displayCell = (value) => {
   if (value === null || value === undefined) return ''
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
+}
+const workspaceStatusLabel = (value) => value === 'ready' ? '已绑定' : (value || '未知')
+const workspaceSourceLabel = (source = {}) => {
+  const type = String(source?.type || '').trim()
+  if (type === 'upload_bundle') return '上传文件包'
+  if (type === 'local_path') return '项目副本'
+  if (type === 'existing') return '已登记项目目录'
+  return type || '未记录'
+}
+const formatWorkspaceSnapshot = (snapshot = {}) => {
+  if (!snapshot?.snapshot_at) return '未生成'
+  return new Date(snapshot.snapshot_at).toLocaleString('zh-CN', {
+    hour12: false,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+const formatBytes = (value) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return '0 B'
+  if (parsed < 1024) return `${parsed} B`
+  if (parsed < 1024 * 1024) return `${(parsed / 1024).toFixed(1)} KB`
+  return `${(parsed / (1024 * 1024)).toFixed(1)} MB`
 }
 </script>
 
@@ -360,6 +414,31 @@ th {
   margin-top: 10px;
   font-size: 12px;
   color: var(--gray-500);
+}
+
+.workspace-facts {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.workspace-facts div {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  padding: 12px;
+  background: #fcfdfd;
+}
+
+.workspace-facts dt {
+  color: var(--gray-500);
+  font-size: 12px;
+}
+
+.workspace-facts dd {
+  margin-top: 6px;
+  color: #0f172a;
+  font-weight: 700;
 }
 
 .artifact-meta {

@@ -4,6 +4,7 @@ import asyncio
 from typing import AsyncIterator, Optional
 
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
+from ai_runtime.core.agent_runtime.execution_modes import normalize_execution_mode
 from ai_runtime.core.agent_runtime.llm_service import AgentLLMService
 from ai_runtime.core.agent_runtime.memory import RuntimeStateStore
 from ai_runtime.core.agent_runtime.mcp.registry import MCPRegistry
@@ -39,6 +40,7 @@ from ai_runtime.core.agent_runtime.tools.base import ToolLookupContext
 from ai_runtime.core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
 from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 from ai_runtime.core.agent_runtime.tracing import AgentTracer
+from ai_runtime.core.agent_runtime.workspace_manager import WorkspaceManager
 from ai_runtime.core.uploads.bundle_store import get_attachment_bundle_store, normalize_bundle_ids
 
 
@@ -55,6 +57,7 @@ class AgentRuntime:
         self.skill_registry = SkillRegistry(db_pool)
         self.subagent_registry = SubagentRegistry(db_pool, self.agent_repository)
         self.llm_service = AgentLLMService()
+        self.workspace_manager = WorkspaceManager()
 
         self.tracer = AgentTracer(
             self.run_repository,
@@ -82,6 +85,7 @@ class AgentRuntime:
             subagent_registry=self.subagent_registry,
             subagent_router=SubagentRouter(),
             subagent_handoff=self.subagent_handoff,
+            workspace_manager=self.workspace_manager,
         )
 
     def _hydrate_upload_context(
@@ -282,13 +286,30 @@ class AgentRuntime:
         user_id: str | None = None,
         agent_definition_id: str | None = None,
     ) -> list[dict]:
-        return await self.registry.list_specs(
+        agent_definition = None
+        if agent_definition_id:
+            agent_definition = await self.agent_repository.get_definition(agent_definition_id, tenant_id)
+        execution_mode = normalize_execution_mode(
+            agent_definition.get("config") if isinstance(agent_definition, dict) else None
+        )
+        tools = await self.registry.list_specs(
             context=ToolLookupContext(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 agent_definition_id=agent_definition_id,
             )
         )
+        return [
+            {
+                **tool,
+                "metadata": {
+                    **(tool.get("metadata") or {}),
+                    "execution_mode": execution_mode.name,
+                    "execution_mode_policy": execution_mode.model_dump(),
+                },
+            }
+            for tool in tools
+        ]
 
     async def test_mcp_server(self, *, tenant_id: str, server_id: str) -> dict:
         return (await self.mcp_registry.test_server(tenant_id=tenant_id, server_id=server_id)).model_dump(mode="json")

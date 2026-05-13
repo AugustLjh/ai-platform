@@ -10,6 +10,7 @@ const textKeys = [
 ]
 const artifactPriority = {
   answer: 0,
+  workspace_summary: 1,
   review_findings: 1,
   citations: 2,
   code_files: 3,
@@ -455,6 +456,10 @@ const normalizeArtifactPayload = (artifactType, payload) => {
     return { items: normalizeCitations(items) }
   }
 
+  if (type === 'workspace_summary') {
+    return payload && typeof payload === 'object' && !Array.isArray(payload) ? { ...payload } : {}
+  }
+
   if (type === 'review_findings') {
     const items = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.items : payload
     return { items: normalizeFindings(items) }
@@ -647,11 +652,11 @@ const normalizeExcerpts = (value) => {
     if (item && typeof item === 'object') {
       return {
         title: item.title || item.heading || '',
-        text: item.text || item.content || item.excerpt || '',
+        text: item.text || item.content || item.excerpt || item.preview || item.snippet || '',
         source: item.source || '',
         metadata: item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
           ? { ...item.metadata }
-          : Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'heading', 'text', 'content', 'excerpt', 'source', 'metadata'].includes(key)))
+          : Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'heading', 'text', 'content', 'excerpt', 'preview', 'snippet', 'source', 'metadata'].includes(key)))
       }
     }
     return { title: '', text: String(item || ''), source: '', metadata: {} }
@@ -1796,6 +1801,46 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
   const text = isNonEmptyString(payload.text) ? payload.text.trim() : ''
   const promoted = []
 
+  if (toolName === 'workspace_status' && payload.workspace && typeof payload.workspace === 'object' && !Array.isArray(payload.workspace)) {
+    promoted.push(normalizeArtifact({
+      artifact_type: 'workspace_summary',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, '', 'Workspace Binding'),
+      payload: payload.workspace,
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true
+      }
+    }))
+  }
+
+  if (toolName === 'workspace_file_info' && isNonEmptyString(payload.path)) {
+    promoted.push(normalizeArtifact({
+      artifact_type: 'file_bundle',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, payload.path, 'File Info'),
+      payload: {
+        files: [{
+          name: String(payload.path || '').split('/').pop() || String(payload.path || ''),
+          path: payload.path,
+          size_bytes: payload.size_bytes,
+          description: payload.type || '',
+          metadata: Object.fromEntries(Object.entries(payload).filter(([key]) => !['path', 'size_bytes', 'type'].includes(key)))
+        }]
+      },
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true
+      }
+    }))
+  }
+
   if (structuredContent !== null && structuredContent !== undefined && structuredContent !== '') {
     promoted.push(...buildArtifactsFromStructuredResult(structuredContent, text)
       .filter((artifact) => includeAnswer || artifact.artifactType !== 'answer')
@@ -2011,6 +2056,45 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
 
   if (promoted.length > 0) {
     return mergeArtifacts(promoted)
+  }
+
+  if (['git_status', 'git_diff', 'git_show', 'git_log', 'git_branch'].includes(toolName)) {
+    let gitText = isNonEmptyString(payload.stdout) ? String(payload.stdout).trim() : ''
+    if (!gitText && Number(payload.exit_code) === 0 && ['git_status', 'git_diff'].includes(toolName)) {
+      gitText = 'No changes.'
+    }
+    if (!gitText && isNonEmptyString(payload.stderr)) {
+      gitText = String(payload.stderr).trim()
+    }
+    if (!gitText) {
+      gitText = `${toolName} completed with exit code ${payload.exit_code ?? ''}.`.trim()
+    }
+    return mergeArtifacts([
+      normalizeArtifact({
+        artifact_type: 'document_excerpt',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, '', 'Git Output'),
+        payload: {
+          items: [{
+            title: Array.isArray(payload.command) ? payload.command.join(' ') : toolName,
+            text: gitText,
+            source: 'git',
+            metadata: {
+              exit_code: payload.exit_code,
+              stderr: payload.stderr,
+              truncated: payload.truncated
+            }
+          }]
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
+        }
+      })
+    ])
   }
 
   const fallbackContentItems = normalizeMCPContentItems(payload.content)

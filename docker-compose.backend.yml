@@ -35,12 +35,15 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_GRPC_PORT=6334
-      - AGENT_TOOL_PROVIDERS=${AGENT_TOOL_PROVIDERS:-builtin,knowledge,mcp,engineering,workspace}
-      - AGENT_ENGINEERING_ENABLED=${AGENT_ENGINEERING_ENABLED:-true}
-      - AGENT_ENGINEERING_TOOLS=${AGENT_ENGINEERING_TOOLS:-project_list_context,project_search_context,project_read_context_item,project_list_uploaded_files,project_search_uploaded_files,project_read_uploaded_file}
+      - AGENT_TOOL_PROVIDERS=${AGENT_TOOL_PROVIDERS:-builtin,knowledge,mcp,project-context,workspace,sandbox-exec}
+      - AGENT_PROJECT_CONTEXT_ENABLED=${AGENT_PROJECT_CONTEXT_ENABLED:-true}
+      - AGENT_PROJECT_CONTEXT_TOOLS=${AGENT_PROJECT_CONTEXT_TOOLS:-project_list_context,project_search_context,project_read_context_item,project_list_uploaded_files,project_search_uploaded_files,project_read_uploaded_file}
       - AGENT_WORKSPACE_ENABLED=${AGENT_WORKSPACE_ENABLED:-false}
       - AGENT_WORKSPACE_ROOTS=${AGENT_WORKSPACE_ROOTS:-/tmp/ai-platform-workspaces}
-      - AGENT_WORKSPACE_TOOLS=${AGENT_WORKSPACE_TOOLS:-workspace_list_files,workspace_read_file,workspace_search_text,git_status,git_diff}
+      - AGENT_WORKSPACE_TOOLS=${AGENT_WORKSPACE_TOOLS:-workspace_list_files,workspace_read_file,workspace_search_text,workspace_file_info,workspace_tree,git_status,git_diff,git_show,git_log,git_branch}
+      - AGENT_SANDBOX_EXEC_ENABLED=${AGENT_SANDBOX_EXEC_ENABLED:-false}
+      - AGENT_SANDBOX_EXEC_TOOLS=${AGENT_SANDBOX_EXEC_TOOLS:-shell_exec,run_tests,run_lint,run_build}
+      - AGENT_SANDBOX_RUNNER_CONFIGURED=${AGENT_SANDBOX_RUNNER_CONFIGURED:-false}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     healthcheck:

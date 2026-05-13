@@ -30,6 +30,7 @@ DOCUMENT_PAGE_KEYS = ("document_pages", "pages", "document_preview_pages")
 ARCHIVE_BUNDLE_KEYS = ("archive_bundle", "archive_entries", "compressed_bundle")
 ARTIFACT_TYPE_PRIORITY = {
     "answer": 0,
+    "workspace_summary": 1,
     "review_findings": 1,
     "citations": 2,
     "code_files": 3,
@@ -337,7 +338,7 @@ def _normalize_excerpt_entries(value: Any) -> list[dict[str, Any]]:
             entries.append(
                 {
                     "title": entry.get("title") or entry.get("heading"),
-                    "text": entry.get("text") or entry.get("content") or entry.get("excerpt") or "",
+                    "text": entry.get("text") or entry.get("content") or entry.get("excerpt") or entry.get("preview") or entry.get("snippet") or "",
                     "source": entry.get("source"),
                     "metadata": (
                         dict(entry.get("metadata"))
@@ -345,7 +346,7 @@ def _normalize_excerpt_entries(value: Any) -> list[dict[str, Any]]:
                         else {
                             key: value
                             for key, value in entry.items()
-                            if key not in {"title", "heading", "text", "content", "excerpt", "source", "metadata"}
+                            if key not in {"title", "heading", "text", "content", "excerpt", "preview", "snippet", "source", "metadata"}
                         }
                     ),
                 }
@@ -1732,6 +1733,9 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
         source_items = payload.get("items") if isinstance(payload, dict) else payload
         return {"items": _normalize_findings(source_items)}
 
+    if normalized_type == "workspace_summary":
+        return dict(payload) if isinstance(payload, dict) else {}
+
     if normalized_type == "code_files":
         source_items = payload.get("files") if isinstance(payload, dict) else payload
         return {"files": _normalize_code_files(source_items)}
@@ -2008,6 +2012,206 @@ def build_artifacts_from_tool_result(
                 include_answer=include_answer,
                 source=source,
             )
+        )
+
+    if tool_name == "workspace_status" and isinstance(payload.get("workspace"), dict):
+        workspace_payload = dict(payload.get("workspace") or {})
+        promoted.append(
+            {
+                "artifact_type": "workspace_summary",
+                "name": _tool_artifact_name(tool_name, None, "Workspace Binding"),
+                "payload": workspace_payload,
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "workspace_tree" and isinstance(payload.get("entries"), list):
+        promoted.append(
+            {
+                "artifact_type": "directory_tree",
+                "name": _tool_artifact_name(tool_name, None, "Directory Tree"),
+                "payload": {
+                    "title": payload.get("path") or "Workspace Tree",
+                    "entries": payload.get("entries") or [],
+                    "root_name": payload.get("path") or ".",
+                    "summary": {
+                        "file_count": sum(1 for item in payload.get("entries") or [] if isinstance(item, dict) and item.get("type") == "file"),
+                        "directory_count": sum(1 for item in payload.get("entries") or [] if isinstance(item, dict) and item.get("type") == "directory"),
+                    },
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "workspace_root": payload.get("workspace_root"),
+                    "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "workspace_list_files" and isinstance(payload.get("entries"), list):
+        promoted.append(
+            {
+                "artifact_type": "file_bundle",
+                "name": _tool_artifact_name(tool_name, None, "Files"),
+                "payload": {
+                    "files": [
+                        {
+                            "name": str(item.get("path") or "").rsplit("/", 1)[-1],
+                            "path": item.get("path"),
+                            "size_bytes": item.get("size_bytes"),
+                            "description": item.get("type"),
+                            "metadata": {"type": item.get("type")},
+                        }
+                        for item in payload.get("entries") or []
+                        if isinstance(item, dict)
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "workspace_root": payload.get("workspace_root"),
+                    "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "workspace_file_info" and _is_non_empty_string(payload.get("path")):
+        promoted.append(
+            {
+                "artifact_type": "file_bundle",
+                "name": _tool_artifact_name(tool_name, payload.get("path"), "File Info"),
+                "payload": {
+                    "files": [
+                        {
+                            "name": str(payload.get("path") or "").rsplit("/", 1)[-1] or str(payload.get("path") or ""),
+                            "path": payload.get("path"),
+                            "size_bytes": payload.get("size_bytes"),
+                            "description": payload.get("type"),
+                            "metadata": {
+                                key: value
+                                for key, value in payload.items()
+                                if key not in {"path", "size_bytes", "type"}
+                            },
+                        }
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "workspace_read_file" and _is_non_empty_string(payload.get("content")):
+        promoted.append(
+            {
+                "artifact_type": "code_files",
+                "name": _tool_artifact_name(tool_name, payload.get("path"), "File"),
+                "payload": {
+                    "files": [
+                        {
+                            "path": payload.get("path"),
+                            "language": _guess_language(str(payload.get("path") or ""), ""),
+                            "content": payload.get("content") or "",
+                            "metadata": {
+                                "size_bytes": payload.get("size_bytes"),
+                                "truncated": payload.get("truncated"),
+                            },
+                        }
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "workspace_search_text" and isinstance(payload.get("matches"), list):
+        promoted.append(
+            {
+                "artifact_type": "document_excerpt",
+                "name": _tool_artifact_name(tool_name, None, "Search Matches"),
+                "payload": {
+                    "items": [
+                        {
+                            "title": f"{item.get('path')}:{item.get('line')}",
+                            "text": item.get("preview") or "",
+                            "source": item.get("path"),
+                            "metadata": {
+                                "line": item.get("line"),
+                                "line_truncated": item.get("line_truncated"),
+                            },
+                        }
+                        for item in payload.get("matches") or []
+                        if isinstance(item, dict)
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "query": payload.get("query"),
+                    "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name in {"git_status", "git_diff", "git_show", "git_log", "git_branch"}:
+        stdout = payload.get("stdout") if _is_non_empty_string(payload.get("stdout")) else ""
+        if not stdout and payload.get("exit_code") == 0 and tool_name in {"git_status", "git_diff"}:
+            stdout = "No changes."
+        if not stdout and _is_non_empty_string(payload.get("stderr")):
+            stdout = str(payload.get("stderr") or "")
+        if not stdout:
+            stdout = f"{tool_name} completed with exit code {payload.get('exit_code')}."
+        promoted.append(
+            {
+                "artifact_type": "document_excerpt",
+                "name": _tool_artifact_name(tool_name, None, "Git Output"),
+                "payload": {
+                    "items": [
+                        {
+                            "title": " ".join(str(item) for item in payload.get("command") or []),
+                            "text": stdout,
+                            "source": "git",
+                            "metadata": {
+                                "exit_code": payload.get("exit_code"),
+                                "stderr": payload.get("stderr"),
+                                "truncated": payload.get("truncated"),
+                            },
+                        }
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                },
+                "step_id": step_id,
+            }
         )
 
     content_preview_items: list[dict[str, Any]] = []

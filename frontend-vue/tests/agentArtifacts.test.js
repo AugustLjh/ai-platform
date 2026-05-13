@@ -150,6 +150,63 @@ test('buildArtifactsFromToolResult promotes structured MCP payloads without dupl
   assert.equal(artifacts.find((artifact) => artifact.artifactType === 'table')?.metadata.tool_call_id, 'tool-call-1')
 })
 
+test('buildArtifactsFromToolResult promotes workspace status and file info payloads', () => {
+  const statusArtifacts = buildArtifactsFromToolResult({
+    workspace: {
+      id: 'tenant/run',
+      root: '/workspace',
+      status: 'ready',
+      source: { type: 'upload_bundle' },
+      snapshot: {
+        file_count: 2,
+        total_size_bytes: 42,
+        snapshot_at: '2026-05-13T00:00:00+00:00'
+      }
+    }
+  }, {
+    id: 'tool-1',
+    toolName: 'workspace_status',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(statusArtifacts[0].artifactType, 'workspace_summary')
+  assert.equal(statusArtifacts[0].payload.source.type, 'upload_bundle')
+
+  const infoArtifacts = buildArtifactsFromToolResult({
+    path: 'src/app.py',
+    type: 'file',
+    size_bytes: 12,
+    sha256: 'abc'
+  }, {
+    id: 'tool-2',
+    toolName: 'workspace_file_info',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(infoArtifacts[0].artifactType, 'file_bundle')
+  assert.equal(infoArtifacts[0].payload.files[0].metadata.sha256, 'abc')
+})
+
+test('buildArtifactsFromToolResult surfaces empty git diff as an artifact', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    command: ['git', 'diff'],
+    exit_code: 0,
+    stdout: '',
+    stderr: '',
+    truncated: false
+  }, {
+    id: 'tool-3',
+    toolName: 'git_diff',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'document_excerpt')
+  assert.equal(artifacts[0].payload.items[0].text, 'No changes.')
+})
+
 test('buildArtifactsFromStructuredResult promotes implicit result lists into table artifacts', () => {
   const artifacts = buildArtifactsFromStructuredResult({
     answer: 'Found two matching records.',

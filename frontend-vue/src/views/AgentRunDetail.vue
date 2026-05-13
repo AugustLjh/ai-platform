@@ -34,6 +34,24 @@
       {{ errorMessage }}
     </div>
 
+    <section :class="['workspace-status-card', { muted: !workspaceBound }]">
+      <div>
+        <div class="workspace-kicker">Workspace</div>
+        <h2>{{ workspaceTitle }}</h2>
+        <p>{{ workspaceDescription }}</p>
+      </div>
+      <div v-if="workspaceBound" class="workspace-meta-grid">
+        <span>来源 {{ workspaceSourceLabel }}</span>
+        <span>文件 {{ workspaceSnapshot?.file_count ?? 0 }}</span>
+        <span>大小 {{ formatBytes(workspaceSnapshot?.total_size_bytes) }}</span>
+        <span>快照 {{ workspaceSnapshotTime }}</span>
+      </div>
+      <div v-else class="workspace-recovery">
+        <span>当前降级为 project-context/上传文件问答。</span>
+        <router-link v-if="run?.agentDefinitionId" :to="workspaceLink" class="workspace-link">返回会话绑定项目</router-link>
+      </div>
+    </section>
+
     <section class="chat-stage">
       <div ref="threadRef" class="chat-thread">
         <div v-if="currentPrompt" class="message-row user">
@@ -239,6 +257,35 @@ const statusLabel = computed(() => statusMap[run.value?.status] || run.value?.st
 const canCancel = computed(() => ['queued', 'running'].includes(run.value?.status))
 const canResume = computed(() => ['waiting_user', 'failed', 'cancelled'].includes(run.value?.status))
 const showGlobalError = computed(() => Boolean(errorMessage.value) && run.value?.status !== 'failed')
+const workspaceContext = computed(() => {
+  const context = run.value?.context || {}
+  const fromContext = context.workspace && typeof context.workspace === 'object' ? context.workspace : null
+  if (fromContext) return fromContext
+  const artifact = artifacts.value.find((item) => item.artifactType === 'workspace_summary')
+  return artifact?.payload && typeof artifact.payload === 'object' ? artifact.payload : null
+})
+const workspaceBound = computed(() => Boolean(workspaceContext.value?.root || workspaceContext.value?.id))
+const workspaceSnapshot = computed(() => workspaceContext.value?.snapshot || null)
+const workspaceTitle = computed(() => workspaceBound.value ? '已绑定隔离 workspace' : '未绑定 workspace')
+const workspaceDescription = computed(() => {
+  if (!workspaceBound.value) {
+    return '只读代码、Git diff 和项目文件引用工具当前不可用。'
+  }
+  const source = workspaceSourceLabel.value
+  return `${source} 已进入当前 run 的受控 workspace，文件读取和 Git 结果会作为可复盘 artifact 展示。`
+})
+const workspaceSourceLabel = computed(() => {
+  const source = workspaceContext.value?.source || {}
+  const type = String(source.type || '').trim()
+  if (type === 'upload_bundle') return '上传文件包'
+  if (type === 'local_path') return '项目副本'
+  if (type === 'existing') return '已登记项目目录'
+  return type || '未记录'
+})
+const workspaceSnapshotTime = computed(() => {
+  const value = workspaceSnapshot.value?.snapshot_at
+  return value ? formatTime(value) : '未生成'
+})
 const showDetailHint = computed(() => (
   steps.value.length > 0 ||
   toolCalls.value.length > 0 ||
@@ -512,6 +559,14 @@ const formatTime = (value) => {
     minute: '2-digit'
   })
 }
+
+const formatBytes = (value) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return '0 B'
+  if (parsed < 1024) return `${parsed} B`
+  if (parsed < 1024 * 1024) return `${(parsed / 1024).toFixed(1)} KB`
+  return `${(parsed / (1024 * 1024)).toFixed(1)} MB`
+}
 </script>
 
 <style scoped>
@@ -654,6 +709,72 @@ const formatTime = (value) => {
   background: rgba(239, 68, 68, 0.08);
   border: 1px solid rgba(239, 68, 68, 0.18);
   color: #b91c1c;
+}
+
+.workspace-status-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.06);
+}
+
+.workspace-status-card.muted {
+  border-color: rgba(245, 158, 11, 0.2);
+  background: rgba(255, 251, 235, 0.86);
+}
+
+.workspace-kicker {
+  color: #0f766e;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.workspace-status-card h2 {
+  margin-top: 6px;
+  color: #0f172a;
+  font-size: 18px;
+}
+
+.workspace-status-card p {
+  margin-top: 6px;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.workspace-meta-grid,
+.workspace-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 560px;
+}
+
+.workspace-meta-grid span,
+.workspace-recovery span,
+.workspace-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: rgba(15, 118, 110, 0.08);
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.workspace-recovery span {
+  background: rgba(245, 158, 11, 0.12);
+  color: #92400e;
 }
 
 .chat-stage {
@@ -1035,8 +1156,19 @@ const formatTime = (value) => {
   }
 
   .chat-topbar,
+  .workspace-status-card,
   .details-panel {
     border-radius: 22px;
+  }
+
+  .workspace-status-card {
+    flex-direction: column;
+  }
+
+  .workspace-meta-grid,
+  .workspace-recovery {
+    justify-content: flex-start;
+    max-width: 100%;
   }
 
   .chat-topbar,
