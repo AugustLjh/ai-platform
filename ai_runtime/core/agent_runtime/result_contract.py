@@ -1740,6 +1740,38 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
         source_items = payload.get("files") if isinstance(payload, dict) else payload
         return {"files": _normalize_code_files(source_items)}
 
+    if normalized_type == "code_patch":
+        source = payload if isinstance(payload, dict) else {}
+        files = []
+        for entry in source.get("files") or []:
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or "").strip()
+            if not path:
+                continue
+            files.append(
+                {
+                    "path": path,
+                    "operation": str(entry.get("operation") or source.get("operation") or "modify").strip(),
+                    "before_sha256": entry.get("before_sha256") or entry.get("beforeSha256"),
+                    "after_sha256": entry.get("after_sha256") or entry.get("afterSha256"),
+                    "size_bytes": _coerce_int(entry.get("size_bytes") if entry.get("size_bytes") is not None else entry.get("sizeBytes")) or 0,
+                    "changed": entry.get("changed") is not False,
+                }
+            )
+        raw_review_notes = source.get("review_notes") if isinstance(source.get("review_notes"), list) else source.get("reviewNotes")
+        review_notes = raw_review_notes if isinstance(raw_review_notes, list) else []
+        return {
+            "operation": str(source.get("operation") or "").strip(),
+            "status": str(source.get("status") or "").strip(),
+            "dry_run": bool(source.get("dry_run") if source.get("dry_run") is not None else source.get("dryRun")),
+            "files": files,
+            "diff": str(source.get("diff") or ""),
+            "truncated": bool(source.get("truncated")),
+            "review_notes": [str(item) for item in review_notes or [] if str(item).strip()],
+            "merge_policy": str(source.get("merge_policy") or source.get("mergePolicy") or "manual_review_required"),
+        }
+
     if normalized_type == "file_bundle":
         source_items = payload.get("files") if isinstance(payload, dict) else payload
         return {"files": _normalize_file_bundle_entries(source_items)}
@@ -2199,6 +2231,107 @@ def build_artifacts_from_tool_result(
                                 "exit_code": payload.get("exit_code"),
                                 "stderr": payload.get("stderr"),
                                 "truncated": payload.get("truncated"),
+                            },
+                        }
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name in {"workspace_apply_patch", "workspace_create_file", "workspace_write_file", "workspace_rename_path", "workspace_delete_path"}:
+        patch_promoted = False
+        for artifact in payload.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            normalized = _normalize_artifact_entry(artifact)
+            promoted.append(
+                {
+                    **normalized,
+                    "name": _tool_artifact_name(tool_name, normalized.get("name"), "Workspace Patch"),
+                    "metadata": {
+                        **dict(normalized.get("metadata") or {}),
+                        "source": source,
+                        "tool_name": tool_name,
+                        "tool_kind": tool_kind,
+                        "tool_call_id": tool_call_id,
+                        "promoted_to_run": True,
+                        "path": payload.get("path"),
+                        "source_path": payload.get("source_path"),
+                        "target_path": payload.get("target_path"),
+                        "operation": payload.get("operation"),
+                        "dry_run": payload.get("dry_run"),
+                        "changed": payload.get("changed"),
+                    },
+                    "step_id": step_id or normalized.get("step_id"),
+                }
+            )
+            patch_promoted = True
+        if not patch_promoted:
+            promoted.append(
+                {
+                    "artifact_type": "code_patch",
+                    "name": _tool_artifact_name(tool_name, None, "Workspace Patch"),
+                    "payload": {
+                        "operation": payload.get("operation"),
+                        "status": payload.get("status"),
+                        "dry_run": payload.get("dry_run"),
+                        "files": [
+                            {
+                                "path": payload.get("path"),
+                                "operation": payload.get("operation"),
+                                "before_sha256": payload.get("before_sha256"),
+                                "after_sha256": payload.get("after_sha256"),
+                                "changed": payload.get("changed"),
+                            }
+                        ],
+                        "diff": payload.get("diff") or "",
+                        "truncated": payload.get("truncated"),
+                        "review_notes": payload.get("review_notes") or [],
+                        "merge_policy": payload.get("merge_policy") or "manual_review_required",
+                    },
+                    "metadata": {
+                        "source": source,
+                        "tool_name": tool_name,
+                        "tool_kind": tool_kind,
+                        "tool_call_id": tool_call_id,
+                        "promoted_to_run": True,
+                    },
+                    "step_id": step_id,
+                }
+            )
+    elif tool_name in {"shell_exec", "run_tests", "run_lint", "run_build"}:
+        stdout = payload.get("stdout") if _is_non_empty_string(payload.get("stdout")) else ""
+        stderr = payload.get("stderr") if _is_non_empty_string(payload.get("stderr")) else ""
+        output_text = "\n".join(item for item in (stdout, stderr) if item).strip()
+        if not output_text:
+            output_text = f"{tool_name} completed with status {payload.get('status') or 'unknown'}."
+        promoted.append(
+            {
+                "artifact_type": "document_excerpt",
+                "name": _tool_artifact_name(tool_name, None, "Sandbox Output"),
+                "payload": {
+                    "items": [
+                        {
+                            "title": " ".join(str(item) for item in payload.get("command") or []),
+                            "text": output_text,
+                            "source": "sandbox",
+                            "metadata": {
+                                "status": payload.get("status"),
+                                "exit_code": payload.get("exit_code"),
+                                "cwd": payload.get("cwd"),
+                                "duration_ms": payload.get("duration_ms"),
+                                "timeout_seconds": payload.get("timeout_seconds"),
+                                "purpose": payload.get("purpose"),
+                                "failure_category": payload.get("failure_category"),
+                                "truncated": payload.get("truncated"),
+                                "runner": payload.get("runner"),
                             },
                         }
                     ]

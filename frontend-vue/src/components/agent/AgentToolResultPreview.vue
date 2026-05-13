@@ -105,6 +105,12 @@
       </div>
     </article>
 
+    <AgentPatchCard
+      v-for="artifact in patchArtifacts"
+      :key="artifact.clientKey"
+      :artifact="artifact"
+    />
+
     <AgentRichArtifactCard
       v-for="artifact in mediaArtifacts"
       :key="artifact.clientKey"
@@ -135,6 +141,7 @@ import { computed } from 'vue'
 import { buildArtifactsFromToolResult } from '@/utils/agentArtifacts'
 import { renderMarkdown } from '@/utils/markdown'
 import AgentFindingsCard from './AgentFindingsCard.vue'
+import AgentPatchCard from './AgentPatchCard.vue'
 import AgentRichArtifactCard from './AgentRichArtifactCard.vue'
 
 const props = defineProps({
@@ -160,6 +167,7 @@ const citationArtifacts = computed(() => artifacts.value.filter((artifact) => ar
 const documentPageArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType === 'document_pages'))
 const excerptArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType === 'document_excerpt'))
 const codeFileArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType === 'code_files'))
+const patchArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType === 'code_patch'))
 const mediaArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType === 'media_gallery'))
 const archiveArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType === 'archive_bundle'))
 const fileBundleArtifacts = computed(() => artifacts.value.filter((artifact) => artifact.artifactType === 'file_bundle'))

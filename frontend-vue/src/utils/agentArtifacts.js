@@ -13,16 +13,17 @@ const artifactPriority = {
   workspace_summary: 1,
   review_findings: 1,
   citations: 2,
-  code_files: 3,
-  task_plan: 4,
-  table: 5,
-  paged_collection: 6,
-  directory_tree: 7,
-  document_pages: 8,
-  document_excerpt: 9,
-  media_gallery: 10,
-  archive_bundle: 11,
-  file_bundle: 12
+  code_patch: 3,
+  code_files: 4,
+  task_plan: 5,
+  table: 6,
+  paged_collection: 7,
+  directory_tree: 8,
+  document_pages: 9,
+  document_excerpt: 10,
+  media_gallery: 11,
+  archive_bundle: 12,
+  file_bundle: 13
 }
 const implicitListKeys = ['items', 'results', 'entries', 'records', 'matches', 'documents', 'data']
 const pagedKeys = ['paged_collection', 'paged_results', 'page', 'page_result']
@@ -468,6 +469,37 @@ const normalizeArtifactPayload = (artifactType, payload) => {
   if (type === 'code_files') {
     const files = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.files : payload
     return { files: normalizeCodeFiles(files) }
+  }
+
+  if (type === 'code_patch') {
+    const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+    const files = Array.isArray(source.files)
+      ? source.files
+        .filter((file) => file && typeof file === 'object')
+        .map((file) => ({
+          path: String(file.path || '').trim(),
+          operation: String(file.operation || source.operation || 'modify').trim(),
+          beforeSha256: file.before_sha256 || file.beforeSha256 || null,
+          afterSha256: file.after_sha256 || file.afterSha256 || null,
+          sizeBytes: Number(file.size_bytes ?? file.sizeBytes ?? 0) || 0,
+          changed: file.changed !== false
+        }))
+        .filter((file) => file.path)
+      : []
+    return {
+      operation: String(source.operation || '').trim(),
+      status: String(source.status || '').trim(),
+      dryRun: Boolean(source.dry_run ?? source.dryRun),
+      files,
+      diff: String(source.diff || ''),
+      truncated: Boolean(source.truncated),
+      reviewNotes: Array.isArray(source.review_notes)
+        ? source.review_notes.map((item) => String(item || '').trim()).filter(Boolean)
+        : Array.isArray(source.reviewNotes)
+          ? source.reviewNotes.map((item) => String(item || '').trim()).filter(Boolean)
+          : [],
+      mergePolicy: String(source.merge_policy || source.mergePolicy || 'manual_review_required').trim()
+    }
   }
 
   if (type === 'file_bundle') {
@@ -1841,6 +1873,61 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
     }))
   }
 
+  if (['workspace_apply_patch', 'workspace_create_file', 'workspace_write_file', 'workspace_rename_path', 'workspace_delete_path'].includes(toolName)) {
+    const rawArtifacts = Array.isArray(payload.artifacts) ? payload.artifacts : []
+    rawArtifacts
+      .filter((artifact) => artifact && typeof artifact === 'object')
+      .forEach((artifact) => {
+        promoted.push(normalizeArtifact({
+          ...artifact,
+          step_id: stepId || artifact.step_id || artifact.stepId || '',
+          name: buildToolArtifactName(toolName, artifact.name, 'Workspace Patch'),
+          metadata: {
+            ...(artifact.metadata || {}),
+            source: 'tool_call',
+            tool_name: toolName,
+            tool_kind: toolKind,
+            tool_call_id: toolCallId,
+            promoted_to_run: true,
+            path: payload.path,
+            operation: payload.operation,
+            dry_run: payload.dry_run ?? payload.dryRun,
+            changed: payload.changed
+          }
+        }))
+      })
+    if (rawArtifacts.length === 0) {
+      promoted.push(normalizeArtifact({
+        artifact_type: 'code_patch',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, '', 'Workspace Patch'),
+        payload: {
+          operation: payload.operation,
+          status: payload.status,
+          dry_run: payload.dry_run ?? payload.dryRun,
+          files: [{
+            path: payload.path,
+            operation: payload.operation,
+            before_sha256: payload.before_sha256 ?? payload.beforeSha256,
+            after_sha256: payload.after_sha256 ?? payload.afterSha256,
+            changed: payload.changed
+          }],
+          diff: payload.diff || '',
+          truncated: payload.truncated,
+          review_notes: payload.review_notes || payload.reviewNotes || [],
+          merge_policy: payload.merge_policy || payload.mergePolicy || 'manual_review_required'
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
+        }
+      }))
+    }
+  }
+
   if (structuredContent !== null && structuredContent !== undefined && structuredContent !== '') {
     promoted.push(...buildArtifactsFromStructuredResult(structuredContent, text)
       .filter((artifact) => includeAnswer || artifact.artifactType !== 'answer')
@@ -2202,6 +2289,7 @@ export const artifactTypeLabel = (type) => {
   const labels = {
     answer: '回答',
     archive_bundle: '压缩包清单',
+    code_patch: '代码补丁',
     code_files: '代码文件',
     citations: '引用',
     directory_tree: '目录树',

@@ -207,6 +207,88 @@ test('buildArtifactsFromToolResult surfaces empty git diff as an artifact', () =
   assert.equal(artifacts[0].payload.items[0].text, 'No changes.')
 })
 
+test('buildArtifactsFromToolResult promotes workspace patch artifacts', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    status: 'applied',
+    path: 'src/app.py',
+    operation: 'modify',
+    dry_run: false,
+    changed: true,
+    before_sha256: 'before',
+    after_sha256: 'after',
+    diff: '--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n',
+    artifacts: [{
+      artifact_type: 'code_patch',
+      name: 'Workspace Patch',
+      payload: {
+        operation: 'modify',
+        status: 'applied',
+        dry_run: false,
+        files: [{
+          path: 'src/app.py',
+          operation: 'modify',
+          before_sha256: 'before',
+          after_sha256: 'after',
+          changed: true
+        }],
+        diff: '--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n'
+      }
+    }]
+  }, {
+    id: 'tool-4',
+    toolName: 'workspace_apply_patch',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'code_patch')
+  assert.equal(artifacts[0].payload.files[0].path, 'src/app.py')
+  assert.equal(artifacts[0].payload.files[0].beforeSha256, 'before')
+  assert.equal(artifacts[0].metadata.tool_call_id, 'tool-4')
+})
+
+test('buildArtifactsFromToolResult promotes delete patch review metadata', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    status: 'dry_run',
+    path: 'src/obsolete.py',
+    operation: 'delete',
+    dry_run: true,
+    changed: true,
+    before_sha256: 'before',
+    after_sha256: null,
+    diff: '--- a/src/obsolete.py\n+++ b/src/obsolete.py\n@@\n-old\n',
+    artifacts: [{
+      artifact_type: 'code_patch',
+      name: 'Workspace Patch',
+      payload: {
+        operation: 'delete',
+        status: 'dry_run',
+        dry_run: true,
+        files: [{
+          path: 'src/obsolete.py',
+          operation: 'delete',
+          before_sha256: 'before',
+          after_sha256: null,
+          changed: true
+        }],
+        diff: '--- a/src/obsolete.py\n+++ b/src/obsolete.py\n@@\n-old\n',
+        review_notes: ['Deletion requires review.'],
+        merge_policy: 'manual_review_required'
+      }
+    }]
+  }, {
+    id: 'tool-5',
+    toolName: 'workspace_delete_path',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'code_patch')
+  assert.equal(artifacts[0].payload.operation, 'delete')
+  assert.deepEqual(artifacts[0].payload.reviewNotes, ['Deletion requires review.'])
+  assert.equal(artifacts[0].payload.mergePolicy, 'manual_review_required')
+})
+
 test('buildArtifactsFromStructuredResult promotes implicit result lists into table artifacts', () => {
   const artifacts = buildArtifactsFromStructuredResult({
     answer: 'Found two matching records.',

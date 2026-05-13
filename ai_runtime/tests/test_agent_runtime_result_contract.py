@@ -175,6 +175,100 @@ def test_build_artifacts_from_tool_result_promotes_structured_tool_payload_witho
     assert artifacts[0]["metadata"]["tool_call_id"] == "tool-call-1"
 
 
+def test_build_artifacts_from_tool_result_promotes_workspace_patch_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "applied",
+            "path": "src/app.py",
+            "operation": "modify",
+            "dry_run": False,
+            "changed": True,
+            "before_sha256": "before",
+            "after_sha256": "after",
+            "diff": "--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n",
+            "artifacts": [
+                {
+                    "artifact_type": "code_patch",
+                    "name": "Workspace Patch",
+                    "payload": {
+                        "operation": "modify",
+                        "status": "applied",
+                        "dry_run": False,
+                        "files": [
+                            {
+                                "path": "src/app.py",
+                                "operation": "modify",
+                                "before_sha256": "before",
+                                "after_sha256": "after",
+                                "changed": True,
+                            }
+                        ],
+                        "diff": "--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n",
+                    },
+                }
+            ],
+        },
+        tool_name="workspace_apply_patch",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-call-1",
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "code_patch"
+    assert artifacts[0]["payload"]["files"][0]["path"] == "src/app.py"
+    assert artifacts[0]["metadata"]["tool_call_id"] == "tool-call-1"
+    assert artifacts[0]["metadata"]["operation"] == "modify"
+
+
+def test_build_artifacts_from_tool_result_promotes_delete_patch_metadata():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "dry_run",
+            "path": "src/obsolete.py",
+            "operation": "delete",
+            "dry_run": True,
+            "changed": True,
+            "before_sha256": "before",
+            "after_sha256": None,
+            "diff": "--- a/src/obsolete.py\n+++ b/src/obsolete.py\n@@\n-old\n",
+            "artifacts": [
+                {
+                    "artifact_type": "code_patch",
+                    "name": "Workspace Patch",
+                    "payload": {
+                        "operation": "delete",
+                        "status": "dry_run",
+                        "dry_run": True,
+                        "files": [
+                            {
+                                "path": "src/obsolete.py",
+                                "operation": "delete",
+                                "before_sha256": "before",
+                                "after_sha256": None,
+                                "changed": True,
+                            }
+                        ],
+                        "diff": "--- a/src/obsolete.py\n+++ b/src/obsolete.py\n@@\n-old\n",
+                        "review_notes": ["Deletion requires review."],
+                        "merge_policy": "manual_review_required",
+                    },
+                }
+            ],
+        },
+        tool_name="workspace_delete_path",
+        tool_kind="workspace",
+        tool_call_id="tool-call-2",
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "code_patch"
+    assert artifacts[0]["payload"]["operation"] == "delete"
+    assert artifacts[0]["payload"]["review_notes"] == ["Deletion requires review."]
+    assert artifacts[0]["payload"]["merge_policy"] == "manual_review_required"
+    assert artifacts[0]["metadata"]["tool_call_id"] == "tool-call-2"
+
+
 def test_build_structured_run_result_promotes_implicit_result_lists_into_table_artifacts():
     result = build_structured_run_result(
         {
@@ -387,6 +481,34 @@ def test_git_tool_results_promote_to_document_excerpt_artifact():
         tool_call_id="tool-1",
     )
     assert empty_artifacts[0]["payload"]["items"][0]["text"] == "No changes."
+
+
+def test_sandbox_exec_tool_results_promote_to_document_excerpt_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "failed",
+            "exit_code": 1,
+            "command": ["python", "-m", "pytest"],
+            "cwd": ".",
+            "duration_ms": 123,
+            "timeout_seconds": 300,
+            "purpose": "test",
+            "failure_category": "non_zero_exit",
+            "stdout": "FAILED tests/test_app.py::test_app",
+            "stderr": "",
+            "truncated": False,
+            "runner": {"backend": "docker", "image": "python:3.12-slim"},
+        },
+        tool_name="run_tests",
+        tool_kind="sandbox-exec",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+
+    assert artifacts[0]["artifact_type"] == "document_excerpt"
+    assert artifacts[0]["payload"]["items"][0]["source"] == "sandbox"
+    assert artifacts[0]["payload"]["items"][0]["metadata"]["purpose"] == "test"
+    assert artifacts[0]["payload"]["items"][0]["metadata"]["failure_category"] == "non_zero_exit"
 
 
 def test_build_artifacts_from_tool_result_merges_structured_content_with_code_resources():

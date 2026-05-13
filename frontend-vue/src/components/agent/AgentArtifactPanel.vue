@@ -70,6 +70,12 @@
         :artifact="artifact"
       />
 
+      <AgentPatchCard
+        v-for="artifact in patchArtifacts"
+        :key="artifact.clientKey"
+        :artifact="artifact"
+      />
+
       <AgentRichArtifactCard
         v-for="artifact in directoryTreeArtifacts"
         :key="artifact.clientKey"
@@ -174,6 +180,7 @@ import { renderMarkdown } from '@/utils/markdown'
 import AgentCitationsCard from './AgentCitationsCard.vue'
 import AgentCodeFilesCard from './AgentCodeFilesCard.vue'
 import AgentFindingsCard from './AgentFindingsCard.vue'
+import AgentPatchCard from './AgentPatchCard.vue'
 import AgentRichArtifactCard from './AgentRichArtifactCard.vue'
 
 const props = defineProps({
@@ -196,6 +203,7 @@ const findingArtifacts = computed(() => props.artifacts.filter((artifact) => art
 const citationArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'citations'))
 const workspaceArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'workspace_summary'))
 const codeFileArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'code_files'))
+const patchArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'code_patch'))
 const directoryTreeArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'directory_tree'))
 const pagedArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'paged_collection'))
 const planArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'task_plan'))
