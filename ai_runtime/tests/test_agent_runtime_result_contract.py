@@ -544,6 +544,91 @@ def test_sandbox_exec_tool_results_promote_to_verification_report_artifact():
     assert artifacts[0]["metadata"]["failure_category"] == "non_zero_exit"
 
 
+def test_browser_snapshot_tool_result_promotes_to_document_excerpt_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "completed",
+            "session_id": "browser-session-1",
+            "url": "https://app.example.com/dashboard",
+            "title": "Dashboard",
+            "text": "Ready",
+            "captured_at": "2026-05-14T00:00:00+00:00",
+            "viewport": {"width": 1280, "height": 720},
+            "source": "browser_snapshot",
+        },
+        tool_name="browser_snapshot",
+        tool_kind="web",
+        step_id="step-browser",
+        tool_call_id="tool-browser",
+    )
+
+    assert artifacts[0]["artifact_type"] == "document_excerpt"
+    assert artifacts[0]["name"] == "browser_snapshot - Dashboard"
+    assert artifacts[0]["payload"]["items"][0]["text"] == "Ready"
+    assert artifacts[0]["payload"]["items"][0]["metadata"]["session_id"] == "browser-session-1"
+    assert artifacts[0]["metadata"]["url"] == "https://app.example.com/dashboard"
+
+
+def test_browser_screenshot_tool_result_promotes_to_media_gallery_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "completed",
+            "session_id": "browser-session-1",
+            "url": "https://app.example.com/dashboard",
+            "title": "Dashboard",
+            "captured_at": "2026-05-14T00:00:00+00:00",
+            "images": [
+                {
+                    "title": "Dashboard",
+                    "path": "browser-session-1.png",
+                    "mime_type": "image/png",
+                    "data": "iVBORw0K",
+                    "size_bytes": 6,
+                }
+            ],
+        },
+        tool_name="browser_screenshot",
+        tool_kind="web",
+        step_id="step-browser",
+        tool_call_id="tool-browser",
+    )
+
+    assert artifacts[0]["artifact_type"] == "media_gallery"
+    assert artifacts[0]["payload"]["items"][0]["mime_type"] == "image/png"
+    assert artifacts[0]["payload"]["items"][0]["uri"].startswith("data:image/png;base64,")
+    assert artifacts[0]["metadata"]["session_id"] == "browser-session-1"
+
+
+def test_pdf_extract_tool_result_promotes_to_document_pages_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": 200,
+            "url": "https://files.example.com/guide.pdf",
+            "requested_url": "https://files.example.com/guide.pdf",
+            "filename": "guide.pdf",
+            "page_count": 1,
+            "extracted_pages": 1,
+            "pages": [
+                {
+                    "page_number": 1,
+                    "text": "PDF text",
+                    "source": "https://files.example.com/guide.pdf",
+                }
+            ],
+        },
+        tool_name="pdf_extract",
+        tool_kind="web",
+        step_id="step-pdf",
+        tool_call_id="tool-pdf",
+    )
+
+    assert artifacts[0]["artifact_type"] == "document_pages"
+    assert artifacts[0]["name"] == "pdf_extract - guide.pdf"
+    assert artifacts[0]["payload"]["pages"][0]["text"] == "PDF text"
+    assert artifacts[0]["payload"]["page_count"] == 1
+    assert artifacts[0]["metadata"]["status"] == 200
+
+
 def test_specialized_verification_tool_results_promote_to_verification_report_artifact():
     artifacts = build_artifacts_from_tool_result(
         {

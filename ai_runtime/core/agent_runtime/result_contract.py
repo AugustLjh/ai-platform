@@ -2408,6 +2408,96 @@ def build_artifacts_from_tool_result(
                 "step_id": step_id,
             }
         )
+    elif tool_name in {"browser_open", "browser_click", "browser_type", "browser_snapshot"} and (
+        _is_non_empty_string(payload.get("text")) or _is_non_empty_string(payload.get("html"))
+    ):
+        promoted.append(
+            {
+                "artifact_type": "document_excerpt",
+                "name": _tool_artifact_name(tool_name, payload.get("title"), "Browser Snapshot"),
+                "payload": {
+                    "items": [
+                        {
+                            "title": payload.get("title") or payload.get("url") or tool_name,
+                            "text": payload.get("text") or payload.get("html") or "",
+                            "source": payload.get("url") or "browser",
+                            "metadata": {
+                                "session_id": payload.get("session_id"),
+                                "captured_at": payload.get("captured_at"),
+                                "http_status": payload.get("http_status"),
+                                "viewport": payload.get("viewport"),
+                                "action": payload.get("action"),
+                                "selector": payload.get("selector"),
+                                "truncated": payload.get("truncated"),
+                            },
+                        }
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "url": payload.get("url"),
+                    "session_id": payload.get("session_id"),
+                    "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "browser_screenshot" and isinstance(payload.get("images"), list):
+        promoted.append(
+            {
+                "artifact_type": "media_gallery",
+                "name": _tool_artifact_name(tool_name, payload.get("title"), "Browser Screenshot"),
+                "payload": {"items": _normalize_media_entries(payload.get("images"))},
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "url": payload.get("url"),
+                    "session_id": payload.get("session_id"),
+                    "captured_at": payload.get("captured_at"),
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "pdf_extract" and isinstance(payload.get("pages"), list):
+        promoted.append(
+            {
+                "artifact_type": "document_pages",
+                "name": _tool_artifact_name(tool_name, payload.get("filename"), "PDF Extract"),
+                "payload": {
+                    "title": payload.get("filename") or payload.get("url") or "PDF Extract",
+                    "pages": payload.get("pages") or [],
+                    "source": payload.get("url") or payload.get("requested_url"),
+                    "metadata": {
+                        "requested_url": payload.get("requested_url"),
+                        "status": payload.get("status"),
+                        "fetched_at": payload.get("fetched_at"),
+                        "page_count": payload.get("page_count"),
+                        "extracted_pages": payload.get("extracted_pages"),
+                        "sha256": payload.get("sha256"),
+                        "truncated": payload.get("truncated"),
+                    },
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "url": payload.get("url"),
+                    "requested_url": payload.get("requested_url"),
+                    "status": payload.get("status"),
+                    "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
     elif tool_name == "download_file" and isinstance(payload.get("files"), list):
         promoted.append(
             {

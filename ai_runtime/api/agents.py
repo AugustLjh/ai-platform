@@ -67,6 +67,61 @@ async def list_tools(
     return {"tools": tools, "total": len(tools), "execution_mode": execution_mode}
 
 
+@router.get("/workspaces")
+async def inspect_workspaces(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    runtime = get_agent_runtime()
+    inspection = runtime.workspace_manager.inspect_workspaces()
+    workspaces = [
+        item
+        for item in inspection.get("workspaces", [])
+        if str(item.get("tenant_id") or "") == tenant_id
+    ]
+    return {
+        **inspection,
+        "tenant_id": tenant_id,
+        "workspace_count": len(workspaces),
+        "expired_count": sum(1 for item in workspaces if item.get("expired")),
+        "quota_exceeded_count": sum(1 for item in workspaces if item.get("quota_exceeded")),
+        "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in workspaces),
+        "total_file_count": sum(int(item.get("file_count") or 0) for item in workspaces),
+        "workspaces": workspaces,
+        "requested_by": user_id,
+    }
+
+
+@router.post("/workspaces/cleanup")
+async def cleanup_workspaces(
+    dry_run: bool = Query(default=True),
+    confirmed: bool = Query(default=False),
+    max_delete: int = Query(default=100, ge=1, le=1000),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    if not dry_run and not confirmed:
+        raise HTTPException(status_code=400, detail="workspace cleanup requires confirmed=true when dry_run=false")
+    runtime = get_agent_runtime()
+    result = runtime.workspace_manager.cleanup_expired_workspaces(
+        dry_run=dry_run,
+        max_delete=max_delete,
+        tenant_id=tenant_id,
+    )
+    selected = list(result.get("deleted", []))
+    failed = list(result.get("failed", []))
+    return {
+        **result,
+        "tenant_id": tenant_id,
+        "selected_count": len(selected),
+        "deleted_count": sum(1 for item in selected if item.get("deleted")),
+        "failed_count": len(failed),
+        "deleted": selected,
+        "failed": failed,
+        "requested_by": user_id,
+    }
+
+
 @router.get("/runs", response_model=AgentRunListResponse)
 async def list_runs(
     limit: int = Query(default=50, ge=1, le=200),
