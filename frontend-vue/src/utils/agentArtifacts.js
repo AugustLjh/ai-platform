@@ -524,7 +524,14 @@ const normalizeArtifactPayload = (artifactType, payload) => {
       },
       runner,
       selector: source.selector ?? null,
-      target: source.target ?? null
+      target: source.target ?? null,
+      ecosystem: source.ecosystem ?? null,
+      reportFormat: source.report_format ?? source.reportFormat ?? null,
+      structuredReport: source.structured_report && typeof source.structured_report === 'object' && !Array.isArray(source.structured_report)
+        ? source.structured_report
+        : source.structuredReport && typeof source.structuredReport === 'object' && !Array.isArray(source.structuredReport)
+          ? source.structuredReport
+          : null
     }
   }
 
@@ -921,6 +928,7 @@ const normalizeFileBundle = (value) => {
       ? entry.resource
       : {}
     const source = String(entry.uri || entry.url || entry.href || entry.resource_link || entry.resourceLink || resource.uri || resource.url || resource.href || resource.resource_link || resource.resourceLink || '').trim()
+    const sourceUrl = String(entry.source_url || entry.sourceUrl || resource.source_url || resource.sourceUrl || entry.source || resource.source || '').trim()
     const mimeType = String(entry.mimeType || entry.mime_type || resource.mimeType || resource.mime_type || '').trim()
     const path = String(entry.path || entry.file_path || resource.path || resource.file_path || resource.name || pathFromSource(source)).trim()
     if (!(source || mimeType || isNonEmptyString(entry.name) || isNonEmptyString(entry.title) || isNonEmptyString(resource.name) || isNonEmptyString(resource.title) || isNonEmptyString(entry.data) || isNonEmptyString(resource.data))) {
@@ -946,10 +954,10 @@ const normalizeFileBundle = (value) => {
       size_bytes: coerceInt(entry.size_bytes ?? entry.sizeBytes ?? entry.bytes ?? resource.size_bytes ?? resource.sizeBytes ?? resource.bytes),
       description: String(entry.description || resource.description || '').trim(),
       preview_text: previewText,
-      source,
+      source: sourceUrl || source,
       metadata: normalizeMetadata(
         { ...resource, ...entry },
-        ['resource', 'uri', 'url', 'href', 'mimeType', 'mime_type', 'path', 'file_path', 'name', 'title', 'description', 'preview_text', 'previewText', 'text', 'content', 'excerpt', 'data', 'blob', 'size_bytes', 'sizeBytes', 'bytes']
+        ['resource', 'uri', 'url', 'href', 'mimeType', 'mime_type', 'path', 'file_path', 'name', 'title', 'source_url', 'sourceUrl', 'source', 'description', 'preview_text', 'previewText', 'text', 'content', 'excerpt', 'data', 'blob', 'size_bytes', 'sizeBytes', 'bytes']
       )
     }]
   })
@@ -1774,16 +1782,22 @@ const buildToolArtifactName = (toolName, artifactName, fallback) => {
 }
 
 const verificationTitle = (toolName, purpose) => {
-  if (toolName === 'run_tests' || purpose === 'test') return 'Test Verification'
-  if (toolName === 'run_lint' || purpose === 'lint') return 'Lint Verification'
+  if (['run_tests', 'test_run'].includes(toolName) || purpose === 'test') return 'Test Verification'
+  if (['run_lint', 'lint_run'].includes(toolName) || purpose === 'lint') return 'Lint Verification'
   if (toolName === 'run_build' || purpose === 'build') return 'Build Verification'
+  if (toolName === 'typecheck_run' || purpose === 'typecheck') return 'Typecheck Verification'
+  if (toolName === 'coverage_run' || purpose === 'coverage') return 'Coverage Verification'
+  if (toolName === 'dependency_audit' || purpose === 'dependency_audit') return 'Dependency Audit'
   return 'Sandbox Verification'
 }
 
 const verificationKind = (toolName, purpose) => {
-  if (toolName === 'run_tests' || purpose === 'test') return 'test'
-  if (toolName === 'run_lint' || purpose === 'lint') return 'lint'
+  if (['run_tests', 'test_run'].includes(toolName) || purpose === 'test') return 'test'
+  if (['run_lint', 'lint_run'].includes(toolName) || purpose === 'lint') return 'lint'
   if (toolName === 'run_build' || purpose === 'build') return 'build'
+  if (toolName === 'typecheck_run' || purpose === 'typecheck') return 'typecheck'
+  if (toolName === 'coverage_run' || purpose === 'coverage') return 'coverage'
+  if (toolName === 'dependency_audit' || purpose === 'dependency_audit') return 'dependency_audit'
   return 'shell'
 }
 
@@ -1980,7 +1994,7 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
     }
   }
 
-  if (['shell_exec', 'run_tests', 'run_lint', 'run_build'].includes(toolName)) {
+  if (['shell_exec', 'run_tests', 'run_lint', 'run_build', 'test_run', 'lint_run', 'typecheck_run', 'coverage_run', 'dependency_audit'].includes(toolName)) {
     const stdout = isNonEmptyString(payload.stdout) ? String(payload.stdout) : ''
     const stderr = isNonEmptyString(payload.stderr) ? String(payload.stderr) : ''
     const purpose = isNonEmptyString(payload.purpose) ? String(payload.purpose).trim() : ''
@@ -2004,7 +2018,14 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
         logs: { stdout, stderr },
         runner: payload.runner && typeof payload.runner === 'object' && !Array.isArray(payload.runner) ? payload.runner : {},
         selector: payload.selector,
-        target: payload.target
+        target: payload.target,
+        ecosystem: payload.ecosystem,
+        report_format: payload.report_format ?? payload.reportFormat,
+        structured_report: payload.structured_report && typeof payload.structured_report === 'object' && !Array.isArray(payload.structured_report)
+          ? payload.structured_report
+          : payload.structuredReport && typeof payload.structuredReport === 'object' && !Array.isArray(payload.structuredReport)
+            ? payload.structuredReport
+            : null
       },
       metadata: {
         source: 'tool_call',
@@ -2298,6 +2319,34 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
           url: payload.url,
           status: payload.status,
           truncated: payload.truncated
+        }
+      })
+    ])
+  }
+
+  if (toolName === 'download_file' && Array.isArray(payload.files)) {
+    return mergeArtifacts([
+      normalizeArtifact({
+        artifact_type: 'file_bundle',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, payload.filename, 'Downloaded File'),
+        payload: {
+          files: normalizeFileBundle(payload.files)
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true,
+          url: payload.url,
+          requested_url: payload.requested_url,
+          status: payload.status,
+          content_type: payload.content_type,
+          bytes: payload.bytes,
+          sha256: payload.sha256,
+          truncated: payload.truncated,
+          failure_category: payload.failure_category
         }
       })
     ])

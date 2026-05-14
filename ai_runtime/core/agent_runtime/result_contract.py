@@ -669,6 +669,15 @@ def _normalize_file_bundle_entries(value: Any) -> list[dict[str, Any]]:
             or resource_dict.get("resourceLink")
             or ""
         ).strip()
+        source_url = str(
+            entry.get("source_url")
+            or entry.get("sourceUrl")
+            or resource_dict.get("source_url")
+            or resource_dict.get("sourceUrl")
+            or entry.get("source")
+            or resource_dict.get("source")
+            or ""
+        ).strip()
         mime_type = str(
             entry.get("mimeType")
             or entry.get("mime_type")
@@ -739,7 +748,7 @@ def _normalize_file_bundle_entries(value: Any) -> list[dict[str, Any]]:
                 ),
                 "description": str(entry.get("description") or resource_dict.get("description") or "").strip(),
                 "preview_text": preview_text,
-                "source": source,
+                "source": source_url or source,
                 "metadata": _normalize_metadata(
                     {**resource_dict, **entry},
                     {
@@ -754,6 +763,9 @@ def _normalize_file_bundle_entries(value: Any) -> list[dict[str, Any]]:
                         "file_path",
                         "name",
                         "title",
+                        "source_url",
+                        "sourceUrl",
+                        "source",
                         "description",
                         "preview_text",
                         "previewText",
@@ -1797,6 +1809,15 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
             "runner": runner,
             "selector": source.get("selector"),
             "target": source.get("target"),
+            "ecosystem": source.get("ecosystem"),
+            "report_format": source.get("report_format") or source.get("reportFormat"),
+            "structured_report": (
+                dict(source.get("structured_report"))
+                if isinstance(source.get("structured_report"), dict)
+                else dict(source.get("structuredReport"))
+                if isinstance(source.get("structuredReport"), dict)
+                else None
+            ),
         }
 
     if normalized_type == "file_bundle":
@@ -1907,22 +1928,34 @@ def _tool_artifact_name(tool_name: str, artifact_name: str | None, fallback: str
 
 
 def _verification_title(tool_name: str, purpose: str | None) -> str:
-    if tool_name == "run_tests" or purpose == "test":
+    if tool_name in {"run_tests", "test_run"} or purpose == "test":
         return "Test Verification"
-    if tool_name == "run_lint" or purpose == "lint":
+    if tool_name in {"run_lint", "lint_run"} or purpose == "lint":
         return "Lint Verification"
     if tool_name == "run_build" or purpose == "build":
         return "Build Verification"
+    if tool_name == "typecheck_run" or purpose == "typecheck":
+        return "Typecheck Verification"
+    if tool_name == "coverage_run" or purpose == "coverage":
+        return "Coverage Verification"
+    if tool_name == "dependency_audit" or purpose == "dependency_audit":
+        return "Dependency Audit"
     return "Sandbox Verification"
 
 
 def _verification_kind(tool_name: str, purpose: str | None) -> str:
-    if tool_name == "run_tests" or purpose == "test":
+    if tool_name in {"run_tests", "test_run"} or purpose == "test":
         return "test"
-    if tool_name == "run_lint" or purpose == "lint":
+    if tool_name in {"run_lint", "lint_run"} or purpose == "lint":
         return "lint"
     if tool_name == "run_build" or purpose == "build":
         return "build"
+    if tool_name == "typecheck_run" or purpose == "typecheck":
+        return "typecheck"
+    if tool_name == "coverage_run" or purpose == "coverage":
+        return "coverage"
+    if tool_name == "dependency_audit" or purpose == "dependency_audit":
+        return "dependency_audit"
     return "shell"
 
 
@@ -2375,6 +2408,32 @@ def build_artifacts_from_tool_result(
                 "step_id": step_id,
             }
         )
+    elif tool_name == "download_file" and isinstance(payload.get("files"), list):
+        promoted.append(
+            {
+                "artifact_type": "file_bundle",
+                "name": _tool_artifact_name(tool_name, payload.get("filename"), "Downloaded File"),
+                "payload": {
+                    "files": _normalize_file_bundle_entries(payload.get("files")),
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "url": payload.get("url"),
+                    "requested_url": payload.get("requested_url"),
+                    "status": payload.get("status"),
+                    "content_type": payload.get("content_type"),
+                    "bytes": payload.get("bytes"),
+                    "sha256": payload.get("sha256"),
+                    "truncated": payload.get("truncated"),
+                    "failure_category": payload.get("failure_category"),
+                },
+                "step_id": step_id,
+            }
+        )
     elif tool_name in {"workspace_apply_patch", "workspace_create_file", "workspace_write_file", "workspace_rename_path", "workspace_delete_path"}:
         patch_promoted = False
         for artifact in payload.get("artifacts") or []:
@@ -2436,7 +2495,17 @@ def build_artifacts_from_tool_result(
                     "step_id": step_id,
                 }
             )
-    elif tool_name in {"shell_exec", "run_tests", "run_lint", "run_build"}:
+    elif tool_name in {
+        "shell_exec",
+        "run_tests",
+        "run_lint",
+        "run_build",
+        "test_run",
+        "lint_run",
+        "typecheck_run",
+        "coverage_run",
+        "dependency_audit",
+    }:
         stdout = payload.get("stdout") if _is_non_empty_string(payload.get("stdout")) else ""
         stderr = payload.get("stderr") if _is_non_empty_string(payload.get("stderr")) else ""
         output_text = "\n".join(item for item in (stdout, stderr) if item).strip()
@@ -2469,6 +2538,9 @@ def build_artifacts_from_tool_result(
                     "runner": payload.get("runner") if isinstance(payload.get("runner"), dict) else {},
                     "selector": payload.get("selector"),
                     "target": payload.get("target"),
+                    "ecosystem": payload.get("ecosystem"),
+                    "report_format": payload.get("report_format"),
+                    "structured_report": payload.get("structured_report") if isinstance(payload.get("structured_report"), dict) else None,
                 },
                 "metadata": {
                     "source": source,

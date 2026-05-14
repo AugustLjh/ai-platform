@@ -260,7 +260,19 @@ test('buildArtifactsFromToolResult promotes sandbox execution into verification 
     stdout: 'FAILED tests/test_app.py::test_app',
     stderr: '',
     truncated: false,
-    runner: { backend: 'docker', image: 'python:3.12-slim' }
+    runner: { backend: 'docker', image: 'python:3.12-slim' },
+    structured_report: {
+      schema_version: 'verification_report.v1',
+      summary: { report_count: 1 },
+      reports: [
+        {
+          kind: 'test',
+          format: 'pytest_text',
+          summary: { failed: 1 },
+          failures: [{ title: 'tests/test_app.py::test_app', severity: 'error' }]
+        }
+      ]
+    }
   }, {
     id: 'tool-verify-1',
     toolName: 'run_tests',
@@ -274,7 +286,37 @@ test('buildArtifactsFromToolResult promotes sandbox execution into verification 
   assert.equal(artifacts[0].payload.status, 'failed')
   assert.equal(artifacts[0].payload.exitCode, 1)
   assert.equal(artifacts[0].payload.logs.stdout, 'FAILED tests/test_app.py::test_app')
+  assert.equal(artifacts[0].payload.structuredReport.schema_version, 'verification_report.v1')
+  assert.equal(artifacts[0].payload.structuredReport.reports[0].summary.failed, 1)
   assert.equal(artifacts[0].metadata.failure_category, 'non_zero_exit')
+})
+
+test('buildArtifactsFromToolResult promotes specialized verification tools', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    status: 'completed',
+    exit_code: 0,
+    command: ['python', '-m', 'pyright', '.'],
+    cwd: '.',
+    duration_ms: 42,
+    timeout_seconds: 300,
+    purpose: 'typecheck',
+    stdout: '0 errors',
+    stderr: '',
+    truncated: false,
+    ecosystem: 'python',
+    report_format: 'plain_text'
+  }, {
+    id: 'tool-typecheck-1',
+    toolName: 'typecheck_run',
+    toolKind: 'sandbox-exec',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'verification_report')
+  assert.equal(artifacts[0].name, 'typecheck_run - Typecheck Verification')
+  assert.equal(artifacts[0].payload.kind, 'typecheck')
+  assert.equal(artifacts[0].payload.ecosystem, 'python')
+  assert.equal(artifacts[0].payload.reportFormat, 'plain_text')
 })
 
 test('buildArtifactsFromToolResult promotes web search and page results', () => {
@@ -318,6 +360,37 @@ test('buildArtifactsFromToolResult promotes web search and page results', () => 
   assert.equal(pageArtifacts[0].artifactType, 'document_excerpt')
   assert.equal(pageArtifacts[0].payload.items[0].source, 'https://docs.example.com/runtime')
   assert.equal(pageArtifacts[0].payload.items[0].metadata.status, 200)
+
+  const downloadArtifacts = buildArtifactsFromToolResult({
+    url: 'https://docs.example.com/runtime.pdf',
+    requested_url: 'https://docs.example.com/runtime.pdf',
+    status: 200,
+    filename: 'runtime.pdf',
+    content_type: 'application/pdf',
+    bytes: 12,
+    sha256: 'hash',
+    truncated: false,
+    files: [{
+      name: 'runtime.pdf',
+      path: 'runtime.pdf',
+      mime_type: 'application/pdf',
+      size_bytes: 12,
+      data: 'ZmFrZSBwZGY=',
+      source_url: 'https://docs.example.com/runtime.pdf',
+      metadata: { sha256: 'hash' }
+    }]
+  }, {
+    id: 'tool-web-3',
+    toolName: 'download_file',
+    toolKind: 'web',
+    status: 'completed'
+  })
+
+  assert.equal(downloadArtifacts[0].artifactType, 'file_bundle')
+  assert.equal(downloadArtifacts[0].payload.files[0].name, 'runtime.pdf')
+  assert.equal(downloadArtifacts[0].payload.files[0].uri, 'data:application/pdf;base64,ZmFrZSBwZGY=')
+  assert.equal(downloadArtifacts[0].payload.files[0].source, 'https://docs.example.com/runtime.pdf')
+  assert.equal(downloadArtifacts[0].metadata.sha256, 'hash')
 })
 
 test('buildArtifactsFromToolResult promotes delete patch review metadata', () => {

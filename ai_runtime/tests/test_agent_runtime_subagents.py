@@ -296,6 +296,9 @@ def test_builtin_subagent_templates_map_capabilities_to_tool_allowlists():
     assert "workspace_write_file" not in explorer.tool_allowlist
     assert "workspace_apply_patch" in worker.tool_allowlist
     assert "run_build" in worker.tool_allowlist
+    assert "test_discover" in worker.tool_allowlist
+    assert "typecheck_run" in worker.tool_allowlist
+    assert "dependency_audit" in worker.tool_allowlist
     assert worker.review_policy["requires_reviewer"] is True
     assert "web_search" in researcher.tool_allowlist
     assert "workspace_apply_patch" not in researcher.tool_allowlist

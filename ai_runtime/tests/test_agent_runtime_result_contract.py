@@ -512,6 +512,18 @@ def test_sandbox_exec_tool_results_promote_to_verification_report_artifact():
             "stderr": "",
             "truncated": False,
             "runner": {"backend": "docker", "image": "python:3.12-slim"},
+            "structured_report": {
+                "schema_version": "verification_report.v1",
+                "summary": {"report_count": 1},
+                "reports": [
+                    {
+                        "kind": "test",
+                        "format": "pytest_text",
+                        "summary": {"failed": 1},
+                        "failures": [{"title": "tests/test_app.py::test_app", "severity": "error"}],
+                    }
+                ],
+            },
         },
         tool_name="run_tests",
         tool_kind="sandbox-exec",
@@ -527,7 +539,39 @@ def test_sandbox_exec_tool_results_promote_to_verification_report_artifact():
     assert artifacts[0]["payload"]["summary"] == "Verification failed (non_zero_exit)."
     assert artifacts[0]["payload"]["logs"]["stdout"] == "FAILED tests/test_app.py::test_app"
     assert artifacts[0]["payload"]["runner"]["backend"] == "docker"
+    assert artifacts[0]["payload"]["structured_report"]["schema_version"] == "verification_report.v1"
+    assert artifacts[0]["payload"]["structured_report"]["reports"][0]["summary"]["failed"] == 1
     assert artifacts[0]["metadata"]["failure_category"] == "non_zero_exit"
+
+
+def test_specialized_verification_tool_results_promote_to_verification_report_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "completed",
+            "exit_code": 0,
+            "command": ["python", "-m", "pyright", "."],
+            "cwd": ".",
+            "duration_ms": 42,
+            "timeout_seconds": 300,
+            "purpose": "typecheck",
+            "stdout": "0 errors",
+            "stderr": "",
+            "truncated": False,
+            "ecosystem": "python",
+            "report_format": "plain_text",
+        },
+        tool_name="typecheck_run",
+        tool_kind="sandbox-exec",
+        step_id="step-1",
+        tool_call_id="tool-typecheck",
+    )
+
+    assert artifacts[0]["artifact_type"] == "verification_report"
+    assert artifacts[0]["name"] == "typecheck_run - Typecheck Verification"
+    assert artifacts[0]["payload"]["kind"] == "typecheck"
+    assert artifacts[0]["payload"]["status"] == "completed"
+    assert artifacts[0]["payload"]["ecosystem"] == "python"
+    assert artifacts[0]["payload"]["report_format"] == "plain_text"
 
 
 def test_web_tool_results_promote_to_citation_and_excerpt_artifacts():
@@ -573,6 +617,40 @@ def test_web_tool_results_promote_to_citation_and_excerpt_artifacts():
     assert page_artifacts[0]["artifact_type"] == "document_excerpt"
     assert page_artifacts[0]["payload"]["items"][0]["source"] == "https://docs.example.com/runtime"
     assert page_artifacts[0]["payload"]["items"][0]["metadata"]["status"] == 200
+
+    download_artifacts = build_artifacts_from_tool_result(
+        {
+            "url": "https://docs.example.com/runtime.pdf",
+            "requested_url": "https://docs.example.com/runtime.pdf",
+            "status": 200,
+            "filename": "runtime.pdf",
+            "content_type": "application/pdf",
+            "bytes": 12,
+            "sha256": "hash",
+            "truncated": False,
+            "files": [
+                {
+                    "name": "runtime.pdf",
+                    "path": "runtime.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 12,
+                    "data": "ZmFrZSBwZGY=",
+                    "source_url": "https://docs.example.com/runtime.pdf",
+                    "metadata": {"sha256": "hash"},
+                }
+            ],
+        },
+        tool_name="download_file",
+        tool_kind="web",
+        step_id="step-1",
+        tool_call_id="tool-web-3",
+    )
+
+    assert download_artifacts[0]["artifact_type"] == "file_bundle"
+    assert download_artifacts[0]["payload"]["files"][0]["name"] == "runtime.pdf"
+    assert download_artifacts[0]["payload"]["files"][0]["uri"].startswith("data:application/pdf;base64,")
+    assert download_artifacts[0]["payload"]["files"][0]["source"] == "https://docs.example.com/runtime.pdf"
+    assert download_artifacts[0]["metadata"]["sha256"] == "hash"
 
 
 def test_build_artifacts_from_tool_result_merges_structured_content_with_code_resources():
