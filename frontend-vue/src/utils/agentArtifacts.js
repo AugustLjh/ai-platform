@@ -14,16 +14,17 @@ const artifactPriority = {
   review_findings: 1,
   citations: 2,
   code_patch: 3,
-  code_files: 4,
-  task_plan: 5,
-  table: 6,
-  paged_collection: 7,
-  directory_tree: 8,
-  document_pages: 9,
-  document_excerpt: 10,
-  media_gallery: 11,
-  archive_bundle: 12,
-  file_bundle: 13
+  verification_report: 4,
+  code_files: 5,
+  task_plan: 6,
+  table: 7,
+  paged_collection: 8,
+  directory_tree: 9,
+  document_pages: 10,
+  document_excerpt: 11,
+  media_gallery: 12,
+  archive_bundle: 13,
+  file_bundle: 14
 }
 const implicitListKeys = ['items', 'results', 'entries', 'records', 'matches', 'documents', 'data']
 const pagedKeys = ['paged_collection', 'paged_results', 'page', 'page_result']
@@ -499,6 +500,31 @@ const normalizeArtifactPayload = (artifactType, payload) => {
           ? source.reviewNotes.map((item) => String(item || '').trim()).filter(Boolean)
           : [],
       mergePolicy: String(source.merge_policy || source.mergePolicy || 'manual_review_required').trim()
+    }
+  }
+
+  if (type === 'verification_report') {
+    const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+    const logs = source.logs && typeof source.logs === 'object' && !Array.isArray(source.logs) ? source.logs : {}
+    const runner = source.runner && typeof source.runner === 'object' && !Array.isArray(source.runner) ? source.runner : {}
+    return {
+      kind: String(source.kind || source.purpose || 'shell').trim() || 'shell',
+      status: String(source.status || 'unknown').trim() || 'unknown',
+      exitCode: source.exit_code ?? source.exitCode ?? null,
+      command: Array.isArray(source.command) ? source.command.map((item) => String(item)) : [],
+      cwd: String(source.cwd || '.').trim() || '.',
+      durationMs: Number(source.duration_ms ?? source.durationMs ?? 0) || 0,
+      timeoutSeconds: source.timeout_seconds ?? source.timeoutSeconds ?? null,
+      summary: String(source.summary || '').trim(),
+      failureCategory: source.failure_category ?? source.failureCategory ?? null,
+      truncated: Boolean(source.truncated),
+      logs: {
+        stdout: String(logs.stdout || source.stdout || ''),
+        stderr: String(logs.stderr || source.stderr || '')
+      },
+      runner,
+      selector: source.selector ?? null,
+      target: source.target ?? null
     }
   }
 
@@ -1747,6 +1773,32 @@ const buildToolArtifactName = (toolName, artifactName, fallback) => {
   return `${toolLabel} - ${baseName}`
 }
 
+const verificationTitle = (toolName, purpose) => {
+  if (toolName === 'run_tests' || purpose === 'test') return 'Test Verification'
+  if (toolName === 'run_lint' || purpose === 'lint') return 'Lint Verification'
+  if (toolName === 'run_build' || purpose === 'build') return 'Build Verification'
+  return 'Sandbox Verification'
+}
+
+const verificationKind = (toolName, purpose) => {
+  if (toolName === 'run_tests' || purpose === 'test') return 'test'
+  if (toolName === 'run_lint' || purpose === 'lint') return 'lint'
+  if (toolName === 'run_build' || purpose === 'build') return 'build'
+  return 'shell'
+}
+
+const verificationSummary = (status, exitCode, failureCategory) => {
+  const statusText = String(status || 'unknown').trim() || 'unknown'
+  if (statusText === 'completed') return 'Verification completed successfully.'
+  if (statusText === 'timeout') return 'Verification timed out before completion.'
+  if (statusText === 'failed') {
+    const category = String(failureCategory || 'non_zero_exit').trim() || 'non_zero_exit'
+    return `Verification failed (${category}).`
+  }
+  if (exitCode !== null && exitCode !== undefined) return `Verification finished with exit code ${exitCode}.`
+  return `Verification status: ${statusText}.`
+}
+
 const buildEmbeddedResourceArtifacts = (entry, toolCall = {}) => {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     return []
@@ -1926,6 +1978,45 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
         }
       }))
     }
+  }
+
+  if (['shell_exec', 'run_tests', 'run_lint', 'run_build'].includes(toolName)) {
+    const stdout = isNonEmptyString(payload.stdout) ? String(payload.stdout) : ''
+    const stderr = isNonEmptyString(payload.stderr) ? String(payload.stderr) : ''
+    const purpose = isNonEmptyString(payload.purpose) ? String(payload.purpose).trim() : ''
+    const exitCode = payload.exit_code ?? payload.exitCode ?? null
+    const failureCategory = payload.failure_category ?? payload.failureCategory ?? null
+    promoted.push(normalizeArtifact({
+      artifact_type: 'verification_report',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, '', verificationTitle(toolName, purpose)),
+      payload: {
+        kind: verificationKind(toolName, purpose),
+        status: payload.status || 'unknown',
+        exit_code: exitCode,
+        command: Array.isArray(payload.command) ? payload.command : [],
+        cwd: payload.cwd || '.',
+        duration_ms: payload.duration_ms ?? payload.durationMs ?? 0,
+        timeout_seconds: payload.timeout_seconds ?? payload.timeoutSeconds ?? null,
+        summary: verificationSummary(payload.status, exitCode, failureCategory),
+        failure_category: failureCategory,
+        truncated: payload.truncated,
+        logs: { stdout, stderr },
+        runner: payload.runner && typeof payload.runner === 'object' && !Array.isArray(payload.runner) ? payload.runner : {},
+        selector: payload.selector,
+        target: payload.target
+      },
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true,
+        status: payload.status,
+        exit_code: exitCode,
+        failure_category: failureCategory
+      }
+    }))
   }
 
   if (structuredContent !== null && structuredContent !== undefined && structuredContent !== '') {
@@ -2145,6 +2236,73 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
     return mergeArtifacts(promoted)
   }
 
+  if (toolName === 'web_search' && Array.isArray(payload.items)) {
+    return mergeArtifacts([
+      normalizeArtifact({
+        artifact_type: 'citations',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, '', 'Search Results'),
+        payload: {
+          items: payload.items
+            .filter((item) => item && typeof item === 'object')
+            .map((item) => ({
+              title: item.title || item.url || 'Search Result',
+              url: item.url || '',
+              snippet: item.snippet || '',
+              source: payload.source || 'web_search',
+              metadata: {
+                query: payload.query,
+                fetched_at: payload.fetched_at
+              }
+            }))
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true,
+          query: payload.query,
+          truncated: payload.truncated
+        }
+      })
+    ])
+  }
+
+  if (['open_page', 'extract_page_text', 'fetch_url'].includes(toolName) && (isNonEmptyString(payload.text) || isNonEmptyString(payload.error))) {
+    return mergeArtifacts([
+      normalizeArtifact({
+        artifact_type: 'document_excerpt',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, payload.title, 'Web Page'),
+        payload: {
+          items: [{
+            title: payload.title || payload.url || toolName,
+            text: payload.text || payload.error || '',
+            source: payload.url || payload.requested_url || 'web',
+            metadata: {
+              requested_url: payload.requested_url,
+              status: payload.status,
+              fetched_at: payload.fetched_at,
+              truncated: payload.truncated,
+              failure_category: payload.failure_category
+            }
+          }]
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true,
+          url: payload.url,
+          status: payload.status,
+          truncated: payload.truncated
+        }
+      })
+    ])
+  }
+
   if (['git_status', 'git_diff', 'git_show', 'git_log', 'git_branch'].includes(toolName)) {
     let gitText = isNonEmptyString(payload.stdout) ? String(payload.stdout).trim() : ''
     if (!gitText && Number(payload.exit_code) === 0 && ['git_status', 'git_diff'].includes(toolName)) {
@@ -2300,6 +2458,7 @@ export const artifactTypeLabel = (type) => {
     review_findings: '审查发现',
     task_plan: '任务计划',
     table: '表格',
+    verification_report: '验证报告',
     document_excerpt: '文档摘录'
   }
   return labels[type] || type || '结构化结果'

@@ -34,15 +34,17 @@ ARTIFACT_TYPE_PRIORITY = {
     "review_findings": 1,
     "citations": 2,
     "code_files": 3,
-    "task_plan": 4,
-    "table": 5,
-    "paged_collection": 6,
-    "directory_tree": 7,
-    "document_pages": 8,
-    "document_excerpt": 9,
-    "media_gallery": 10,
-    "archive_bundle": 11,
-    "file_bundle": 12,
+    "code_patch": 4,
+    "verification_report": 5,
+    "task_plan": 6,
+    "table": 7,
+    "paged_collection": 8,
+    "directory_tree": 9,
+    "document_pages": 10,
+    "document_excerpt": 11,
+    "media_gallery": 12,
+    "archive_bundle": 13,
+    "file_bundle": 14,
 }
 IMPLICIT_LIST_KEYS = ("items", "results", "entries", "records", "matches", "documents", "data")
 CODE_FILE_EXTENSIONS = {
@@ -1772,6 +1774,31 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
             "merge_policy": str(source.get("merge_policy") or source.get("mergePolicy") or "manual_review_required"),
         }
 
+    if normalized_type == "verification_report":
+        source = payload if isinstance(payload, dict) else {}
+        command = source.get("command") if isinstance(source.get("command"), list) else []
+        logs = source.get("logs") if isinstance(source.get("logs"), dict) else {}
+        runner = source.get("runner") if isinstance(source.get("runner"), dict) else {}
+        return {
+            "kind": str(source.get("kind") or source.get("purpose") or "shell").strip() or "shell",
+            "status": str(source.get("status") or "unknown").strip() or "unknown",
+            "exit_code": source.get("exit_code"),
+            "command": [str(item) for item in command],
+            "cwd": str(source.get("cwd") or ".").strip() or ".",
+            "duration_ms": _coerce_int(source.get("duration_ms")) or 0,
+            "timeout_seconds": _coerce_int(source.get("timeout_seconds")),
+            "summary": str(source.get("summary") or "").strip(),
+            "failure_category": source.get("failure_category"),
+            "truncated": bool(source.get("truncated")),
+            "logs": {
+                "stdout": str(logs.get("stdout") or source.get("stdout") or ""),
+                "stderr": str(logs.get("stderr") or source.get("stderr") or ""),
+            },
+            "runner": runner,
+            "selector": source.get("selector"),
+            "target": source.get("target"),
+        }
+
     if normalized_type == "file_bundle":
         source_items = payload.get("files") if isinstance(payload, dict) else payload
         return {"files": _normalize_file_bundle_entries(source_items)}
@@ -1877,6 +1904,40 @@ def _tool_artifact_name(tool_name: str, artifact_name: str | None, fallback: str
     if base_name.lower().startswith(tool_label.lower()):
         return base_name
     return f"{tool_label} - {base_name}"
+
+
+def _verification_title(tool_name: str, purpose: str | None) -> str:
+    if tool_name == "run_tests" or purpose == "test":
+        return "Test Verification"
+    if tool_name == "run_lint" or purpose == "lint":
+        return "Lint Verification"
+    if tool_name == "run_build" or purpose == "build":
+        return "Build Verification"
+    return "Sandbox Verification"
+
+
+def _verification_kind(tool_name: str, purpose: str | None) -> str:
+    if tool_name == "run_tests" or purpose == "test":
+        return "test"
+    if tool_name == "run_lint" or purpose == "lint":
+        return "lint"
+    if tool_name == "run_build" or purpose == "build":
+        return "build"
+    return "shell"
+
+
+def _verification_summary(status: Any, exit_code: Any, failure_category: Any) -> str:
+    status_text = str(status or "unknown").strip() or "unknown"
+    if status_text == "completed":
+        return "Verification completed successfully."
+    if status_text == "timeout":
+        return "Verification timed out before completion."
+    if status_text == "failed":
+        category = str(failure_category or "non_zero_exit").strip() or "non_zero_exit"
+        return f"Verification failed ({category})."
+    if exit_code is not None:
+        return f"Verification finished with exit code {exit_code}."
+    return f"Verification status: {status_text}."
 
 
 def _build_embedded_resource_artifacts(
@@ -2245,6 +2306,75 @@ def build_artifacts_from_tool_result(
                 "step_id": step_id,
             }
         )
+    elif tool_name == "web_search" and isinstance(payload.get("items"), list):
+        promoted.append(
+            {
+                "artifact_type": "citations",
+                "name": _tool_artifact_name(tool_name, None, "Search Results"),
+                "payload": {
+                    "items": [
+                        {
+                            "title": item.get("title") or item.get("url") or "Search Result",
+                            "url": item.get("url") or "",
+                            "snippet": item.get("snippet") or "",
+                            "source": payload.get("source") or "web_search",
+                            "metadata": {
+                                "query": payload.get("query"),
+                                "fetched_at": payload.get("fetched_at"),
+                            },
+                        }
+                        for item in payload.get("items") or []
+                        if isinstance(item, dict)
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "query": payload.get("query"),
+                    "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name in {"open_page", "extract_page_text", "fetch_url"} and (
+        _is_non_empty_string(payload.get("text")) or _is_non_empty_string(payload.get("error"))
+    ):
+        promoted.append(
+            {
+                "artifact_type": "document_excerpt",
+                "name": _tool_artifact_name(tool_name, payload.get("title"), "Web Page"),
+                "payload": {
+                    "items": [
+                        {
+                            "title": payload.get("title") or payload.get("url") or tool_name,
+                            "text": payload.get("text") or payload.get("error") or "",
+                            "source": payload.get("url") or payload.get("requested_url") or "web",
+                            "metadata": {
+                                "requested_url": payload.get("requested_url"),
+                                "status": payload.get("status"),
+                                "fetched_at": payload.get("fetched_at"),
+                                "truncated": payload.get("truncated"),
+                                "failure_category": payload.get("failure_category"),
+                            },
+                        }
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "url": payload.get("url"),
+                    "status": payload.get("status"),
+                    "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
     elif tool_name in {"workspace_apply_patch", "workspace_create_file", "workspace_write_file", "workspace_rename_path", "workspace_delete_path"}:
         patch_promoted = False
         for artifact in payload.get("artifacts") or []:
@@ -2312,29 +2442,33 @@ def build_artifacts_from_tool_result(
         output_text = "\n".join(item for item in (stdout, stderr) if item).strip()
         if not output_text:
             output_text = f"{tool_name} completed with status {payload.get('status') or 'unknown'}."
+        purpose = str(payload.get("purpose") or "").strip() or None
         promoted.append(
             {
-                "artifact_type": "document_excerpt",
-                "name": _tool_artifact_name(tool_name, None, "Sandbox Output"),
+                "artifact_type": "verification_report",
+                "name": _tool_artifact_name(tool_name, None, _verification_title(tool_name, purpose)),
                 "payload": {
-                    "items": [
-                        {
-                            "title": " ".join(str(item) for item in payload.get("command") or []),
-                            "text": output_text,
-                            "source": "sandbox",
-                            "metadata": {
-                                "status": payload.get("status"),
-                                "exit_code": payload.get("exit_code"),
-                                "cwd": payload.get("cwd"),
-                                "duration_ms": payload.get("duration_ms"),
-                                "timeout_seconds": payload.get("timeout_seconds"),
-                                "purpose": payload.get("purpose"),
-                                "failure_category": payload.get("failure_category"),
-                                "truncated": payload.get("truncated"),
-                                "runner": payload.get("runner"),
-                            },
-                        }
-                    ]
+                    "kind": _verification_kind(tool_name, purpose),
+                    "status": payload.get("status") or "unknown",
+                    "exit_code": payload.get("exit_code"),
+                    "command": payload.get("command") or [],
+                    "cwd": payload.get("cwd") or ".",
+                    "duration_ms": payload.get("duration_ms") or 0,
+                    "timeout_seconds": payload.get("timeout_seconds"),
+                    "summary": _verification_summary(
+                        payload.get("status"),
+                        payload.get("exit_code"),
+                        payload.get("failure_category"),
+                    ),
+                    "failure_category": payload.get("failure_category"),
+                    "truncated": payload.get("truncated"),
+                    "logs": {
+                        "stdout": stdout,
+                        "stderr": stderr,
+                    },
+                    "runner": payload.get("runner") if isinstance(payload.get("runner"), dict) else {},
+                    "selector": payload.get("selector"),
+                    "target": payload.get("target"),
                 },
                 "metadata": {
                     "source": source,
@@ -2342,6 +2476,9 @@ def build_artifacts_from_tool_result(
                     "tool_kind": tool_kind,
                     "tool_call_id": tool_call_id,
                     "promoted_to_run": True,
+                    "status": payload.get("status"),
+                    "exit_code": payload.get("exit_code"),
+                    "failure_category": payload.get("failure_category"),
                 },
                 "step_id": step_id,
             }

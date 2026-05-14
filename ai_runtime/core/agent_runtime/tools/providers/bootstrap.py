@@ -10,11 +10,12 @@ from ai_runtime.core.agent_runtime.tools.providers.engineering import Engineerin
 from ai_runtime.core.agent_runtime.tools.providers.knowledge import register_knowledge_tools
 from ai_runtime.core.agent_runtime.tools.providers.mcp import MCPToolProvider
 from ai_runtime.core.agent_runtime.tools.providers.sandbox_exec import SandboxExecToolProvider
+from ai_runtime.core.agent_runtime.tools.providers.web import WebToolProvider
 from ai_runtime.core.agent_runtime.tools.providers.workspace import WorkspaceToolProvider
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOOL_PROVIDERS = ("builtin", "knowledge", "mcp", "project-context", "workspace", "sandbox-exec")
+DEFAULT_TOOL_PROVIDERS = ("builtin", "knowledge", "mcp", "project-context", "workspace", "sandbox-exec", "web")
 
 
 def _parse_csv(value: str | None, default: Iterable[str]) -> list[str]:
@@ -56,6 +57,8 @@ def configure_tool_registry(registry, *, mcp_registry: MCPRegistry) -> None:
     )
     if sandbox_exec_enabled and _env_bool("AGENT_SANDBOX_EXEC_ENABLED", False):
         registry.register_provider(SandboxExecToolProvider.from_env())
+    if "web" in enabled_providers and _env_bool("AGENT_WEB_ENABLED", False):
+        registry.register_provider(WebToolProvider.from_env())
 
     unknown_providers = sorted(
         name for name in enabled_providers
@@ -70,6 +73,7 @@ def configure_tool_registry(registry, *, mcp_registry: MCPRegistry) -> None:
             "sandbox-exec",
             "sandbox_exec",
             "sandbox",
+            "web",
         }
     )
     if unknown_providers:

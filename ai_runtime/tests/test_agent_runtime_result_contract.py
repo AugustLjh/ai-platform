@@ -483,7 +483,7 @@ def test_git_tool_results_promote_to_document_excerpt_artifact():
     assert empty_artifacts[0]["payload"]["items"][0]["text"] == "No changes."
 
 
-def test_sandbox_exec_tool_results_promote_to_document_excerpt_artifact():
+def test_sandbox_exec_tool_results_promote_to_verification_report_artifact():
     artifacts = build_artifacts_from_tool_result(
         {
             "status": "failed",
@@ -505,10 +505,60 @@ def test_sandbox_exec_tool_results_promote_to_document_excerpt_artifact():
         tool_call_id="tool-1",
     )
 
-    assert artifacts[0]["artifact_type"] == "document_excerpt"
-    assert artifacts[0]["payload"]["items"][0]["source"] == "sandbox"
-    assert artifacts[0]["payload"]["items"][0]["metadata"]["purpose"] == "test"
-    assert artifacts[0]["payload"]["items"][0]["metadata"]["failure_category"] == "non_zero_exit"
+    assert artifacts[0]["artifact_type"] == "verification_report"
+    assert artifacts[0]["name"] == "run_tests - Test Verification"
+    assert artifacts[0]["payload"]["kind"] == "test"
+    assert artifacts[0]["payload"]["status"] == "failed"
+    assert artifacts[0]["payload"]["exit_code"] == 1
+    assert artifacts[0]["payload"]["summary"] == "Verification failed (non_zero_exit)."
+    assert artifacts[0]["payload"]["logs"]["stdout"] == "FAILED tests/test_app.py::test_app"
+    assert artifacts[0]["payload"]["runner"]["backend"] == "docker"
+    assert artifacts[0]["metadata"]["failure_category"] == "non_zero_exit"
+
+
+def test_web_tool_results_promote_to_citation_and_excerpt_artifacts():
+    search_artifacts = build_artifacts_from_tool_result(
+        {
+            "query": "runtime",
+            "items": [
+                {
+                    "title": "Runtime Plan",
+                    "url": "https://docs.example.com/runtime",
+                    "snippet": "Use structured web artifacts.",
+                }
+            ],
+            "fetched_at": "2026-05-14T00:00:00+00:00",
+            "source": "web_search",
+        },
+        tool_name="web_search",
+        tool_kind="web",
+        step_id="step-1",
+        tool_call_id="tool-web-1",
+    )
+
+    assert search_artifacts[0]["artifact_type"] == "citations"
+    assert search_artifacts[0]["payload"]["items"][0]["url"] == "https://docs.example.com/runtime"
+    assert search_artifacts[0]["metadata"]["query"] == "runtime"
+
+    page_artifacts = build_artifacts_from_tool_result(
+        {
+            "url": "https://docs.example.com/runtime",
+            "requested_url": "https://docs.example.com/runtime",
+            "status": 200,
+            "title": "Runtime Plan",
+            "text": "Use structured web artifacts.",
+            "fetched_at": "2026-05-14T00:00:00+00:00",
+            "truncated": False,
+        },
+        tool_name="open_page",
+        tool_kind="web",
+        step_id="step-1",
+        tool_call_id="tool-web-2",
+    )
+
+    assert page_artifacts[0]["artifact_type"] == "document_excerpt"
+    assert page_artifacts[0]["payload"]["items"][0]["source"] == "https://docs.example.com/runtime"
+    assert page_artifacts[0]["payload"]["items"][0]["metadata"]["status"] == 200
 
 
 def test_build_artifacts_from_tool_result_merges_structured_content_with_code_resources():

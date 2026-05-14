@@ -76,6 +76,12 @@
         :artifact="artifact"
       />
 
+      <AgentVerificationCard
+        v-for="artifact in verificationArtifacts"
+        :key="artifact.clientKey"
+        :artifact="artifact"
+      />
+
       <AgentRichArtifactCard
         v-for="artifact in directoryTreeArtifacts"
         :key="artifact.clientKey"
@@ -182,6 +188,7 @@ import AgentCodeFilesCard from './AgentCodeFilesCard.vue'
 import AgentFindingsCard from './AgentFindingsCard.vue'
 import AgentPatchCard from './AgentPatchCard.vue'
 import AgentRichArtifactCard from './AgentRichArtifactCard.vue'
+import AgentVerificationCard from './AgentVerificationCard.vue'
 
 const props = defineProps({
   artifacts: {
@@ -204,6 +211,7 @@ const citationArtifacts = computed(() => props.artifacts.filter((artifact) => ar
 const workspaceArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'workspace_summary'))
 const codeFileArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'code_files'))
 const patchArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'code_patch'))
+const verificationArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'verification_report'))
 const directoryTreeArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'directory_tree'))
 const pagedArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'paged_collection'))
 const planArtifacts = computed(() => props.artifacts.filter((artifact) => artifact.artifactType === 'task_plan'))

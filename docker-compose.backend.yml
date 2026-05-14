@@ -35,7 +35,7 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_GRPC_PORT=6334
-      - AGENT_TOOL_PROVIDERS=${AGENT_TOOL_PROVIDERS:-builtin,knowledge,mcp,project-context,workspace,sandbox-exec}
+      - AGENT_TOOL_PROVIDERS=${AGENT_TOOL_PROVIDERS:-builtin,knowledge,mcp,project-context,workspace,sandbox-exec,web}
       - AGENT_PROJECT_CONTEXT_ENABLED=${AGENT_PROJECT_CONTEXT_ENABLED:-true}
       - AGENT_PROJECT_CONTEXT_TOOLS=${AGENT_PROJECT_CONTEXT_TOOLS:-project_list_context,project_search_context,project_read_context_item,project_list_uploaded_files,project_search_uploaded_files,project_read_uploaded_file}
       - AGENT_WORKSPACE_ENABLED=${AGENT_WORKSPACE_ENABLED:-false}
@@ -51,6 +51,15 @@ services:
       - AGENT_SANDBOX_DOCKER_CPUS=${AGENT_SANDBOX_DOCKER_CPUS:-1}
       - AGENT_SANDBOX_MAX_OUTPUT_CHARS=${AGENT_SANDBOX_MAX_OUTPUT_CHARS:-40000}
       - AGENT_SANDBOX_MAX_TIMEOUT_SECONDS=${AGENT_SANDBOX_MAX_TIMEOUT_SECONDS:-1200}
+      - AGENT_WEB_ENABLED=${AGENT_WEB_ENABLED:-false}
+      - AGENT_WEB_TOOLS=${AGENT_WEB_TOOLS:-fetch_url,open_page,extract_page_text,web_search}
+      - AGENT_WEB_NETWORK_CONFIGURED=${AGENT_WEB_NETWORK_CONFIGURED:-false}
+      - AGENT_WEB_ALLOWED_DOMAINS=${AGENT_WEB_ALLOWED_DOMAINS:-}
+      - AGENT_WEB_DENIED_DOMAINS=${AGENT_WEB_DENIED_DOMAINS:-}
+      - AGENT_WEB_MAX_RESPONSE_BYTES=${AGENT_WEB_MAX_RESPONSE_BYTES:-1000000}
+      - AGENT_WEB_MAX_OUTPUT_CHARS=${AGENT_WEB_MAX_OUTPUT_CHARS:-40000}
+      - AGENT_WEB_TIMEOUT_SECONDS=${AGENT_WEB_TIMEOUT_SECONDS:-20}
+      - AGENT_WEB_SEARCH_ENDPOINT=${AGENT_WEB_SEARCH_ENDPOINT:-}
     volumes:
       - huggingface_cache:/root/.cache/huggingface
     healthcheck:

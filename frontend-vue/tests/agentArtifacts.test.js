@@ -247,6 +247,79 @@ test('buildArtifactsFromToolResult promotes workspace patch artifacts', () => {
   assert.equal(artifacts[0].metadata.tool_call_id, 'tool-4')
 })
 
+test('buildArtifactsFromToolResult promotes sandbox execution into verification report', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    status: 'failed',
+    exit_code: 1,
+    command: ['python', '-m', 'pytest'],
+    cwd: '.',
+    duration_ms: 123,
+    timeout_seconds: 300,
+    purpose: 'test',
+    failure_category: 'non_zero_exit',
+    stdout: 'FAILED tests/test_app.py::test_app',
+    stderr: '',
+    truncated: false,
+    runner: { backend: 'docker', image: 'python:3.12-slim' }
+  }, {
+    id: 'tool-verify-1',
+    toolName: 'run_tests',
+    toolKind: 'sandbox-exec',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'verification_report')
+  assert.equal(artifacts[0].name, 'run_tests - Test Verification')
+  assert.equal(artifacts[0].payload.kind, 'test')
+  assert.equal(artifacts[0].payload.status, 'failed')
+  assert.equal(artifacts[0].payload.exitCode, 1)
+  assert.equal(artifacts[0].payload.logs.stdout, 'FAILED tests/test_app.py::test_app')
+  assert.equal(artifacts[0].metadata.failure_category, 'non_zero_exit')
+})
+
+test('buildArtifactsFromToolResult promotes web search and page results', () => {
+  const searchArtifacts = buildArtifactsFromToolResult({
+    query: 'runtime',
+    items: [
+      {
+        title: 'Runtime Plan',
+        url: 'https://docs.example.com/runtime',
+        snippet: 'Use structured web artifacts.'
+      }
+    ],
+    fetched_at: '2026-05-14T00:00:00+00:00',
+    source: 'web_search'
+  }, {
+    id: 'tool-web-1',
+    toolName: 'web_search',
+    toolKind: 'web',
+    status: 'completed'
+  })
+
+  assert.equal(searchArtifacts[0].artifactType, 'citations')
+  assert.equal(searchArtifacts[0].payload.items[0].url, 'https://docs.example.com/runtime')
+  assert.equal(searchArtifacts[0].metadata.query, 'runtime')
+
+  const pageArtifacts = buildArtifactsFromToolResult({
+    url: 'https://docs.example.com/runtime',
+    requested_url: 'https://docs.example.com/runtime',
+    status: 200,
+    title: 'Runtime Plan',
+    text: 'Use structured web artifacts.',
+    fetched_at: '2026-05-14T00:00:00+00:00',
+    truncated: false
+  }, {
+    id: 'tool-web-2',
+    toolName: 'open_page',
+    toolKind: 'web',
+    status: 'completed'
+  })
+
+  assert.equal(pageArtifacts[0].artifactType, 'document_excerpt')
+  assert.equal(pageArtifacts[0].payload.items[0].source, 'https://docs.example.com/runtime')
+  assert.equal(pageArtifacts[0].payload.items[0].metadata.status, 200)
+})
+
 test('buildArtifactsFromToolResult promotes delete patch review metadata', () => {
   const artifacts = buildArtifactsFromToolResult({
     status: 'dry_run',
