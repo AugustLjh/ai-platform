@@ -13,6 +13,7 @@ PlannerActionType = Literal["final_answer", "tool_call", "ask_user", "delegate"]
 PlannerStepStatus = Literal["completed", "in_progress", "pending"]
 ArtifactType = Literal[
     "answer",
+    "code_patch",
     "code_files",
     "citations",
     "file_bundle",
@@ -25,6 +26,8 @@ ArtifactType = Literal[
     "directory_tree",
     "document_pages",
     "archive_bundle",
+    "verification_report",
+    "workspace_summary",
 ]
 
 

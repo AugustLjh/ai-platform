@@ -9,6 +9,7 @@ from ai_runtime.core.agent_runtime.subagents.governance import record_delegation
 from ai_runtime.core.agent_runtime.subagents.handoff import SubagentHandoff
 from ai_runtime.core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
 from ai_runtime.core.agent_runtime.subagents.registry import SubagentRegistry
+from ai_runtime.core.agent_runtime.subagents.templates import build_builtin_subagent_target
 
 
 def _timestamp() -> datetime:
@@ -216,6 +217,90 @@ async def test_subagent_registry_resolves_targets_from_agent_metadata():
     assert targets[0].slug == "review-specialist"
     assert targets[0].name == "Review Specialist"
     assert targets[0].handoff_prompt == "Perform a bounded review pass."
+
+
+async def test_subagent_registry_resolves_builtin_templates_from_agent_metadata():
+    registry = SubagentRegistry(FakeDBPool(), FakeAgentRepository({}))
+    definition = AgentDefinition.model_validate(
+        {
+            "id": "agent-parent",
+            "tenant_id": "tenant-1",
+            "name": "Parent Agent",
+            "system_prompt": "",
+            "metadata": {
+                "subagents": [
+                    {"template": "explorer"},
+                    {
+                        "builtin_template": "reviewer",
+                        "slug": "strict-review",
+                        "runtime_policy": {"max_parent_delegations": 2},
+                    },
+                ]
+            },
+            "created_at": _timestamp(),
+            "updated_at": _timestamp(),
+        }
+    )
+
+    targets = await registry.resolve_for_definition(definition)
+
+    assert [target.slug for target in targets] == ["explorer", "strict-review"]
+    assert targets[0].agent_definition_id is None
+    assert targets[0].subagent_definition_id is None
+    assert "workspace_read_file" in targets[0].tool_allowlist
+    assert "workspace_apply_patch" not in targets[0].tool_allowlist
+    assert targets[0].runtime_policy["async_execution"] is True
+    assert targets[0].runtime_policy["allow_delegation"] is False
+    assert targets[0].metadata["template_slug"] == "explorer"
+    assert targets[1].review_policy["blocking_severities"] == ["high", "critical"]
+    assert targets[1].runtime_policy["max_parent_delegations"] == 2
+    assert targets[1].runtime_policy["allow_delegation"] is False
+    assert targets[1].runtime_policy["delegation_mode"] == "reviewer"
+
+
+async def test_subagent_registry_uses_slug_as_builtin_template_alias():
+    registry = SubagentRegistry(FakeDBPool(), FakeAgentRepository({}))
+    definition = AgentDefinition.model_validate(
+        {
+            "id": "agent-parent",
+            "tenant_id": "tenant-1",
+            "name": "Parent Agent",
+            "system_prompt": "",
+            "metadata": {"subagents": [{"slug": "worker", "name": "Scoped Worker"}]},
+            "created_at": _timestamp(),
+            "updated_at": _timestamp(),
+        }
+    )
+
+    targets = await registry.resolve_for_definition(definition)
+
+    assert len(targets) == 1
+    assert targets[0].slug == "worker"
+    assert targets[0].name == "Scoped Worker"
+    assert "workspace_apply_patch" in targets[0].tool_allowlist
+    assert "run_tests" in targets[0].tool_allowlist
+    assert targets[0].metadata["requires_write_scope"] is True
+
+
+def test_builtin_subagent_templates_map_capabilities_to_tool_allowlists():
+    explorer = build_builtin_subagent_target("explorer")
+    worker = build_builtin_subagent_target("worker")
+    researcher = build_builtin_subagent_target("researcher")
+    devops = build_builtin_subagent_target("devops")
+
+    assert explorer is not None
+    assert worker is not None
+    assert researcher is not None
+    assert devops is not None
+    assert "workspace_read_file" in explorer.tool_allowlist
+    assert "workspace_write_file" not in explorer.tool_allowlist
+    assert "workspace_apply_patch" in worker.tool_allowlist
+    assert "run_build" in worker.tool_allowlist
+    assert worker.review_policy["requires_reviewer"] is True
+    assert "web_search" in researcher.tool_allowlist
+    assert "workspace_apply_patch" not in researcher.tool_allowlist
+    assert devops.metadata["risk_level"] == "high"
+    assert devops.runtime_policy["max_concurrent_delegations"] == 1
 
 
 async def test_subagent_registry_ignores_legacy_database_bindings_and_uses_metadata_fallback():

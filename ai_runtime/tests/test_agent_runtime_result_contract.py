@@ -1,3 +1,4 @@
+from ai_runtime.core.agent_runtime.models import AgentArtifact
 from ai_runtime.core.agent_runtime.result_contract import (
     build_artifacts_from_tool_result,
     build_structured_run_result,
@@ -447,6 +448,19 @@ def test_workspace_status_tool_result_promotes_workspace_summary_artifact():
 
     assert artifacts[0]["artifact_type"] == "workspace_summary"
     assert artifacts[0]["payload"]["source"]["type"] == "upload_bundle"
+
+
+def test_runtime_artifact_model_accepts_workspace_and_execution_surface_artifacts():
+    for artifact_type in ("workspace_summary", "code_patch", "verification_report"):
+        artifact = AgentArtifact.model_validate(
+            {
+                "artifact_type": artifact_type,
+                "name": artifact_type,
+                "payload": {},
+            }
+        )
+
+        assert artifact.artifact_type == artifact_type
 
 
 def test_git_tool_results_promote_to_document_excerpt_artifact():
