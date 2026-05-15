@@ -106,6 +106,22 @@ const normalizeGovernanceEnforcement = (raw = {}) => ({
   note: raw.note || ''
 })
 
+const normalizeGovernanceBlocker = (raw = {}) => ({
+  code: raw.code || '',
+  message: raw.message || raw.reason || '',
+  severity: raw.severity || 'error',
+  recoverable: Boolean(raw.recoverable),
+  recoveryActions: normalizeStringList(raw.recovery_actions || raw.recoveryActions),
+  details: raw.details && typeof raw.details === 'object' ? raw.details : {}
+})
+
+const normalizeGovernanceRecovery = (raw = {}) => ({
+  recoverable: Boolean(raw.recoverable),
+  primaryCode: raw.primary_code || raw.primaryCode || '',
+  summary: raw.summary || '',
+  actions: normalizeStringList(raw.actions)
+})
+
 const normalizeGovernanceHistory = (raw = {}) => ({
   targetSlug: raw.target_slug || raw.targetSlug || '',
   attemptCount: Number(raw.attempt_count || raw.attemptCount || 0),
@@ -123,6 +139,10 @@ export const normalizeGovernancePolicy = (raw = {}) => {
   const limits = normalizeGovernanceLimits(raw.limits || {})
   const budget = normalizeGovernanceBudget(raw.budget || {})
   const enforcement = normalizeGovernanceEnforcement(raw.enforcement || {})
+  const blockers = Array.isArray(raw.blockers || raw.blockersList)
+    ? (raw.blockers || raw.blockersList).map(normalizeGovernanceBlocker).filter((item) => item.code || item.message)
+    : []
+  const recovery = normalizeGovernanceRecovery(raw.recovery || {})
   const waitingUser = raw.waiting_user || raw.waitingUser || {}
   const warnings = normalizeStringList(raw.warnings)
   const history = normalizeGovernanceHistory(raw.history || {})
@@ -140,6 +160,8 @@ export const normalizeGovernancePolicy = (raw = {}) => {
     enforcement.hardLimits.length > 0 ||
     enforcement.advisoryLimits.length > 0 ||
     enforcement.note ||
+    blockers.length > 0 ||
+    recovery.actions.length > 0 ||
     warnings.length > 0 ||
     history.attemptCount > 0 ||
     history.waitingUserCount > 0
@@ -152,6 +174,8 @@ export const normalizeGovernancePolicy = (raw = {}) => {
     waitingUserPropagation: String(waitingUser.propagation || '').trim(),
     waitingUserCountsAsActiveChild: waitingUser.counts_as_active_child ?? waitingUser.countsAsActiveChild ?? null,
     enforcement,
+    blockers,
+    recovery,
     warnings,
     history,
     raw,
@@ -227,7 +251,12 @@ export const normalizeReviewResult = (raw = {}) => ({
     ? [...(raw.test_gaps || raw.testGaps)]
     : [],
   explicitDecision: raw.explicit_decision || raw.explicitDecision || '',
-  error: raw.error || ''
+  error: raw.error || '',
+  gateBlocked: Boolean(raw.gate_blocked || raw.gateBlocked),
+  gateBlockers: Array.isArray(raw.gate_blockers || raw.gateBlockers)
+    ? (raw.gate_blockers || raw.gateBlockers).map(normalizeGovernanceBlocker).filter((item) => item.code || item.message)
+    : [],
+  recovery: normalizeGovernanceRecovery(raw.recovery || {})
 })
 
 export const reviewDecisionLabel = (decision) => ({
@@ -236,6 +265,7 @@ export const reviewDecisionLabel = (decision) => ({
   approved_with_findings: '通过但有提示',
   changes_requested: '要求修改',
   rejected: '拒绝',
+  review_gate_blocked: '评审阻断',
   needs_input: '等待补充',
   failed: '执行失败',
   cancelled: '已取消',
@@ -505,6 +535,9 @@ export const summarizeInvocationReview = (invocation) => {
   }
 
   const parts = [`${reviewModeLabel(reviewResult.mode)} ${reviewDecisionLabel(reviewResult.decision)}`]
+  if (reviewResult.gateBlocked) {
+    parts.push('已阻断')
+  }
   if (reviewResult.blockingFindingCount > 0) {
     parts.push(`${reviewResult.blockingFindingCount} 条阻塞`)
   } else if (reviewResult.findingCount > 0) {
@@ -567,6 +600,12 @@ export const summarizeGovernancePolicy = (governance) => {
   if (history.continueParentCount > 0) {
     parts.push(`父级继续 ${history.continueParentCount}`)
   }
+  if (governance.blockers.length > 0) {
+    parts.push(`阻塞 ${governance.blockers.length}`)
+  }
+  if (governance.recovery.actions.length > 0) {
+    parts.push(`恢复 ${governance.recovery.actions.length}`)
+  }
   if (!parts.length && enforcement.hardLimits.length > 0) {
     parts.push(`${enforcement.hardLimits.length} 条硬限制`)
   }
@@ -579,6 +618,16 @@ export const summarizeGovernancePolicy = (governance) => {
 export const summarizeInvocationGovernance = (invocation) => {
   const governance = getInvocationGovernancePolicy(invocation)
   return summarizeGovernancePolicy(governance)
+}
+
+export const summarizeGovernanceBlockers = (governance) => {
+  if (!governance?.blockers?.length) return ''
+  return governance.blockers.map((blocker) => blocker.message || blocker.code).filter(Boolean).join(' · ')
+}
+
+export const buildGovernanceRecoverySummary = (governance) => {
+  if (!governance?.recovery?.actions?.length) return ''
+  return governance.recovery.actions.slice(0, 3).join(' · ')
 }
 
 export const getInvocationKnowledgeSummary = (invocation) => {
@@ -688,6 +737,7 @@ export const getInvocationRecoverySummary = (invocation, childRun = null) => {
   const clarification = getInvocationClarification(invocation)
   const waitingUserPath = getInvocationWaitingUserPath(invocation, childRun)
   const governance = getInvocationGovernancePolicy(invocation)
+  const reviewResult = getInvocationReviewResult(invocation)
   const parts = []
   if (status === 'waiting_user') {
     parts.push('等待父级补充信息')
@@ -705,6 +755,14 @@ export const getInvocationRecoverySummary = (invocation, childRun = null) => {
     } else if (governance.history.failedAttemptCount > 0) {
       parts.push(`历史失败 ${governance.history.failedAttemptCount} 次`)
     }
+  }
+  if (governance.blockers.length > 0) {
+    parts.push(`阻塞 ${governance.blockers[0].message || governance.blockers[0].code}`)
+  }
+  if (governance.recovery.actions.length > 0) {
+    parts.push(`恢复建议 ${governance.recovery.actions[0]}`)
+  } else if (reviewResult.gateBlocked && reviewResult.recovery.actions.length > 0) {
+    parts.push(`恢复建议 ${reviewResult.recovery.actions[0]}`)
   }
   if (waitingUserPath.length > 1) {
     parts.push(`链路 ${summarizeWaitingUserPath(waitingUserPath)}`)
@@ -771,14 +829,15 @@ export const buildInvocationProtocolEntry = (item = {}) => {
     resultSummary: getInvocationResultSummary(invocation, childRun),
     attentionSummary: buildInvocationAttentionSummary(item),
     needsAttention: ['waiting_user', 'failed', 'cancelled'].includes(status) ||
+      reviewResult.gateBlocked ||
       reviewResult.blockingFindingCount > 0 ||
       governance.warnings.length > 0,
     attentionTone: status === 'failed'
       ? 'danger'
       : status === 'waiting_user'
         ? 'warning'
-        : reviewResult.blockingFindingCount > 0
-          ? 'warning'
+        : (reviewResult.gateBlocked || reviewResult.blockingFindingCount > 0)
+          ? 'danger'
           : 'neutral'
   }
 }

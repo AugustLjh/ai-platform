@@ -11,6 +11,68 @@ GOVERNANCE_PROTOCOL_VERSION = "managed-subagent.governance.v1"
 _ACTIVE_CHILD_STATUSES = {"queued", "running", "waiting_user"}
 _FAILED_CHILD_STATUSES = {"failed", "cancelled"}
 
+_GATE_RECOVERY_ACTIONS = {
+    "budget_hard_limit_exceeded": [
+        "Stop delegation to this capability until prior child usage is reviewed.",
+        "Reduce the delegated scope, raise the hard budget limit, or switch the budget to advisory mode.",
+    ],
+    "delegation_depth_exceeded": [
+        "Finish the current child run locally instead of delegating again.",
+        "Reduce subagent nesting or raise max_delegation_depth in the runtime policy.",
+    ],
+    "nested_delegation_disabled": [
+        "Complete the task in the current run or delegate from the parent run.",
+        "Enable allow_delegation only for capabilities that are safe to nest.",
+    ],
+    "parent_delegation_limit_exceeded": [
+        "Reuse an existing child result or continue in the parent run.",
+        "Raise max_parent_delegations if repeated specialist attempts are expected.",
+    ],
+    "concurrency_limit_exceeded": [
+        "Wait for an existing child run to finish, cancel it, or resume after user input.",
+        "Increase max_concurrent_delegations only for independent read-only or scoped work.",
+    ],
+    "retry_limit_exceeded": [
+        "Stop retrying the same child capability and fall back to parent execution.",
+        "Ask the user for new input before another retry, or raise max_retry_attempts.",
+    ],
+    "review_gate_blocked": [
+        "Treat the delegated result as blocked and fix the reviewer or judge findings before continuing.",
+        "Delegate a scoped worker with the blocking finding paths, then run the reviewer or judge again.",
+        "Ask the user before overriding a blocked review gate.",
+    ],
+    "write_scope_required": [
+        "Provide an explicit write_scope for worker delegations before starting the child run.",
+        "Use a read-only explorer or reviewer when no workspace writes are required.",
+    ],
+    "write_scope_conflict": [
+        "Wait for the active worker touching the same path to finish before starting another writer.",
+        "Split the work into non-overlapping write_scope paths, or cancel the conflicting child run.",
+        "Run a reviewer after workers finish before consuming or merging their patch artifacts.",
+    ],
+    "tool_budget_exceeded": [
+        "Stop tool execution for this child run and finish with the evidence already collected.",
+        "Reduce the delegated scope, raise max_tool_calls, or split the task into a separately reviewed child run.",
+        "Ask the user before continuing with a higher tool-call budget.",
+    ],
+    "timeout_exceeded": [
+        "Stop waiting for this child run and continue in the parent with a smaller scope.",
+        "Retry only after reducing the delegated task or increasing timeout_seconds.",
+        "Ask the user whether to continue waiting when the result is still required.",
+    ],
+    "single_agent_first": [
+        "Run at least one parent analysis/tool step before delegation.",
+        "Add explicit focus_paths, deliverables, checks, or constraints to justify the handoff.",
+    ],
+    "delegation_not_justified": [
+        "Use a direct tool call or parent reasoning for simple work.",
+        "Add a concrete isolation, review, parallelism, or scope signal before delegating.",
+    ],
+    "unknown": [
+        "Review the delegation gate blockers and adjust the task scope or runtime policy.",
+    ],
+}
+
 
 def _first_value(*values: Any) -> Any:
     for value in values:
@@ -73,6 +135,120 @@ def _coerce_bool(value: Any) -> bool | None:
     if text in {"false", "0", "no", "n", "off"}:
         return False
     return None
+
+
+def _normalize_gate_code(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text or "unknown"
+
+
+def build_governance_blocker(
+    code: str,
+    message: str,
+    *,
+    recovery_actions: list[str] | None = None,
+    severity: str = "error",
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_code = _normalize_gate_code(code)
+    actions = recovery_actions or _GATE_RECOVERY_ACTIONS.get(normalized_code) or _GATE_RECOVERY_ACTIONS["unknown"]
+    deduped_actions = list(dict.fromkeys(str(item).strip() for item in actions if str(item).strip()))
+    return {
+        "code": normalized_code,
+        "message": str(message or "").strip() or normalized_code,
+        "severity": str(severity or "error").strip().lower(),
+        "recoverable": bool(deduped_actions),
+        "recovery_actions": deduped_actions,
+        "details": dict(details or {}),
+    }
+
+
+def normalize_governance_blockers(blockers: list[Any] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in blockers or []:
+        if isinstance(item, dict):
+            code = _normalize_gate_code(item.get("code"))
+            message = str(item.get("message") or item.get("reason") or code).strip()
+            blocker = build_governance_blocker(
+                code,
+                message,
+                recovery_actions=(
+                    list(item.get("recovery_actions") or item.get("recoveryActions") or [])
+                    if isinstance(item.get("recovery_actions") or item.get("recoveryActions"), list)
+                    else None
+                ),
+                severity=str(item.get("severity") or "error"),
+                details=item.get("details") if isinstance(item.get("details"), dict) else {},
+            )
+        else:
+            message = str(item or "").strip()
+            blocker = build_governance_blocker("unknown", message)
+        signature = (blocker["code"], blocker["message"])
+        if signature in seen:
+            continue
+        seen.add(signature)
+        normalized.append(blocker)
+    return normalized
+
+
+def build_governance_gate_recovery(blockers: list[dict[str, Any]] | None) -> dict[str, Any]:
+    normalized = normalize_governance_blockers(blockers)
+    actions: list[str] = []
+    for blocker in normalized:
+        for action in blocker.get("recovery_actions") or []:
+            if action and action not in actions:
+                actions.append(action)
+    primary = normalized[0] if normalized else None
+    return {
+        "recoverable": bool(actions),
+        "primary_code": primary.get("code") if primary else None,
+        "summary": primary.get("message") if primary else "",
+        "actions": actions,
+    }
+
+
+def build_review_gate_blockers(review_result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(review_result, dict):
+        return []
+
+    mode = str(review_result.get("mode") or "none").strip().lower()
+    required = bool(review_result.get("required")) or mode in {"reviewer", "judge"}
+    if not required:
+        return []
+
+    decision = str(review_result.get("decision") or "").strip().lower()
+    approved = review_result.get("approved")
+    blocking_finding_count = _coerce_non_negative_int(review_result.get("blocking_finding_count")) or 0
+    finding_count = _coerce_non_negative_int(review_result.get("finding_count")) or 0
+    should_block = blocking_finding_count > 0 or (
+        approved is False and decision in {"changes_requested", "rejected"}
+    )
+    if not should_block:
+        return []
+
+    if blocking_finding_count > 0:
+        message = (
+            f"{mode or 'review'} gate blocked by {blocking_finding_count} blocking finding(s)"
+        )
+    else:
+        message = f"{mode or 'review'} gate returned {decision or 'a blocking decision'}"
+    return [
+        build_governance_blocker(
+            "review_gate_blocked",
+            message,
+            severity="error",
+            details={
+                "mode": mode,
+                "decision": decision,
+                "approved": approved,
+                "finding_count": finding_count,
+                "blocking_finding_count": blocking_finding_count,
+                "child_run_id": review_result.get("child_run_id"),
+                "blocking_severities": list(review_result.get("blocking_severities") or []),
+            },
+        )
+    ]
 
 
 def resolve_budget_hard_limit_enabled(target: SubagentTarget) -> bool:
@@ -147,6 +323,22 @@ def resolve_max_concurrent_delegations(target: SubagentTarget) -> int | None:
             policy.get("max_pending_children"),
             budget_policy.get("max_concurrent_delegations"),
             target.metadata.get("max_concurrent_delegations"),
+        )
+    )
+
+
+def resolve_max_tool_calls(target: SubagentTarget) -> int | None:
+    policy = target.budget_policy or {}
+    runtime_policy = target.runtime_policy or {}
+    metadata = target.metadata or {}
+    return _coerce_non_negative_int(
+        _first_value(
+            policy.get("max_tool_calls"),
+            policy.get("tool_call_limit"),
+            policy.get("max_tool_invocations"),
+            runtime_policy.get("max_tool_calls"),
+            runtime_policy.get("tool_call_limit"),
+            metadata.get("max_tool_calls"),
         )
     )
 
@@ -408,8 +600,112 @@ def _normalize_active_children(raw: Any) -> dict[str, dict[str, Any]]:
             "waiting_user_propagation": str(value.get("waiting_user_propagation") or "").strip() or None,
             "question": str(value.get("question") or "").strip() or None,
             "waiting_user_path": list(value.get("waiting_user_path") or []),
+            "write_scope": _normalize_write_scope(value.get("write_scope")),
         }
     return normalized
+
+
+def _normalize_write_scope_path(value: Any) -> str | None:
+    text = str(value or "").replace("\\", "/").strip()
+    if not text:
+        return None
+    if text == ".":
+        return "."
+    if text.startswith("/"):
+        return None
+    parts: list[str] = []
+    for part in text.split("/"):
+        part = part.strip()
+        if not part or part == ".":
+            continue
+        if part == "..":
+            return None
+        parts.append(part)
+    if not parts:
+        return "."
+    return "/".join(parts)
+
+
+def _normalize_write_scope(value: Any) -> list[str]:
+    raw_items: list[Any]
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, tuple):
+        raw_items = list(value)
+    elif isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+    else:
+        raw_items = []
+
+    paths: list[str] = []
+    for item in raw_items:
+        normalized = _normalize_write_scope_path(item)
+        if normalized and normalized not in paths:
+            paths.append(normalized)
+    return paths
+
+
+def _write_scope_required(target: SubagentTarget) -> bool:
+    metadata = target.metadata or {}
+    runtime_policy = target.runtime_policy or {}
+    explicit = _first_value(
+        metadata.get("requires_write_scope"),
+        runtime_policy.get("requires_write_scope"),
+        runtime_policy.get("require_write_scope"),
+    )
+    parsed = _coerce_bool(explicit)
+    return bool(parsed) if parsed is not None else False
+
+
+def _extract_requested_write_scope(delegate_input: dict[str, Any] | None) -> list[str]:
+    payload = delegate_input if isinstance(delegate_input, dict) else {}
+    for key in ("write_scope", "allowed_write_scope", "write_paths", "allowed_write_paths"):
+        scope = _normalize_write_scope(payload.get(key))
+        if scope:
+            return scope
+    return []
+
+
+def _scope_paths_overlap(left: str, right: str) -> bool:
+    if left == "." or right == ".":
+        return True
+    return left == right or left.startswith(f"{right}/") or right.startswith(f"{left}/")
+
+
+def _find_write_scope_conflicts(
+    *,
+    runtime_context: dict[str, Any],
+    target_slug: str,
+    requested_write_scope: list[str],
+) -> list[dict[str, Any]]:
+    if not requested_write_scope:
+        return []
+    entry = _get_ledger_target_entry(runtime_context, target_slug=target_slug)
+    if entry is None:
+        return []
+    conflicts: list[dict[str, Any]] = []
+    for child in _normalize_active_children(entry.get("active_children")).values():
+        if not bool(child.get("counts_as_active_child")):
+            continue
+        existing_scope = _normalize_write_scope(child.get("write_scope"))
+        overlap_paths = [
+            {"requested": requested_path, "active": active_path}
+            for requested_path in requested_write_scope
+            for active_path in existing_scope
+            if _scope_paths_overlap(requested_path, active_path)
+        ]
+        if not overlap_paths:
+            continue
+        conflicts.append(
+            {
+                "child_run_id": child.get("child_run_id"),
+                "invocation_id": child.get("invocation_id"),
+                "status": child.get("status"),
+                "write_scope": existing_scope,
+                "overlap_paths": overlap_paths,
+            }
+        )
+    return conflicts
 
 
 def _normalize_recent_outcomes(raw: Any) -> list[dict[str, Any]]:
@@ -718,6 +1014,7 @@ def record_delegation_outcome(
     waiting_user_counts_as_active_child: bool = True,
     question: str | None = None,
     waiting_user_path: list[dict[str, Any]] | None = None,
+    write_scope: list[str] | tuple[str, ...] | str | None = None,
     count_attempt: bool = True,
 ) -> dict[str, Any]:
     existing = _get_ledger_target_entry(runtime_context, target_slug=target_slug)
@@ -748,6 +1045,7 @@ def record_delegation_outcome(
     normalized_status = str(status or "").strip().lower() or "completed"
     normalized_usage = _normalize_usage_snapshot(usage)
     normalized_path = list(waiting_user_path or [])
+    normalized_write_scope = _normalize_write_scope(write_scope)
 
     if normalized_status in {"queued", "running"} or (
         normalized_status == "waiting_user" and waiting_user_counts_as_active_child
@@ -760,6 +1058,7 @@ def record_delegation_outcome(
             "waiting_user_propagation": waiting_user_propagation,
             "question": str(question or "").strip() or None,
             "waiting_user_path": normalized_path,
+            "write_scope": normalized_write_scope,
         }
     else:
         active_children.pop(child_key, None)
@@ -1044,6 +1343,7 @@ def build_governance_policy(target: SubagentTarget) -> dict[str, Any]:
     max_cost_usd = _coerce_positive_float(
         _first_value(budget_policy.get("max_cost_usd"), budget_policy.get("cost_limit_usd"))
     )
+    max_tool_calls = resolve_max_tool_calls(target)
 
     hard_limits = [
         key
@@ -1053,6 +1353,7 @@ def build_governance_policy(target: SubagentTarget) -> dict[str, Any]:
             "max_concurrent_delegations": resolve_max_concurrent_delegations(target),
             "max_retry_attempts": resolve_max_retry_attempts(target),
             "timeout_seconds": resolve_timeout_seconds(target),
+            "max_tool_calls": max_tool_calls,
         }.items()
         if value is not None
     ]
@@ -1085,6 +1386,7 @@ def build_governance_policy(target: SubagentTarget) -> dict[str, Any]:
             **dict(budget_policy),
             "max_tokens": max_tokens,
             "max_cost_usd": max_cost_usd,
+            "max_tool_calls": max_tool_calls,
             "hard_limit": resolve_budget_hard_limit_enabled(target),
         },
         "waiting_user": {
@@ -1098,6 +1400,134 @@ def build_governance_policy(target: SubagentTarget) -> dict[str, Any]:
                 "Token and cost budgets are tracked from observed child usage and remain advisory "
                 "while provider accounting may still be incomplete."
             ) if advisory_limits else None,
+        },
+    }
+
+
+def count_managed_tool_calls(runtime_context: dict[str, Any]) -> int:
+    step_history = runtime_context.get("step_history")
+    if not isinstance(step_history, list):
+        return 0
+    count = 0
+    for item in step_history:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("tool_name") or "").strip():
+            count += 1
+    return count
+
+
+def build_tool_budget_gate(
+    *,
+    target: SubagentTarget,
+    runtime_context: dict[str, Any],
+    requested_tool_name: str | None = None,
+) -> dict[str, Any]:
+    max_tool_calls = resolve_max_tool_calls(target)
+    used_tool_calls = count_managed_tool_calls(runtime_context)
+    remaining_tool_calls = (
+        max(0, max_tool_calls - used_tool_calls)
+        if max_tool_calls is not None
+        else None
+    )
+    policy = annotate_governance_policy(build_governance_policy(target))
+    budget = policy.setdefault("budget", {})
+    budget["tool_usage"] = {
+        "used_tool_calls": used_tool_calls,
+        "max_tool_calls": max_tool_calls,
+        "remaining_tool_calls": remaining_tool_calls,
+        "requested_tool_name": str(requested_tool_name or "").strip() or None,
+        "usage_status": (
+            "within_limits"
+            if max_tool_calls is None or used_tool_calls < max_tool_calls
+            else "over_budget"
+        ),
+    }
+
+    blockers: list[dict[str, Any]] = []
+    if max_tool_calls is not None and used_tool_calls >= max_tool_calls:
+        policy.setdefault("enforcement", {})["tool_budget_exceeded"] = True
+        blockers.append(
+            build_governance_blocker(
+                "tool_budget_exceeded",
+                (
+                    f"managed subagent already used {used_tool_calls} tool call(s), "
+                    f"reaching the configured limit {max_tool_calls}"
+                ),
+                details={
+                    "target_slug": target.slug,
+                    "used_tool_calls": used_tool_calls,
+                    "max_tool_calls": max_tool_calls,
+                    "requested_tool_name": str(requested_tool_name or "").strip() or None,
+                },
+            )
+        )
+
+    policy["blockers"] = blockers
+    policy["recovery"] = build_governance_gate_recovery(blockers)
+    return {
+        "allowed": not blockers,
+        "decision": "approved" if not blockers else "rejected",
+        "reason": "; ".join(blocker["message"] for blocker in blockers) if blockers else "tool budget allows execution",
+        "blockers": blockers,
+        "recovery": build_governance_gate_recovery(blockers),
+        "policy": policy,
+    }
+
+
+def build_subagent_failure_strategy(
+    *,
+    status: str,
+    target: SubagentTarget,
+    blockers: list[dict[str, Any]] | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    normalized_status = str(status or "").strip().lower()
+    normalized_blockers = normalize_governance_blockers(blockers)
+    blocker_codes = {blocker["code"] for blocker in normalized_blockers}
+    recovery = build_governance_gate_recovery(normalized_blockers)
+
+    if normalized_status == "waiting_user":
+        strategy = "request_user_input"
+        actions = ["Bubble the child clarification to the parent run and resume after the user answers."]
+    elif "review_gate_blocked" in blocker_codes:
+        strategy = "fix_then_review"
+        actions = recovery["actions"] or _GATE_RECOVERY_ACTIONS["review_gate_blocked"]
+    elif blocker_codes & {"budget_hard_limit_exceeded", "tool_budget_exceeded", "timeout_exceeded"}:
+        strategy = "continue_or_rescope"
+        actions = recovery["actions"] or [
+            "Continue in the parent with the available partial result.",
+            "Retry only after reducing scope or raising the relevant governance limit.",
+        ]
+    elif normalized_status == "cancelled":
+        strategy = "terminate_parent"
+        actions = ["Stop consuming this delegated result and propagate cancellation if the parent is also cancelling."]
+    elif normalized_status == "failed":
+        strategy = "retry_or_fallback"
+        actions = [
+            "Retry the child only with a smaller, clearer scope and within retry limits.",
+            "Continue in the parent run if the delegated result is not required.",
+            "Ask the user for missing input when the failure is caused by ambiguous scope.",
+        ]
+    else:
+        strategy = "continue"
+        actions = ["Continue the parent run with the delegated result."]
+
+    if recovery["actions"]:
+        actions = list(dict.fromkeys([*actions, *recovery["actions"]]))
+    return {
+        "strategy": strategy,
+        "status": normalized_status,
+        "target_slug": target.slug,
+        "recoverable": strategy not in {"terminate_parent"} or normalized_status != "cancelled",
+        "retry_allowed": strategy in {"retry_or_fallback", "continue_or_rescope"},
+        "ask_user_allowed": strategy in {"request_user_input", "retry_or_fallback", "continue_or_rescope"},
+        "terminate_parent": strategy == "terminate_parent",
+        "error_message": str(error_message or "").strip() or None,
+        "blockers": normalized_blockers,
+        "recovery": {
+            **recovery,
+            "actions": actions,
         },
     }
 
@@ -1151,6 +1581,7 @@ def evaluate_governance_gate(
     run: AgentRun,
     runtime_context: dict[str, Any],
     target: SubagentTarget,
+    delegate_input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     policy = build_governance_policy(target)
     limits = policy["limits"]
@@ -1164,34 +1595,110 @@ def evaluate_governance_gate(
         runtime_context,
         target_slug=target.slug,
     )
-    blockers: list[str] = []
+    requested_write_scope = _extract_requested_write_scope(delegate_input)
+    blockers: list[dict[str, Any]] = []
     warnings: list[str] = []
 
     max_depth = limits.get("max_delegation_depth")
     if max_depth is not None and current_depth >= int(max_depth):
-        blockers.append(f"delegation depth {current_depth} already reached the target limit {max_depth}")
+        blockers.append(
+            build_governance_blocker(
+                "delegation_depth_exceeded",
+                f"delegation depth {current_depth} already reached the target limit {max_depth}",
+                details={
+                    "current_depth": current_depth,
+                    "max_depth": max_depth,
+                },
+            )
+        )
     if current_depth > 0 and not limits.get("allow_nested_delegation"):
-        blockers.append("nested delegation is disabled for this capability")
+        blockers.append(
+            build_governance_blocker(
+                "nested_delegation_disabled",
+                "nested delegation is disabled for this capability",
+                details={
+                    "current_depth": current_depth,
+                },
+            )
+        )
 
     max_parent_delegations = limits.get("max_parent_delegations")
     if max_parent_delegations is not None and history["attempt_count"] >= int(max_parent_delegations):
         blockers.append(
-            f"parent run already used {history['attempt_count']} delegation attempt(s) "
-            f"for {target.slug}, limit {max_parent_delegations}"
+            build_governance_blocker(
+                "parent_delegation_limit_exceeded",
+                (
+                    f"parent run already used {history['attempt_count']} delegation attempt(s) "
+                    f"for {target.slug}, limit {max_parent_delegations}"
+                ),
+                details={
+                    "attempt_count": history["attempt_count"],
+                    "max_parent_delegations": max_parent_delegations,
+                },
+            )
         )
 
     max_concurrent = limits.get("max_concurrent_delegations")
     if max_concurrent is not None and history["active_child_count"] >= int(max_concurrent):
         blockers.append(
-            f"{history['active_child_count']} unresolved child run(s) already exist "
-            f"for {target.slug}, concurrency limit {max_concurrent}"
+            build_governance_blocker(
+                "concurrency_limit_exceeded",
+                (
+                    f"{history['active_child_count']} unresolved child run(s) already exist "
+                    f"for {target.slug}, concurrency limit {max_concurrent}"
+                ),
+                details={
+                    "active_child_count": history["active_child_count"],
+                    "max_concurrent_delegations": max_concurrent,
+                },
+            )
         )
 
     max_retries = limits.get("max_retry_attempts")
     if max_retries is not None and history["failed_attempt_count"] > int(max_retries):
         blockers.append(
-            f"failed retry count {history['failed_attempt_count']} exceeded retry limit {max_retries}"
+            build_governance_blocker(
+                "retry_limit_exceeded",
+                f"failed retry count {history['failed_attempt_count']} exceeded retry limit {max_retries}",
+                details={
+                    "failed_attempt_count": history["failed_attempt_count"],
+                    "max_retry_attempts": max_retries,
+                },
+            )
         )
+
+    if _write_scope_required(target) and not requested_write_scope:
+        blockers.append(
+            build_governance_blocker(
+                "write_scope_required",
+                f"{target.slug} requires an explicit write_scope before delegation",
+                details={
+                    "target_slug": target.slug,
+                    "delegation_mode": target.delegation_mode() or None,
+                },
+            )
+        )
+    if requested_write_scope:
+        conflicts = _find_write_scope_conflicts(
+            runtime_context=runtime_context,
+            target_slug=target.slug,
+            requested_write_scope=requested_write_scope,
+        )
+        if conflicts:
+            blockers.append(
+                build_governance_blocker(
+                    "write_scope_conflict",
+                    (
+                        f"requested write_scope for {target.slug} overlaps "
+                        f"{len(conflicts)} active child run(s)"
+                    ),
+                    details={
+                        "target_slug": target.slug,
+                        "requested_write_scope": requested_write_scope,
+                        "conflicts": conflicts,
+                    },
+                )
+            )
 
     if policy["enforcement"].get("advisory_limits"):
         warnings.append("budget limits are attached to the invocation as advisory governance metadata")
@@ -1203,16 +1710,34 @@ def evaluate_governance_gate(
         usage=prior_usage,
         prior_usage=prior_usage,
     )
+    if policy.get("enforcement", {}).get("budget_hard_limit_exceeded"):
+        blockers.append(
+            build_governance_blocker(
+                "budget_hard_limit_exceeded",
+                policy["enforcement"].get(
+                    "budget_hard_limit_reason",
+                    "tracked child usage exceeded the configured hard budget limit",
+                ),
+                details={
+                    "target_slug": target.slug,
+                    "usage": dict(policy.get("budget", {}).get("usage") or {}),
+                    "max_tokens": policy.get("budget", {}).get("max_tokens"),
+                    "max_cost_usd": policy.get("budget", {}).get("max_cost_usd"),
+                },
+            )
+        )
 
     return {
         "protocol_version": GOVERNANCE_PROTOCOL_VERSION,
         "allowed": not blockers,
         "decision": "approved" if not blockers else "rejected",
-        "reason": "; ".join(blockers) if blockers else "governance limits satisfied",
+        "reason": "; ".join(blocker["message"] for blocker in blockers) if blockers else "governance limits satisfied",
         "blockers": blockers,
+        "recovery": build_governance_gate_recovery(blockers),
         "warnings": warnings,
         "policy": policy,
         "current_depth": current_depth,
         "history": history,
         "prior_usage": prior_usage,
+        "requested_write_scope": requested_write_scope,
     }

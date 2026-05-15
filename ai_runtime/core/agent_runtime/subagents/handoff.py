@@ -9,6 +9,8 @@ from ai_runtime.core.agent_runtime.result_contract import hydrate_legacy_result
 from ai_runtime.core.agent_runtime.subagents.governance import (
     annotate_governance_policy,
     build_governance_policy,
+    build_governance_blocker,
+    build_subagent_failure_strategy,
     extract_governance_usage,
     merge_governance_usage_snapshots,
     resolve_budget_hard_limit_enabled,
@@ -357,8 +359,10 @@ class SubagentHandoff:
         status: str,
         summary: str,
         hydrated: dict[str, Any],
+        target: SubagentTarget,
         review_result: dict[str, Any],
         governance_policy: dict[str, Any],
+        failure_strategy: dict[str, Any] | None = None,
         error_message: str | None = None,
     ) -> dict[str, Any]:
         result_status = str(status or "").strip().lower()
@@ -388,6 +392,12 @@ class SubagentHandoff:
             "status": result_status,
             "review_result": review_result,
             "governance_policy": governance_policy,
+            "failure_strategy": failure_strategy
+            or build_subagent_failure_strategy(
+                status=result_status,
+                target=target,
+                error_message=error_message,
+            ),
             "partial_result": partial_result,
             "final_result": {
                 "summary": summary,
@@ -630,6 +640,22 @@ class SubagentHandoff:
                     "budget_hard_limit_reason",
                     "Subagent exceeded hard budget limit",
                 )
+            governance_policy["blockers"] = [
+                {
+                    "code": "budget_hard_limit_exceeded",
+                    "message": child_run.get("error_message"),
+                    "severity": "error",
+                    "recoverable": True,
+                    "recovery_actions": [
+                        "Stop delegation to this capability until prior child usage is reviewed.",
+                        "Reduce the delegated scope, raise the hard budget limit, or switch the budget to advisory mode.",
+                    ],
+                    "details": {
+                        "child_run_id": child_run_id,
+                        "target_slug": target.slug,
+                    },
+                }
+            ]
             review_result = build_review_result(
                 target=target,
                 status=status,
@@ -637,6 +663,12 @@ class SubagentHandoff:
                 error_message=child_run.get("error_message"),
                 child_run_id=child_run_id,
             )
+        failure_strategy = build_subagent_failure_strategy(
+            status=status,
+            target=target,
+            blockers=governance_policy.get("blockers") if isinstance(governance_policy.get("blockers"), list) else [],
+            error_message=child_run.get("error_message"),
+        )
         progress = build_progress_payload(
             status=status,
             hydrated=hydrated,
@@ -657,8 +689,10 @@ class SubagentHandoff:
                 status=status,
                 summary=summary,
                 hydrated=hydrated,
+                target=target,
                 review_result=review_result,
                 governance_policy=governance_policy,
+                failure_strategy=failure_strategy,
                 error_message=child_run.get("error_message"),
             ),
             error_message=child_run.get("error_message"),
@@ -683,6 +717,7 @@ class SubagentHandoff:
                 "handoff_envelope": handoff_envelope or {},
                 "review_result": review_result,
                 "governance_policy": governance_policy,
+                "failure_strategy": failure_strategy,
             },
         )
 
@@ -722,12 +757,38 @@ class SubagentHandoff:
         except asyncio.TimeoutError:
             timeout_seconds = resolve_timeout_seconds(target)
             message = f"Subagent execution exceeded timeout of {timeout_seconds:g}s" if timeout_seconds else "Subagent execution timed out"
+            blockers = [
+                build_governance_blocker(
+                    "timeout_exceeded",
+                    message,
+                    details={
+                        "target_slug": target.slug,
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+            ]
             review_result = build_review_result(
                 target=target,
                 status="failed",
                 hydrated={},
                 error_message=message,
             )
+            governance_policy = annotate_governance_policy(
+                build_governance_policy(target),
+                warnings=[message],
+            )
+            governance_policy["blockers"] = blockers
+            governance_policy["recovery"] = {
+                "recoverable": True,
+                "primary_code": "timeout_exceeded",
+                "summary": message,
+                "actions": build_subagent_failure_strategy(
+                    status="failed",
+                    target=target,
+                    blockers=blockers,
+                    error_message=message,
+                )["recovery"]["actions"],
+            }
             await self._update_invocation(
                 invocation_id,
                 status="failed",
@@ -739,7 +800,13 @@ class SubagentHandoff:
                     "partial_result": None,
                     "final_result": None,
                     "error": message,
-                    "governance_policy": annotate_governance_policy(build_governance_policy(target)),
+                    "governance_policy": governance_policy,
+                    "failure_strategy": build_subagent_failure_strategy(
+                        status="failed",
+                        target=target,
+                        blockers=blockers,
+                        error_message=message,
+                    ),
                 },
             )
             raise TimeoutError(message) from None
@@ -762,6 +829,11 @@ class SubagentHandoff:
                     "final_result": None,
                     "error": "Run cancelled",
                     "governance_policy": annotate_governance_policy(build_governance_policy(target)),
+                    "failure_strategy": build_subagent_failure_strategy(
+                        status="cancelled",
+                        target=target,
+                        error_message="Run cancelled",
+                    ),
                 },
             )
             raise
@@ -784,6 +856,11 @@ class SubagentHandoff:
                     "final_result": None,
                     "error": str(exc),
                     "governance_policy": annotate_governance_policy(build_governance_policy(target)),
+                    "failure_strategy": build_subagent_failure_strategy(
+                        status="failed",
+                        target=target,
+                        error_message=str(exc),
+                    ),
                 },
             )
             raise

@@ -26,6 +26,11 @@ DEFAULT_WORKSPACE_TOOL_NAMES = (
     "git_branch",
 )
 
+WORKSPACE_LIFECYCLE_TOOL_NAMES = (
+    "workspace_inspect_lifecycle",
+    "workspace_cleanup_expired",
+)
+
 WORKSPACE_WRITE_TOOL_NAMES = (
     "workspace_apply_patch",
     "workspace_create_file",
@@ -82,6 +87,14 @@ def _clamp_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, parsed)
+
+
 @dataclass(frozen=True)
 class WorkspacePolicy:
     roots: tuple[Path, ...]
@@ -92,6 +105,11 @@ class WorkspacePolicy:
     exclude_patterns: tuple[str, ...] = DEFAULT_EXCLUDE_PATTERNS
     protected_write_patterns: tuple[str, ...] = DEFAULT_PROTECTED_WRITE_PATTERNS
     allow_protected_writes: bool = False
+    lifecycle_base_root: Path | None = None
+    lifecycle_source_roots: tuple[Path, ...] = ()
+    lifecycle_max_files: int = 5000
+    lifecycle_max_bytes: int = 200 * 1024 * 1024
+    lifecycle_retention_hours: int = 168
 
 
 def _tool_metadata(
@@ -950,6 +968,80 @@ class WorkspaceDeletePathTool(WorkspaceTool):
         }
 
 
+class WorkspaceLifecycleTool(WorkspaceTool):
+    def _build_manager(self):
+        base_root = self.policy.lifecycle_base_root
+        if base_root is None:
+            raise RuntimeError("workspace lifecycle base root is not configured")
+        from ai_runtime.core.agent_runtime.workspace_manager import WorkspaceManager, WorkspaceManagerConfig
+
+        return WorkspaceManager(
+            WorkspaceManagerConfig(
+                enabled=True,
+                base_root=base_root,
+                source_roots=self.policy.lifecycle_source_roots,
+                max_files=self.policy.lifecycle_max_files,
+                max_bytes=self.policy.lifecycle_max_bytes,
+                retention_hours=max(1, self.policy.lifecycle_retention_hours),
+                exclude_patterns=self.policy.exclude_patterns,
+            )
+        )
+
+
+class WorkspaceInspectLifecycleTool(WorkspaceLifecycleTool):
+    spec = ToolSpec(
+        name="workspace_inspect_lifecycle",
+        description="Inspect managed run workspaces for lifecycle, retention, and quota governance without modifying files.",
+        input_schema={"type": "object", "properties": {}},
+        kind="workspace",
+        metadata=_tool_metadata(
+            capability="workspace_lifecycle",
+            access_level="admin_read",
+            side_effect="none",
+            risk_level="medium",
+        ),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        manager = self._build_manager()
+        return manager.inspect_workspaces()
+
+
+class WorkspaceCleanupExpiredTool(WorkspaceLifecycleTool):
+    spec = ToolSpec(
+        name="workspace_cleanup_expired",
+        description="Dry-run or delete expired managed run workspaces under the configured workspace base root.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "dry_run": {"type": "boolean", "default": True},
+                "max_delete": {"type": "integer", "minimum": 1, "maximum": 500},
+                "tenant_id": {"type": "string"},
+            },
+        },
+        kind="workspace",
+        metadata=_tool_metadata(
+            capability="workspace_lifecycle",
+            access_level="admin_write",
+            side_effect="workspace_cleanup",
+            risk_level="high",
+        ),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        manager = self._build_manager()
+        dry_run = arguments.get("dry_run")
+        if dry_run is None:
+            dry_run = True
+        max_delete = _clamp_int(arguments.get("max_delete"), default=100, minimum=1, maximum=500)
+        tenant_id = str(arguments.get("tenant_id") or "").strip() or None
+        return manager.cleanup_expired_workspaces(
+            dry_run=bool(dry_run),
+            max_delete=max_delete,
+            tenant_id=tenant_id,
+        )
+
+
 class GitStatusTool(WorkspaceTool):
     spec = ToolSpec(
         name="git_status",
@@ -1059,6 +1151,8 @@ WORKSPACE_TOOL_TYPES = {
     "workspace_write_file": WorkspaceWriteFileTool,
     "workspace_rename_path": WorkspaceRenamePathTool,
     "workspace_delete_path": WorkspaceDeletePathTool,
+    "workspace_inspect_lifecycle": WorkspaceInspectLifecycleTool,
+    "workspace_cleanup_expired": WorkspaceCleanupExpiredTool,
     "git_status": GitStatusTool,
     "git_diff": GitDiffTool,
     "git_show": GitShowTool,
@@ -1068,7 +1162,17 @@ WORKSPACE_TOOL_TYPES = {
 
 
 class WorkspaceToolProvider:
-    def __init__(self, *, enabled_tool_names: Sequence[str], roots: Sequence[str | Path]) -> None:
+    def __init__(
+        self,
+        *,
+        enabled_tool_names: Sequence[str],
+        roots: Sequence[str | Path],
+        lifecycle_base_root: str | Path | None = None,
+        lifecycle_source_roots: Sequence[str | Path] = (),
+        lifecycle_max_files: int = 5000,
+        lifecycle_max_bytes: int = 200 * 1024 * 1024,
+        lifecycle_retention_hours: int = 168,
+    ) -> None:
         resolved_roots = []
         for root in roots:
             root_text = str(root or "").strip()
@@ -1077,16 +1181,70 @@ class WorkspaceToolProvider:
             path = Path(root_text).expanduser()
             if path.exists():
                 resolved_roots.append(path.resolve(strict=True))
-        self.policy = WorkspacePolicy(roots=tuple(dict.fromkeys(resolved_roots)))
+
+        resolved_lifecycle_base_root = None
+        if lifecycle_base_root is not None and str(lifecycle_base_root).strip():
+            resolved_lifecycle_base_root = Path(lifecycle_base_root).expanduser().resolve()
+            resolved_lifecycle_base_root.mkdir(parents=True, exist_ok=True)
+
+        resolved_lifecycle_source_roots = []
+        for root in lifecycle_source_roots:
+            root_text = str(root or "").strip()
+            if not root_text:
+                continue
+            path = Path(root_text).expanduser()
+            if path.exists():
+                resolved_lifecycle_source_roots.append(path.resolve(strict=True))
+
+        self.policy = WorkspacePolicy(
+            roots=tuple(dict.fromkeys(resolved_roots)),
+            lifecycle_base_root=resolved_lifecycle_base_root,
+            lifecycle_source_roots=tuple(dict.fromkeys(resolved_lifecycle_source_roots)),
+            lifecycle_max_files=_positive_int(lifecycle_max_files, 5000),
+            lifecycle_max_bytes=_positive_int(lifecycle_max_bytes, 200 * 1024 * 1024),
+            lifecycle_retention_hours=_positive_int(lifecycle_retention_hours, 168),
+        )
         self.enabled_tool_names = [name for name in enabled_tool_names if name in WORKSPACE_TOOL_TYPES]
 
     @classmethod
     def from_env(cls) -> "WorkspaceToolProvider":
         roots = _parse_csv(os.getenv("AGENT_WORKSPACE_ROOTS"), ())
         enabled_tool_names = _parse_csv(os.getenv("AGENT_WORKSPACE_TOOLS"), DEFAULT_WORKSPACE_TOOL_NAMES)
-        return cls(enabled_tool_names=enabled_tool_names, roots=roots)
+        lifecycle_source_roots = _parse_csv(os.getenv("AGENT_WORKSPACE_SOURCE_ROOTS"), ())
+        return cls(
+            enabled_tool_names=enabled_tool_names,
+            roots=roots,
+            lifecycle_base_root=os.getenv("AGENT_WORKSPACE_BASE_ROOT", "/tmp/ai-platform-workspaces"),
+            lifecycle_source_roots=lifecycle_source_roots,
+            lifecycle_max_files=_clamp_int(
+                os.getenv("AGENT_WORKSPACE_MANAGER_MAX_FILES"),
+                default=5000,
+                minimum=1,
+                maximum=1_000_000,
+            ),
+            lifecycle_max_bytes=_clamp_int(
+                os.getenv("AGENT_WORKSPACE_MANAGER_MAX_BYTES"),
+                default=200 * 1024 * 1024,
+                minimum=1,
+                maximum=10 * 1024 * 1024 * 1024,
+            ),
+            lifecycle_retention_hours=_clamp_int(
+                os.getenv("AGENT_WORKSPACE_RETENTION_HOURS"),
+                default=168,
+                minimum=1,
+                maximum=24 * 365,
+            ),
+        )
 
     def _build_tool(self, name: str, context: ToolLookupContext | None = None) -> BaseTool | None:
+        if name in WORKSPACE_LIFECYCLE_TOOL_NAMES:
+            if self.policy.lifecycle_base_root is None:
+                return None
+            tool_type = WORKSPACE_TOOL_TYPES.get(name)
+            if tool_type is None or name not in self.enabled_tool_names:
+                return None
+            return tool_type(self.policy)
+
         if not self.policy.roots:
             return None
         tool_type = WORKSPACE_TOOL_TYPES.get(name)

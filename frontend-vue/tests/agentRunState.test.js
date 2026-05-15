@@ -429,6 +429,55 @@ test('buildRunEventPatch rebuilds structured result surfaces for failed terminal
   )
 })
 
+test('deriveRunState preserves structured tool failure recovery payloads from events', () => {
+  const derived = deriveRunState({
+    id: 'run-tool-failure',
+    steps: [],
+    toolCalls: [],
+    artifacts: []
+  }, [
+    {
+      id: 'event-tool-1',
+      eventType: 'tool.started',
+      createdAt: '2026-05-15T00:00:00.000Z',
+      payload: {
+        step_id: 'step-1',
+        tool_call_id: 'tool-1',
+        tool_name: 'run_tests',
+        tool_kind: 'sandbox-exec',
+        arguments: { selector: 'tests/test_sample.py' }
+      }
+    },
+    {
+      id: 'event-tool-2',
+      eventType: 'tool.failed',
+      createdAt: '2026-05-15T00:00:02.000Z',
+      payload: {
+        step_id: 'step-1',
+        tool_call_id: 'tool-1',
+        tool_name: 'run_tests',
+        tool_kind: 'sandbox-exec',
+        error: 'sandbox unreachable',
+        result: {
+          status: 'failed',
+          failure_category: 'execution_error',
+          recovery: {
+            primary_code: 'tool_execution_failed',
+            summary: 'sandbox unreachable',
+            actions: ['Retry after configuring the sandbox runner.']
+          }
+        }
+      }
+    }
+  ])
+
+  assert.equal(derived.toolCalls.length, 1)
+  assert.equal(derived.toolCalls[0].status, 'failed')
+  assert.equal(derived.toolCalls[0].result.failure_category, 'execution_error')
+  assert.equal(derived.toolCalls[0].result.recovery.primary_code, 'tool_execution_failed')
+  assert.equal(derived.toolCalls[0].result.recovery.actions[0], 'Retry after configuring the sandbox runner.')
+})
+
 test('deriveRunState exposes persisted snapshot surface metadata when event history is empty', () => {
   const derived = deriveRunState({
     id: 'run-5',

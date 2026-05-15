@@ -231,11 +231,21 @@ export const deriveRunState = (run, events) => {
       if (event.eventType === 'tool.failed') {
         existing.status = 'failed'
         existing.error = payload.error || existing.error
+        if (payload.result && typeof payload.result === 'object') {
+          existing.result = payload.result
+        } else if (payload.output && typeof payload.output === 'object') {
+          existing.result = payload.output.tool_result || payload.output || existing.result
+        }
       }
 
       if (event.eventType === 'tool.cancelled') {
         existing.status = 'cancelled'
         existing.error = payload.error || existing.error
+        if (payload.result && typeof payload.result === 'object') {
+          existing.result = payload.result
+        } else if (payload.output && typeof payload.output === 'object') {
+          existing.result = payload.output.tool_result || payload.output || existing.result
+        }
       }
 
       toolCallMap.set(toolCallId, existing)

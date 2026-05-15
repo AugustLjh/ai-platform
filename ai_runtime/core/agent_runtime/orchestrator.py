@@ -26,9 +26,15 @@ from ai_runtime.core.agent_runtime.skills.models import SkillRuntimeContext
 from ai_runtime.core.agent_runtime.subagents.governance import (
     annotate_governance_policy,
     append_delegation_outcome,
+    build_governance_blocker,
+    build_governance_gate_recovery,
+    build_subagent_failure_strategy,
+    build_tool_budget_gate,
+    build_review_gate_blockers,
     build_waiting_user_path,
     evaluate_governance_gate,
     merge_governance_usage_snapshots,
+    normalize_governance_blockers,
     record_delegation_outcome,
     should_bubble_waiting_user_to_parent,
 )
@@ -645,6 +651,44 @@ class AgentOrchestrator:
             actions.append("Enable the tool in the agent skill/runtime policy or choose a lower-risk execution mode.")
         return list(dict.fromkeys(actions))
 
+    def _build_tool_recovery(
+        self,
+        *,
+        primary_code: str,
+        summary: str,
+        actions: list[str] | None = None,
+    ) -> dict[str, Any]:
+        deduped_actions = list(dict.fromkeys(str(item).strip() for item in (actions or []) if str(item).strip()))
+        return {
+            "recoverable": bool(deduped_actions),
+            "primary_code": str(primary_code or "").strip() or "unknown",
+            "summary": str(summary or "").strip(),
+            "actions": deduped_actions,
+        }
+
+    def _build_tool_failure_result(
+        self,
+        *,
+        tool_name: str,
+        tool_kind: str,
+        failure_category: str,
+        error_message: str,
+        recovery: dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "status": "failed",
+            "tool_name": tool_name,
+            "tool_kind": tool_kind,
+            "failure_category": str(failure_category or "unknown").strip() or "unknown",
+            "error": str(error_message or "").strip(),
+        }
+        if recovery:
+            payload["recovery"] = recovery
+        if details:
+            payload["details"] = details
+        return payload
+
     async def _evaluate_tool_policy(
         self,
         *,
@@ -825,6 +869,7 @@ class AgentOrchestrator:
             run=run,
             runtime_context=runtime_context,
             target=target,
+            delegate_input=delegate_input,
         )
 
         scope_counts = {
@@ -846,7 +891,7 @@ class AgentOrchestrator:
             if str(part or "").strip()
         )
         signals: list[str] = []
-        blockers: list[str] = []
+        blockers: list[dict[str, Any]] = []
         mode = target.delegation_mode()
 
         if target.requires_review():
@@ -865,13 +910,35 @@ class AgentOrchestrator:
             signals.append("the capability has a structured output contract that justifies isolated execution")
 
         if available_tools and not step_history and not target.requires_review() and not any(scope_counts.values()):
-            blockers.append("single-agent-first gate rejected delegation before any parent execution evidence was gathered")
+            blockers.append(
+                build_governance_blocker(
+                    "single_agent_first",
+                    "single-agent-first gate rejected delegation before any parent execution evidence was gathered",
+                    details={
+                        "available_tool_count": len(available_tools),
+                        "step_history_count": len(step_history),
+                    },
+                )
+            )
         if not signals and available_tools:
-            blockers.append("no concrete isolation, complexity, parallelism, or quality signal justifies delegation")
+            blockers.append(
+                build_governance_blocker(
+                    "delegation_not_justified",
+                    "no concrete isolation, complexity, parallelism, or quality signal justifies delegation",
+                    details={
+                        "available_tool_count": len(available_tools),
+                        "step_history_count": len(step_history),
+                    },
+                )
+            )
 
-        for blocker in governance.get("blockers") or []:
-            if blocker not in blockers:
+        gate_blockers = normalize_governance_blockers(governance.get("blockers") or [])
+        existing_blocker_signatures = {(blocker.get("code"), blocker.get("message")) for blocker in blockers}
+        for blocker in gate_blockers:
+            signature = (blocker.get("code"), blocker.get("message"))
+            if signature not in existing_blocker_signatures:
                 blockers.append(blocker)
+                existing_blocker_signatures.add(signature)
         for warning in governance.get("warnings") or []:
             if warning not in signals:
                 signals.append(warning)
@@ -879,9 +946,10 @@ class AgentOrchestrator:
         return {
             "allowed": not blockers,
             "decision": "approved" if not blockers else "rejected",
-            "reason": "; ".join(blockers) if blockers else "; ".join(signals) or "delegation accepted",
+            "reason": "; ".join(blocker["message"] for blocker in blockers) if blockers else "; ".join(signals) or "delegation accepted",
             "signals": signals,
             "blockers": blockers,
+            "recovery": build_governance_gate_recovery(blockers),
             "current_depth": current_depth,
             "max_depth": max_depth,
             "available_tool_count": len(available_tools),
@@ -1039,6 +1107,7 @@ class AgentOrchestrator:
             waiting_user_counts_as_active_child=bool(waiting_user_policy.get("counts_as_active_child", True)),
             question=delegation.final_output or delegation.final_output_text,
             waiting_user_path=waiting_user_path,
+            write_scope=delegation.input.get("write_scope") if isinstance(delegation.input, dict) else None,
             count_attempt=not pending_completion,
         )
         history = ledger_entry.get("history") or append_delegation_outcome(
@@ -1059,6 +1128,39 @@ class AgentOrchestrator:
             prior_usage=prior_usage if isinstance(prior_usage, dict) else {},
             last_invocation_usage=last_invocation_usage if isinstance(last_invocation_usage, dict) else {},
         )
+        review_gate_blockers = build_review_gate_blockers(review_result)
+        review_gate_recovery = build_governance_gate_recovery(review_gate_blockers)
+        review_gate_blocked = bool(review_gate_blockers) and delegation.status not in {
+            "failed",
+            "cancelled",
+            "waiting_user",
+        }
+        if review_gate_blocked:
+            existing_blockers = normalize_governance_blockers(resolved_governance_policy.get("blockers") or [])
+            blocker_signatures = {(item.get("code"), item.get("message")) for item in existing_blockers}
+            for blocker in review_gate_blockers:
+                signature = (blocker.get("code"), blocker.get("message"))
+                if signature not in blocker_signatures:
+                    existing_blockers.append(blocker)
+                    blocker_signatures.add(signature)
+            resolved_governance_policy["blockers"] = existing_blockers
+            resolved_governance_policy["recovery"] = build_governance_gate_recovery(existing_blockers)
+            if isinstance(review_result, dict):
+                review_result = {
+                    **review_result,
+                    "decision": "review_gate_blocked",
+                    "approved": False,
+                    "gate_blocked": True,
+                    "gate_blockers": review_gate_blockers,
+                    "recovery": review_gate_recovery,
+                }
+            runtime_context["last_review_gate_block"] = {
+                "target_slug": target.slug,
+                "child_run_id": delegation.child_run_id,
+                "review_result": review_result,
+                "blockers": review_gate_blockers,
+                "recovery": review_gate_recovery,
+            }
         if delegation.status == "waiting_user":
             partial_result = {
                 "question": delegation.final_output or delegation.final_output_text,
@@ -1067,28 +1169,59 @@ class AgentOrchestrator:
                 "clarification": delegation.clarification or None,
             }
             child_question = delegation.final_output or delegation.final_output_text
+        failure_strategy = build_subagent_failure_strategy(
+            status="review_blocked" if review_gate_blocked else delegation.status,
+            target=target,
+            blockers=(
+                review_gate_blockers
+                if review_gate_blocked
+                else resolved_governance_policy.get("blockers") if isinstance(resolved_governance_policy, dict) else []
+            ),
+            error_message=delegation.metadata.get("error_message") if isinstance(delegation.metadata, dict) else None,
+        )
         step_output = {
             "delegate_result": delegation.model_dump(mode="json"),
             "delegation_gate": gate,
             "handoff": handoff_summary,
             "review_result": review_result,
             "governance_policy": resolved_governance_policy,
+            "failure_strategy": failure_strategy,
             "progress": delegation.progress,
             "clarification": delegation.clarification or None,
         }
+        if review_gate_blocked or delegation.status == "failed":
+            step_status = "failed"
+        elif delegation.status == "cancelled":
+            step_status = "cancelled"
+        else:
+            step_status = "completed"
+        step_error = (
+            f"Review gate blocked: {review_gate_blockers[0]['message']}"
+            if review_gate_blocked
+            else delegation.metadata.get("error_message") if delegation.status in {"failed", "cancelled"} and isinstance(delegation.metadata, dict) else None
+        )
         await self.run_repository.update_step(
             step["id"],
-            status="completed",
+            status=step_status,
             output_payload=step_output,
+            error_message=step_error,
             metadata={
                 "delegate_target": target.slug,
                 "delegation_gate": gate,
                 "invocation_id": delegation.metadata.get("invocation_id") if isinstance(delegation.metadata, dict) else None,
                 "child_run_id": delegation.child_run_id,
                 "async_completion": pending_completion,
+                "review_gate": {
+                    "blocked": review_gate_blocked,
+                    "blockers": review_gate_blockers,
+                    "recovery": review_gate_recovery,
+                },
+                "failure_strategy": failure_strategy,
             },
         )
         subagent_event_type = "subagent.completed"
+        if review_gate_blocked:
+            subagent_event_type = "subagent.review_blocked"
         if delegation.status == "waiting_user":
             subagent_event_type = "subagent.waiting_user"
         elif delegation.status == "failed":
@@ -1116,32 +1249,72 @@ class AgentOrchestrator:
             progress=delegation.progress,
             clarification=delegation.clarification or None,
             question=child_question,
+            review_gate={
+                "blocked": review_gate_blocked,
+                "blockers": review_gate_blockers,
+                "recovery": review_gate_recovery,
+            },
+            failure_strategy=failure_strategy,
         )
-        await self._emit_step_event(
-            run.id,
-            "step.completed",
-            step,
-            output=step_output,
-            delegate_target=target.slug,
-            delegation_gate=gate,
-        )
-        runtime_context["tool_failures"] = 0
+        if step_status in {"failed", "cancelled"}:
+            await self._emit_step_event(
+                run.id,
+                "step.cancelled" if step_status == "cancelled" else "step.failed",
+                step,
+                error=step_error,
+                output=step_output,
+                delegate_target=target.slug,
+                delegation_gate=gate,
+                review_gate={
+                    "blocked": True,
+                    "blockers": review_gate_blockers,
+                    "recovery": review_gate_recovery,
+                },
+                failure_strategy=failure_strategy,
+            )
+            runtime_context["tool_failures"] = int(runtime_context.get("tool_failures", 0)) + 1
+        else:
+            await self._emit_step_event(
+                run.id,
+                "step.completed",
+                step,
+                output=step_output,
+                delegate_target=target.slug,
+                delegation_gate=gate,
+                failure_strategy=failure_strategy,
+            )
+            runtime_context["tool_failures"] = 0
+        if review_gate_blocked or delegation.status == "failed":
+            observation_status = "failed"
+        elif delegation.status == "cancelled":
+            observation_status = "cancelled"
+        else:
+            observation_status = "completed"
         observation = self._build_observation(
             step=step,
             planner_result=planner_result,
-            status="completed",
+            status=observation_status,
             result={
                 "child_run_id": delegation.child_run_id,
-                "status": delegation.status,
+                "status": "review_blocked" if review_gate_blocked else delegation.status,
                 "summary": delegation.summary,
                 "final_output_text": delegation.final_output_text,
                 "review_result": review_result,
                 "governance_policy": resolved_governance_policy,
                 "governance_usage": cumulative_usage,
                 "waiting_user_policy": waiting_user_policy,
+                "failure_strategy": failure_strategy,
+                "review_gate": {
+                    "blocked": review_gate_blocked,
+                    "blockers": review_gate_blockers,
+                    "recovery": review_gate_recovery,
+                },
             },
+            error=step_error,
             delegate_target=target.slug,
         )
+        if review_gate_blocked or delegation.status in {"failed", "cancelled"}:
+            return observation, None
         if delegation.status != "waiting_user":
             return observation, None
 
@@ -1477,10 +1650,32 @@ class AgentOrchestrator:
                 recovery_actions=policy_decision.get("recovery_actions") or [],
                 error=error_message,
             )
+            denied_recovery = self._build_tool_recovery(
+                primary_code="tool_policy_denied",
+                summary=error_message,
+                actions=policy_decision.get("recovery_actions") or [],
+            )
+            denied_result = {
+                "policy_decision": policy_decision,
+                "tool_result": self._build_tool_failure_result(
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    failure_category="policy_denied",
+                    error_message=error_message,
+                    recovery=denied_recovery,
+                    details={
+                        "reasons": policy_decision.get("reasons") or [],
+                        "unavailable_reasons": policy_decision.get("unavailable_reasons") or [],
+                        "policy": policy_decision.get("policy") or {},
+                    },
+                ),
+                "recovery": denied_recovery,
+            }
             await self.run_repository.update_step(
                 step["id"],
                 status="failed",
                 error_message=error_message,
+                output_payload=denied_result,
                 metadata={
                     "iteration": planner_result.iteration,
                     "reasoning": planner_result.reasoning,
@@ -1493,6 +1688,7 @@ class AgentOrchestrator:
                 step,
                 error=error_message,
                 policy_decision=policy_decision,
+                recovery=denied_result["recovery"],
             )
             runtime_context["tool_failures"] = int(runtime_context.get("tool_failures", 0)) + 1
             return self._build_observation(
@@ -1502,7 +1698,89 @@ class AgentOrchestrator:
                 tool_name=tool_name,
                 tool_arguments=tool_arguments,
                 error=error_message,
+                result=denied_result,
             )
+        if managed_subagent is not None:
+            tool_budget_gate = build_tool_budget_gate(
+                target=managed_subagent,
+                runtime_context=runtime_context,
+                requested_tool_name=tool_name,
+            )
+            if not tool_budget_gate["allowed"]:
+                error_message = f"Tool budget rejected: {tool_budget_gate['reason']}"
+                await self.tracer.emit_event(
+                    run.id,
+                    "policy.denied",
+                    step_id=step["id"],
+                    policy_type="managed_subagent_tool_budget",
+                    subject=tool_name,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    subagent_target=managed_subagent.model_dump(mode="json"),
+                    governance_policy=tool_budget_gate["policy"],
+                    blockers=tool_budget_gate.get("blockers") or [],
+                    recovery=tool_budget_gate.get("recovery") or {},
+                    error=error_message,
+                )
+                tool_recovery = tool_budget_gate.get("recovery") or self._build_tool_recovery(
+                    primary_code="tool_budget_exceeded",
+                    summary=error_message,
+                )
+                step_output = {
+                    "governance_policy": tool_budget_gate["policy"],
+                    "tool_budget_gate": tool_budget_gate,
+                    "tool_result": self._build_tool_failure_result(
+                        tool_name=tool_name,
+                        tool_kind=tool_kind,
+                        failure_category="tool_budget_exceeded",
+                        error_message=error_message,
+                        recovery=tool_recovery,
+                        details={
+                            "blockers": tool_budget_gate.get("blockers") or [],
+                            "governance_policy": tool_budget_gate.get("policy") or {},
+                        },
+                    ),
+                    "recovery": tool_recovery,
+                }
+                await self.run_repository.update_step(
+                    step["id"],
+                    status="failed",
+                    error_message=error_message,
+                    output_payload=step_output,
+                    metadata={
+                        "iteration": planner_result.iteration,
+                        "reasoning": planner_result.reasoning,
+                        "managed_subagent": managed_subagent.model_dump(mode="json"),
+                        "tool_budget_gate": tool_budget_gate,
+                    },
+                )
+                await self._emit_step_event(
+                    run.id,
+                    "step.failed",
+                    step,
+                    error=error_message,
+                    output=step_output,
+                    governance_policy=tool_budget_gate["policy"],
+                    blockers=tool_budget_gate.get("blockers") or [],
+                    recovery=tool_budget_gate.get("recovery") or {},
+                )
+                runtime_context["tool_failures"] = int(runtime_context.get("tool_failures", 0)) + 1
+                runtime_context["last_tool_budget_block"] = {
+                    "tool_name": tool_name,
+                    "target_slug": managed_subagent.slug,
+                    "governance_policy": tool_budget_gate["policy"],
+                    "blockers": tool_budget_gate.get("blockers") or [],
+                    "recovery": tool_budget_gate.get("recovery") or {},
+                }
+                return self._build_observation(
+                    step=step,
+                    planner_result=planner_result,
+                    status="failed",
+                    tool_name=tool_name,
+                    tool_arguments=tool_arguments,
+                    error=error_message,
+                    result=step_output,
+                )
         tool_kind = await self._get_tool_kind(
             run,
             tool_name,
@@ -1541,6 +1819,17 @@ class AgentOrchestrator:
             await self.tool_call_repository.update_tool_call(
                 tool_call["id"],
                 status="cancelled",
+                result=self._build_tool_failure_result(
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    failure_category="cancelled",
+                    error_message="Run cancelled",
+                    recovery=self._build_tool_recovery(
+                        primary_code="run_cancelled",
+                        summary="Run cancelled",
+                        actions=[],
+                    ),
+                ),
                 error_message="Run cancelled",
             )
             await self.tracer.emit_event(
@@ -1551,6 +1840,17 @@ class AgentOrchestrator:
                 tool_name=tool_name,
                 tool_kind=tool_kind,
                 error="Run cancelled",
+                result=self._build_tool_failure_result(
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    failure_category="cancelled",
+                    error_message="Run cancelled",
+                    recovery=self._build_tool_recovery(
+                        primary_code="run_cancelled",
+                        summary="Run cancelled",
+                        actions=[],
+                    ),
+                ),
             )
             await self.run_repository.update_step(
                 step["id"],
@@ -1566,9 +1866,23 @@ class AgentOrchestrator:
             raise
         except Exception as exc:
             error_message = str(exc)
+            metadata = dict(policy_decision.get("metadata") or {})
+            tool_recovery = self._build_tool_recovery(
+                primary_code="tool_execution_failed",
+                summary=error_message,
+                actions=self._tool_recovery_actions(metadata=metadata),
+            )
+            failure_result = self._build_tool_failure_result(
+                tool_name=tool_name,
+                tool_kind=tool_kind,
+                failure_category="execution_error",
+                error_message=error_message,
+                recovery=tool_recovery,
+            )
             await self.tool_call_repository.update_tool_call(
                 tool_call["id"],
                 status="failed",
+                result=failure_result,
                 error_message=error_message,
             )
             await self.tracer.emit_event(
@@ -1579,17 +1893,22 @@ class AgentOrchestrator:
                 tool_name=tool_name,
                 tool_kind=tool_kind,
                 error=error_message,
+                result=failure_result,
+                recovery=tool_recovery,
             )
             await self.run_repository.update_step(
                 step["id"],
                 status="failed",
                 error_message=error_message,
+                output_payload={"tool_result": failure_result, "recovery": tool_recovery},
             )
             await self._emit_step_event(
                 run.id,
                 "step.failed",
                 step,
                 error=error_message,
+                output={"tool_result": failure_result, "recovery": tool_recovery},
+                recovery=tool_recovery,
             )
             runtime_context["tool_failures"] = int(runtime_context.get("tool_failures", 0)) + 1
             return self._build_observation(
@@ -1599,6 +1918,7 @@ class AgentOrchestrator:
                 tool_name=tool_name,
                 tool_arguments=tool_arguments,
                 error=error_message,
+                result={"tool_result": failure_result, "recovery": tool_recovery},
             )
 
         await self.tool_call_repository.update_tool_call(
@@ -1717,6 +2037,8 @@ class AgentOrchestrator:
                 step_id=step["id"],
                 subagent_target=target.model_dump(mode="json"),
                 delegation_gate=gate,
+                blockers=gate.get("blockers") or [],
+                recovery=gate.get("recovery") or {},
                 error=error_message,
             )
             await self._emit_step_event(
@@ -1726,6 +2048,8 @@ class AgentOrchestrator:
                 error=error_message,
                 delegate_target=target.slug,
                 delegation_gate=gate,
+                blockers=gate.get("blockers") or [],
+                recovery=gate.get("recovery") or {},
             )
             runtime_context["tool_failures"] = int(runtime_context.get("tool_failures", 0)) + 1
             return (
@@ -1832,6 +2156,7 @@ class AgentOrchestrator:
                 usage={},
                 waiting_user_propagation=None,
                 waiting_user_counts_as_active_child=True,
+                write_scope=delegation.input.get("write_scope") if isinstance(delegation.input, dict) else None,
             )
             self._register_pending_subagent_invocation(
                 runtime_context,
@@ -1846,6 +2171,7 @@ class AgentOrchestrator:
                 "delegation_gate": gate,
                 "governance_policy": delegation.metadata.get("governance_policy") if isinstance(delegation.metadata, dict) else {},
                 "progress": delegation.progress,
+                "recovery": gate.get("recovery") or {},
                 "pending": True,
             }
             await self.run_repository.update_step(
@@ -1869,6 +2195,7 @@ class AgentOrchestrator:
                     "status": delegation.status,
                     "summary": delegation.summary,
                     "progress": delegation.progress,
+                    "recovery": gate.get("recovery") or {},
                     "governance_policy": delegation.metadata.get("governance_policy") if isinstance(delegation.metadata, dict) else {},
                     "governance_history": ledger_entry.get("history") if isinstance(ledger_entry, dict) else {},
                 },

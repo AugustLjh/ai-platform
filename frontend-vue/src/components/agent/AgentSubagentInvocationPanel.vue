@@ -105,6 +105,24 @@
           {{ entry.governance.enforcement.note }}
         </div>
 
+        <div v-if="entry.governance.blockers.length > 0" class="meta-section danger-section">
+          <span class="meta-label">阻塞原因</span>
+          <div class="meta-chip-list">
+            <span v-for="blocker in entry.governance.blockers" :key="`${blocker.code}-${blocker.message}`" class="meta-chip danger-chip">
+              {{ blocker.message || blocker.code }}
+            </span>
+          </div>
+        </div>
+
+        <div v-if="entry.governance.recovery.actions.length > 0" class="meta-section recovery-section">
+          <span class="meta-label">恢复建议</span>
+          <div class="meta-chip-list">
+            <span v-for="itemText in entry.governance.recovery.actions" :key="itemText" class="meta-chip recovery-chip">
+              {{ itemText }}
+            </span>
+          </div>
+        </div>
+
         <div class="meta-line">
           <span v-if="entry.startedAt">开始于 {{ formatTime(entry.startedAt) }}</span>
           <span v-if="entry.completedAt">结束于 {{ formatTime(entry.completedAt) }}</span>
@@ -354,6 +372,16 @@ const formatTime = (value) => {
 .warning-chip {
   background: rgba(245, 158, 11, 0.14);
   color: #92400e;
+}
+
+.danger-chip {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.recovery-chip {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
 }
 
 .meta-section {

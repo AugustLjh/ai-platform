@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ai_runtime.core.agent_runtime.tools.base import ToolContext, ToolLookupContext
@@ -161,6 +162,51 @@ async def test_workspace_specs_include_policy_metadata(tmp_path):
     assert metadata_by_name["git_diff"]["side_effect"] == "none"
 
 
+async def test_workspace_lifecycle_tools_are_explicit_and_operate_under_base_root(tmp_path):
+    base_root = tmp_path / "managed-workspaces"
+    expired_workspace = base_root / "tenant-1" / "run-old" / "workspace"
+    active_workspace = base_root / "tenant-2" / "run-active" / "workspace"
+    expired_workspace.mkdir(parents=True)
+    active_workspace.mkdir(parents=True)
+    (expired_workspace / "old.txt").write_text("old", encoding="utf-8")
+    (active_workspace / "new.txt").write_text("new", encoding="utf-8")
+    old_time = datetime.now(timezone.utc) - timedelta(hours=3)
+    os.utime(expired_workspace, (old_time.timestamp(), old_time.timestamp()))
+
+    provider = WorkspaceToolProvider(
+        enabled_tool_names=["workspace_inspect_lifecycle", "workspace_cleanup_expired"],
+        roots=[],
+        lifecycle_base_root=base_root,
+        lifecycle_retention_hours=1,
+        lifecycle_max_files=10,
+        lifecycle_max_bytes=10_000,
+    )
+
+    specs = await provider.list_specs(ToolLookupContext(tenant_id="tenant-1"))
+    metadata_by_name = {spec["name"]: spec["metadata"] for spec in specs}
+    assert metadata_by_name["workspace_inspect_lifecycle"]["capability"] == "workspace_lifecycle"
+    assert metadata_by_name["workspace_cleanup_expired"]["risk_level"] == "high"
+
+    inspect_tool = await provider.get("workspace_inspect_lifecycle", context=ToolLookupContext(tenant_id="tenant-1"))
+    cleanup_tool = await provider.get("workspace_cleanup_expired", context=ToolLookupContext(tenant_id="tenant-1"))
+    assert inspect_tool is not None and cleanup_tool is not None
+
+    inspection = await inspect_tool.execute(_context(tmp_path), {})
+    assert inspection["workspace_count"] == 2
+    assert inspection["expired_count"] == 1
+
+    dry_run = await cleanup_tool.execute(_context(tmp_path), {"tenant_id": "tenant-1"})
+    assert dry_run["dry_run"] is True
+    assert dry_run["candidate_count"] == 1
+    assert dry_run["deleted"][0]["deleted"] is False
+    assert expired_workspace.exists()
+
+    deleted = await cleanup_tool.execute(_context(tmp_path), {"dry_run": False, "tenant_id": "tenant-1"})
+    assert deleted["deleted_count"] == 1
+    assert not expired_workspace.exists()
+    assert active_workspace.exists()
+
+
 async def test_default_workspace_tool_set_covers_internal_alpha_mvp(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -184,6 +230,8 @@ async def test_default_workspace_tool_set_covers_internal_alpha_mvp(tmp_path, mo
         "git_log",
         "git_branch",
     }.issubset(names)
+    assert "workspace_inspect_lifecycle" not in names
+    assert "workspace_cleanup_expired" not in names
 
 
 async def test_workspace_apply_patch_uses_hash_guard_and_dry_run(tmp_path):

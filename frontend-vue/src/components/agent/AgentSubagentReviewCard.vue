@@ -171,6 +171,7 @@ const previewTestGaps = computed(() => (
 }
 
 .decision-pill.rejected,
+.decision-pill.review_gate_blocked,
 .decision-pill.failed,
 .decision-pill.cancelled,
 .severity-pill.high,

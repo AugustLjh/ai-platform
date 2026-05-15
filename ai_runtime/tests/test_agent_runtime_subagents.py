@@ -3,9 +3,16 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
+import pytest
+
 from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
 from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
-from ai_runtime.core.agent_runtime.subagents.governance import record_delegation_outcome
+from ai_runtime.core.agent_runtime.subagents.governance import (
+    build_subagent_failure_strategy,
+    build_tool_budget_gate,
+    evaluate_governance_gate,
+    record_delegation_outcome,
+)
 from ai_runtime.core.agent_runtime.subagents.handoff import SubagentHandoff
 from ai_runtime.core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
 from ai_runtime.core.agent_runtime.subagents.registry import SubagentRegistry
@@ -585,6 +592,50 @@ async def test_subagent_handoff_embeds_managed_capability_metadata_without_targe
     assert result.metadata["governance_policy"]["budget"]["last_invocation_usage"]["total_tokens"] == 600
 
 
+async def test_subagent_handoff_preserves_delegate_write_scope_in_child_input_and_ledger():
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    state_store = FakeStateStore()
+
+    async def start_run(run_id):
+        run_repository.rows[run_id]["status"] = "running"
+
+    handoff = SubagentHandoff(
+        run_repository,
+        tracer,
+        state_store,
+        start_run=start_run,
+    )
+    target = SubagentTarget(
+        slug="parallel-worker",
+        name="Parallel Worker",
+        agent_definition_id="agent-worker",
+        runtime_policy={"delegation_mode": "parallel_worker"},
+        metadata={"requires_write_scope": True},
+    )
+
+    result = await handoff.start_delegate(
+        parent_run=_build_run(),
+        parent_step_id="step-parent",
+        planner_action=PlannerAction(
+            type="delegate",
+            title="Ask parallel worker",
+            delegate_target="parallel-worker",
+            delegate_task="Update the runtime code",
+            delegate_input={"write_scope": ["ai_runtime/core/agent_runtime/subagents"]},
+        ),
+        runtime_context={"step_history": [{"title": "Collected context"}]},
+        target=target,
+    )
+
+    assert result.input["write_scope"] == ["ai_runtime/core/agent_runtime/subagents"]
+    assert result.metadata["async_execution"] is True
+    assert result.metadata["handoff_envelope"]["task"]["delegate_input"]["write_scope"] == [
+        "ai_runtime/core/agent_runtime/subagents"
+    ]
+    assert tracer.events[0]["event_type"] == "run.created"
+
+
 async def test_subagent_handoff_enforces_timeout_policy():
     run_repository = FakeRunRepository()
     tracer = FakeTracer()
@@ -673,6 +724,92 @@ async def test_subagent_handoff_hard_budget_limit_marks_result_failed():
     assert result.status == "failed"
     assert result.metadata["governance_policy"]["budget"]["usage_status"] == "over_budget"
     assert result.metadata["governance_policy"]["enforcement"]["budget_hard_limit_exceeded"] is True
+    assert any(blocker["code"] == "budget_hard_limit_exceeded" for blocker in result.metadata["governance_policy"]["blockers"])
+    assert result.metadata["failure_strategy"]["strategy"] == "continue_or_rescope"
+
+
+async def test_subagent_handoff_timeout_result_annotates_failure_strategy():
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    state_store = FakeStateStore()
+    invocation_repository = FakeInvocationRepository()
+
+    async def start_run(run_id):
+        run_repository.rows[run_id]["status"] = "running"
+
+    handoff = SubagentHandoff(
+        run_repository,
+        tracer,
+        state_store,
+        start_run=start_run,
+        invocation_repository=invocation_repository,
+    )
+    target = SubagentTarget(
+        slug="managed-reviewer",
+        name="Managed Reviewer",
+        subagent_definition_id="subagent-reviewer",
+        runtime_policy={"timeout_seconds": 0.01},
+    )
+
+    with pytest.raises(TimeoutError):
+        await handoff.delegate(
+            parent_run=_build_run(),
+            parent_step_id="step-parent",
+            planner_action=PlannerAction(
+                type="delegate",
+                title="Ask managed reviewer",
+                delegate_target="managed-reviewer",
+                delegate_task="Review the migration patch",
+            ),
+            runtime_context={"step_history": [{"title": "Collected patch context"}]},
+            target=target,
+        )
+
+    assert invocation_repository.updates[-1]["status"] == "failed"
+    assert invocation_repository.updates[-1]["result_payload"]["failure_strategy"]["strategy"] == "continue_or_rescope"
+
+
+def test_subagent_tool_budget_gate_blocks_when_tool_limit_is_reached():
+    target = SubagentTarget(
+        slug="worker",
+        name="Worker",
+        agent_definition_id="agent-worker",
+        budget_policy={"max_tool_calls": 2},
+    )
+
+    gate = build_tool_budget_gate(
+        target=target,
+        runtime_context={
+            "step_history": [
+                {"tool_name": "workspace_read_file"},
+                {"tool_name": "run_tests"},
+            ]
+        },
+        requested_tool_name="run_build",
+    )
+
+    assert gate["allowed"] is False
+    assert gate["blockers"][0]["code"] == "tool_budget_exceeded"
+    assert gate["policy"]["budget"]["tool_usage"]["used_tool_calls"] == 2
+    assert gate["policy"]["budget"]["tool_usage"]["usage_status"] == "over_budget"
+
+
+def test_subagent_failure_strategy_returns_expected_recovery_path():
+    target = SubagentTarget(
+        slug="reviewer",
+        name="Reviewer",
+        agent_definition_id="agent-reviewer",
+    )
+
+    strategy = build_subagent_failure_strategy(
+        status="failed",
+        target=target,
+        blockers=[{"code": "tool_budget_exceeded", "message": "tool budget exhausted"}],
+        error_message="tool budget exhausted",
+    )
+
+    assert strategy["strategy"] == "continue_or_rescope"
+    assert "Reduce the delegated scope" in " ".join(strategy["recovery"]["actions"])
 
 
 async def test_subagent_handoff_start_delegate_returns_running_without_waiting():
@@ -718,6 +855,121 @@ async def test_subagent_handoff_start_delegate_returns_running_without_waiting()
     assert result.child_run_id == "child-run-1"
     assert run_repository.rows[result.child_run_id]["status"] == "queued"
     assert result.metadata["async_execution"] is True
+
+
+def test_subagent_governance_gate_blocks_prior_hard_budget_usage():
+    target = SubagentTarget(
+        slug="budget-worker",
+        name="Budget Worker",
+        agent_definition_id="agent-worker",
+        budget_policy={"max_tokens": 100, "hard_limit": True},
+    )
+
+    gate = evaluate_governance_gate(
+        run=_build_run(),
+        runtime_context={
+            "subagent_governance_ledger": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "targets": {
+                    "budget-worker": {
+                        "target_slug": "budget-worker",
+                        "usage": {"total_tokens": 150, "source": "ledger", "has_data": True},
+                        "history": {"target_slug": "budget-worker", "attempt_count": 1},
+                    }
+                },
+            }
+        },
+        target=target,
+    )
+
+    assert gate["allowed"] is False
+    assert gate["decision"] == "rejected"
+    assert gate["blockers"][0]["code"] == "budget_hard_limit_exceeded"
+    assert gate["policy"]["budget"]["usage_status"] == "over_budget"
+
+
+def test_subagent_governance_gate_requires_worker_write_scope():
+    target = SubagentTarget(
+        slug="parallel-worker",
+        name="Parallel Worker",
+        agent_definition_id="agent-worker",
+        runtime_policy={"delegation_mode": "parallel_worker"},
+        metadata={"requires_write_scope": True},
+    )
+
+    gate = evaluate_governance_gate(
+        run=_build_run(),
+        runtime_context={},
+        target=target,
+        delegate_input={"message": "Update the runtime code."},
+    )
+
+    assert gate["allowed"] is False
+    assert gate["blockers"][0]["code"] == "write_scope_required"
+    assert gate["recovery"]["primary_code"] == "write_scope_required"
+
+
+def test_subagent_governance_gate_blocks_parallel_worker_write_scope_conflict():
+    target = SubagentTarget(
+        slug="parallel-worker",
+        name="Parallel Worker",
+        agent_definition_id="agent-worker",
+        runtime_policy={"delegation_mode": "parallel_worker", "max_concurrent_delegations": 4},
+        metadata={"requires_write_scope": True},
+    )
+    runtime_context = {}
+    record_delegation_outcome(
+        runtime_context,
+        target_slug="parallel-worker",
+        status="running",
+        child_run_id="child-run-active",
+        invocation_id="invocation-active",
+        write_scope=["ai_runtime/core/agent_runtime"],
+    )
+
+    gate = evaluate_governance_gate(
+        run=_build_run(),
+        runtime_context=runtime_context,
+        target=target,
+        delegate_input={"write_scope": ["ai_runtime/core/agent_runtime/subagents/governance.py"]},
+    )
+
+    assert gate["allowed"] is False
+    assert gate["blockers"][0]["code"] == "write_scope_conflict"
+    assert gate["blockers"][0]["details"]["requested_write_scope"] == [
+        "ai_runtime/core/agent_runtime/subagents/governance.py"
+    ]
+    assert gate["blockers"][0]["details"]["conflicts"][0]["child_run_id"] == "child-run-active"
+    assert gate["recovery"]["primary_code"] == "write_scope_conflict"
+
+
+def test_subagent_governance_gate_allows_disjoint_parallel_worker_write_scopes():
+    target = SubagentTarget(
+        slug="parallel-worker",
+        name="Parallel Worker",
+        agent_definition_id="agent-worker",
+        runtime_policy={"delegation_mode": "parallel_worker", "max_concurrent_delegations": 4},
+        metadata={"requires_write_scope": True},
+    )
+    runtime_context = {}
+    record_delegation_outcome(
+        runtime_context,
+        target_slug="parallel-worker",
+        status="running",
+        child_run_id="child-run-active",
+        write_scope=["ai_runtime/core/agent_runtime/subagents"],
+    )
+
+    gate = evaluate_governance_gate(
+        run=_build_run(),
+        runtime_context=runtime_context,
+        target=target,
+        delegate_input={"write_scope": ["frontend-vue/src/components/agent"]},
+    )
+
+    assert gate["allowed"] is True
+    assert gate["requested_write_scope"] == ["frontend-vue/src/components/agent"]
+    assert gate["blockers"] == []
 
 
 async def test_orchestrator_execute_delegate_action_records_step_and_subagent_events():
@@ -841,6 +1093,98 @@ async def test_orchestrator_execute_delegate_action_records_step_and_subagent_ev
     assert completed_event["payload"]["governance_policy"]["budget"]["usage"]["total_tokens"] == 640
     assert completed_event["payload"]["governance_policy"]["budget"]["last_invocation_usage"]["total_tokens"] == 640
     assert run_repository.updated_steps[0]["output_payload"]["governance_policy"]["history"]["active_child_count"] == 0
+
+
+async def test_orchestrator_blocks_parent_progress_when_review_gate_has_blocking_findings():
+    target = SubagentTarget(
+        slug="review-specialist",
+        name="Review Specialist",
+        agent_definition_id="agent-reviewer",
+        review_policy={"required": True, "blocking_severities": ["high", "critical"]},
+    )
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-1",
+        status="completed",
+        target=target,
+        summary="Review found blocking issues.",
+        final_output_text="Review found blocking issues.",
+        metadata={
+            "invocation_id": "invocation-1",
+            "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+            "review_result": {
+                "protocol_version": "managed-subagent.review-result.v1",
+                "required": True,
+                "mode": "reviewer",
+                "decision": "changes_requested",
+                "approved": False,
+                "summary": "Reviewer 要求修改 · 1 条阻塞",
+                "finding_count": 1,
+                "blocking_finding_count": 1,
+                "blocking_severities": ["high", "critical"],
+                "findings": [
+                    {
+                        "title": "Unsafe migration",
+                        "severity": "high",
+                        "description": "The migration can drop user data.",
+                        "path": "db/alembic/versions/example.py",
+                        "line": 12,
+                    }
+                ],
+            },
+            "governance_policy": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "target_slug": "review-specialist",
+                "waiting_user": {"propagation": "bubble_to_parent", "counts_as_active_child": True},
+            },
+        },
+    )
+    run_repository = FakeRunRepository()
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=FakeHandoff(delegation),
+    )
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={"step_history": [{"title": "Collected patch context"}]},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask review specialist",
+                delegate_target="review-specialist",
+                delegate_task="Review the patch",
+                delegate_input={"focus_paths": ["db/alembic/versions/example.py"]},
+            ),
+            reasoning="A bounded specialist review is needed.",
+            iteration=2,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert delegated_result is None
+    assert observation["status"] == "failed"
+    assert "Review gate blocked" in observation["error"]
+    assert run_repository.updated_steps[0]["status"] == "failed"
+    assert run_repository.updated_steps[0]["metadata"]["review_gate"]["blocked"] is True
+    assert run_repository.updated_steps[0]["output_payload"]["review_result"]["decision"] == "review_gate_blocked"
+    assert run_repository.updated_steps[0]["output_payload"]["governance_policy"]["blockers"][0]["code"] == "review_gate_blocked"
+    assert run_repository.updated_steps[0]["output_payload"]["governance_policy"]["recovery"]["primary_code"] == "review_gate_blocked"
+    event_types = [event["event_type"] for event in tracer.events]
+    assert "subagent.review_blocked" in event_types
+    blocked_event = next(event for event in tracer.events if event["event_type"] == "subagent.review_blocked")
+    assert blocked_event["payload"]["review_gate"]["blocked"] is True
+    assert blocked_event["payload"]["review_result"]["decision"] == "review_gate_blocked"
+    assert blocked_event["payload"]["governance_policy"]["blockers"][0]["code"] == "review_gate_blocked"
 
 
 async def test_orchestrator_async_delegate_registers_pending_child_without_blocking_parent():
@@ -1566,9 +1910,14 @@ async def test_orchestrator_rejects_delegate_when_single_agent_gate_is_not_satis
     assert handoff.calls == []
     assert run_repository.updated_steps[0]["status"] == "failed"
     assert run_repository.updated_steps[0]["metadata"]["delegation_gate"]["allowed"] is False
+    assert run_repository.updated_steps[0]["metadata"]["delegation_gate"]["blockers"][0]["code"] == "single_agent_first"
+    assert run_repository.updated_steps[0]["metadata"]["delegation_gate"]["recovery"]["actions"]
     assert run_repository.updated_steps[0]["metadata"]["delegation_gate"]["governance"]["protocol_version"] == "managed-subagent.governance.v1"
     event_types = [event["event_type"] for event in tracer.events]
     assert "subagent.rejected" in event_types
+    rejected_event = next(event for event in tracer.events if event["event_type"] == "subagent.rejected")
+    assert rejected_event["payload"]["blockers"][0]["code"] == "single_agent_first"
+    assert rejected_event["payload"]["recovery"]["primary_code"] == "single_agent_first"
 
 
 async def test_orchestrator_rejects_delegate_when_retry_limit_exceeded():

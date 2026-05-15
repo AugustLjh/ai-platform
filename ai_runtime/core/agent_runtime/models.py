@@ -188,6 +188,11 @@ class RuntimeResumeRunRequest(BaseModel):
     input_patch: Dict[str, Any] = Field(default_factory=dict)
 
 
+class RuntimeArtifactReviewDecisionRequest(BaseModel):
+    decision: Literal["accepted", "rejected"]
+    note: Optional[str] = None
+
+
 class AgentRunSummaryResponse(BaseModel):
     run: AgentRun
 

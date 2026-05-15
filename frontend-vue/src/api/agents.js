@@ -134,6 +134,10 @@ export const agentsAPI = {
     return api.post(`/api/v1/agents/runs/${runId}/resume`, payload)
   },
 
+  reviewRunArtifact(runId, artifactId, payload = {}) {
+    return api.post(`/api/v1/agents/runs/${runId}/artifacts/${artifactId}/review`, payload)
+  },
+
   async streamRunEvents(runId, { afterSequence = 0, signal, onEvent, onError } = {}) {
     const token = localStorage.getItem('access_token')
     const response = await fetch(buildStreamUrl(runId, afterSequence), {

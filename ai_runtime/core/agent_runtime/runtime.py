@@ -21,6 +21,7 @@ from ai_runtime.core.agent_runtime.models import (
     AgentRunTreeRunSummary,
     AgentSubagentInvocation,
     AgentSubagentInvocationListResponse,
+    RuntimeArtifactReviewDecisionRequest,
     RuntimeCreateRunRequest,
 )
 from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
@@ -508,3 +509,37 @@ class AgentRuntime:
         await self.tracer.emit_event(run_id, "run.resumed", status="queued")
         await self.start_run(run_id)
         return AgentRunSummaryResponse(run=self._hydrate_run_row(updated, artifacts=[], steps=[], tool_calls=[]))
+
+    async def review_artifact(
+        self,
+        run_id: str,
+        artifact_id: str,
+        tenant_id: Optional[str],
+        reviewer_id: Optional[str],
+        request: RuntimeArtifactReviewDecisionRequest,
+    ) -> AgentRunSummaryResponse:
+        run = await self.run_repository.get_run(run_id, tenant_id)
+        if run is None:
+            raise ValueError("run not found")
+        updated_artifact = await self.run_repository.update_artifact_review_decision(
+            run_id=run_id,
+            artifact_id=artifact_id,
+            tenant_id=tenant_id,
+            decision=request.decision,
+            reviewer_id=reviewer_id,
+            note=request.note,
+        )
+        if updated_artifact is None:
+            raise ValueError("artifact not found")
+        artifacts = await self.run_repository.list_artifacts(run_id)
+        steps = await self.run_repository.list_steps(run_id)
+        tool_calls = await self.tool_call_repository.list_tool_calls(run_id)
+        await self.tracer.emit_event(
+            run_id,
+            "artifact.reviewed",
+            artifact_id=artifact_id,
+            decision=request.decision,
+            note=request.note,
+            reviewer_id=reviewer_id,
+        )
+        return AgentRunSummaryResponse(run=self._hydrate_run_row(run, artifacts=artifacts, steps=steps, tool_calls=tool_calls))

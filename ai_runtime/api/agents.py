@@ -14,6 +14,7 @@ from ai_runtime.core.agent_runtime.models import (
     AgentRunSummaryResponse,
     AgentRunTreeResponse,
     AgentSubagentInvocationListResponse,
+    RuntimeArtifactReviewDecisionRequest,
     RuntimeCreateRunRequest,
     RuntimeResumeRunRequest,
 )
@@ -218,5 +219,26 @@ async def resume_run(
     runtime = get_agent_runtime()
     try:
         return await runtime.resume_run(run_id, tenant_id, input_patch=request.input_patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/artifacts/{artifact_id}/review", response_model=AgentRunSummaryResponse)
+async def review_run_artifact(
+    run_id: str,
+    artifact_id: str,
+    request: RuntimeArtifactReviewDecisionRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    runtime = get_agent_runtime()
+    try:
+        return await runtime.review_artifact(
+            run_id=run_id,
+            artifact_id=artifact_id,
+            tenant_id=tenant_id,
+            reviewer_id=user_id,
+            request=request,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

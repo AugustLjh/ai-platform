@@ -93,6 +93,7 @@ const normalizeRun = (raw = {}) => {
     status: toolCall.status || 'pending',
     arguments: parseJSON(toolCall.arguments, {}),
     result: parseJSON(toolCall.result, {}),
+    recovery: parseJSON(toolCall.result, {})?.recovery || {},
     error: toolCall.error_message || toolCall.errorMessage || '',
     createdAt: toolCall.created_at || toolCall.createdAt || null,
     updatedAt: toolCall.updated_at || toolCall.updatedAt || null
@@ -780,6 +781,25 @@ export const useAgentsStore = defineStore('agents', {
         throw error
       } finally {
         this.loading = false
+      }
+    },
+
+    async reviewRunArtifact(runId, artifactId, payload = {}) {
+      this.error = null
+      try {
+        const { data } = await agentsAPI.reviewRunArtifact(runId, artifactId, payload)
+        const run = normalizeRun(data)
+        this.currentRun = run
+        this.upsertRun(run)
+        this.steps = Array.isArray(run.steps) ? run.steps : []
+        this.toolCalls = Array.isArray(run.toolCalls) ? run.toolCalls : []
+        this.plan = run.plan && Object.keys(run.plan).length > 0 ? run.plan : null
+        this.artifacts = Array.isArray(run.artifacts) ? run.artifacts : []
+        this.executionSurface = deriveRunState(run, this.runEvents).surfaceMeta
+        return data
+      } catch (error) {
+        this.setError(error, 'Failed to review artifact')
+        throw error
       }
     },
 

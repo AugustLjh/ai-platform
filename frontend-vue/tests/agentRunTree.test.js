@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildGovernanceRecoverySummary,
   buildInvocationProtocolEntry,
   buildPendingSubagentClarificationEntry,
   clarificationStateLabel,
@@ -194,6 +195,65 @@ test('getInvocationReviewResult and summarizeInvocationReview normalize reviewer
   assert.equal(reviewResult.mode, 'judge')
   assert.equal(reviewDecisionLabel(reviewResult.decision), '通过但有提示')
   assert.equal(summarizeInvocationReview(invocation), 'Judge 通过但有提示 · 1 条 finding')
+})
+
+test('review gate blocked decisions render as dangerous attention entries', () => {
+  const invocation = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'running', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-1',
+          status: 'completed',
+          result_payload: {
+            status: 'completed',
+            review_result: {
+              mode: 'reviewer',
+              required: true,
+              decision: 'review_gate_blocked',
+              approved: false,
+              gate_blocked: true,
+              finding_count: 1,
+              blocking_finding_count: 1,
+              gate_blockers: [
+                {
+                  code: 'review_gate_blocked',
+                  message: 'reviewer gate blocked by 1 blocking finding(s)'
+                }
+              ],
+              recovery: {
+                primary_code: 'review_gate_blocked',
+                actions: ['Fix the reviewer finding before continuing.']
+              }
+            },
+            governance_policy: {
+              blockers: [
+                {
+                  code: 'review_gate_blocked',
+                  message: 'reviewer gate blocked by 1 blocking finding(s)'
+                }
+              ],
+              recovery: {
+                primary_code: 'review_gate_blocked',
+                actions: ['Fix the reviewer finding before continuing.']
+              }
+            }
+          }
+        }
+      }
+    ]
+  }).invocations[0].invocation
+
+  const reviewResult = getInvocationReviewResult(invocation)
+  assert.equal(reviewResult.gateBlocked, true)
+  assert.equal(reviewDecisionLabel(reviewResult.decision), '评审阻断')
+  assert.equal(summarizeInvocationReview(invocation), 'Reviewer 评审阻断 · 已阻断 · 1 条阻塞')
+
+  const entry = buildInvocationProtocolEntry({ invocation, childRun: null })
+  assert.equal(entry.needsAttention, true)
+  assert.equal(entry.attentionTone, 'danger')
+  assert.equal(entry.recoverySummary, '阻塞 reviewer gate blocked by 1 blocking finding(s) · 恢复建议 Fix the reviewer finding before continuing.')
 })
 
 test('getInvocationQuestion and buildInvocationProtocolEntry expose waiting-user protocol details', () => {
@@ -453,6 +513,13 @@ test('normalizeGovernancePolicy and invocation governance summary expose runtime
       advisoryLimits: [],
       note: ''
     },
+    blockers: [],
+    recovery: {
+      recoverable: false,
+      primaryCode: '',
+      summary: '',
+      actions: []
+    },
     warnings: [],
     history: {
       targetSlug: '',
@@ -500,6 +567,38 @@ test('normalizeGovernancePolicy and invocation governance summary expose runtime
     'max_retry_attempts',
     'timeout_seconds'
   ])
+})
+
+test('normalizeGovernancePolicy and recovery summary expose structured blockers', () => {
+  const governance = normalizeGovernancePolicy({
+    blockers: [
+      {
+        code: 'concurrency_limit_exceeded',
+        message: '1 unresolved child run already exists.',
+        recovery_actions: [
+          'Wait for the existing child run to finish.',
+          'Increase max_concurrent_delegations only if the tasks are independent.'
+        ]
+      }
+    ],
+    recovery: {
+      recoverable: true,
+      primary_code: 'concurrency_limit_exceeded',
+      summary: 'Wait for the current child run or raise the concurrency limit.',
+      actions: [
+        'Wait for the existing child run to finish.',
+        'Increase max_concurrent_delegations only if the tasks are independent.'
+      ]
+    }
+  })
+
+  assert.equal(governance.hasData, true)
+  assert.equal(governance.blockers[0].code, 'concurrency_limit_exceeded')
+  assert.equal(governance.recovery.primaryCode, 'concurrency_limit_exceeded')
+  assert.equal(
+    buildGovernanceRecoverySummary(governance),
+    'Wait for the existing child run to finish. · Increase max_concurrent_delegations only if the tasks are independent.'
+  )
 })
 
 test('buildPendingSubagentClarificationEntry and protocol entry preserve multihop waiting-user and budget context', () => {

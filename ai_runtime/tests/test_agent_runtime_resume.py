@@ -97,6 +97,36 @@ class FakeRunRepository:
         self.artifacts = list(artifacts)
         return self.artifacts
 
+    async def update_artifact_review_decision(
+        self,
+        *,
+        run_id: str,
+        artifact_id: str,
+        tenant_id: str | None,
+        decision: str,
+        reviewer_id: str | None = None,
+        note: str | None = None,
+    ) -> dict | None:
+        for artifact in self.artifacts:
+            if artifact.get("id") != artifact_id:
+                continue
+            artifact["metadata"] = {
+                **(artifact.get("metadata") or {}),
+                "review_decision": decision,
+                "reviewed_by": reviewer_id,
+                "review_note": note,
+            }
+            return artifact
+        return None
+
+    async def list_steps(self, run_id: str) -> list[dict]:
+        return []
+
+
+class FakeToolCallRepository:
+    async def list_tool_calls(self, run_id: str) -> list[dict]:
+        return []
+
 
 class FakeTracer:
     def __init__(self) -> None:
@@ -380,3 +410,84 @@ def test_resume_prunes_governance_ledger_active_children_for_future_delegate_gat
 
     assert gate["allowed"] is True
     assert gate["history"]["active_child_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_review_artifact_persists_decision_and_emits_event():
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    repository = FakeRunRepository(
+        _run_row(
+            status="completed",
+            context={},
+        )
+    )
+    repository.artifacts = [
+        {
+            "id": "artifact-1",
+            "run_id": repository.run_row["id"],
+            "artifact_type": "code_patch",
+            "name": "Workspace Patch",
+            "payload": {"diff": "--- a/file.py\n+++ b/file.py\n"},
+            "metadata": {},
+        }
+    ]
+    tracer = FakeTracer()
+    runtime.run_repository = repository
+    runtime.tool_call_repository = FakeToolCallRepository()
+    runtime.tracer = tracer
+
+    request = type("ReviewRequest", (), {"decision": "accepted", "note": "Looks good"})()
+    response = await runtime.review_artifact(
+        repository.run_row["id"],
+        "artifact-1",
+        repository.run_row["tenant_id"],
+        repository.run_row["user_id"],
+        request,
+    )
+
+    patch_artifact = next(artifact for artifact in response.run.artifacts if artifact.artifact_type == "code_patch")
+    assert patch_artifact.metadata["review_decision"] == "accepted"
+    assert patch_artifact.metadata["reviewed_by"] == repository.run_row["user_id"]
+    assert tracer.events[-1][1] == "artifact.reviewed"
+
+
+def test_governance_gate_returns_structured_recovery_for_concurrency_limit():
+    context = {
+        "subagent_governance_ledger": {
+            "protocol_version": "managed-subagent.governance.v1",
+            "targets": {
+                "review-specialist": {
+                    "target_slug": "review-specialist",
+                    "history": {
+                        "target_slug": "review-specialist",
+                        "attempt_count": 1,
+                        "active_child_count": 1,
+                        "statuses": ["running"],
+                    },
+                    "active_children": {
+                        "child:child-run-1": {
+                            "child_run_id": "child-run-1",
+                            "status": "running",
+                            "counts_as_active_child": True,
+                        }
+                    },
+                }
+            },
+        }
+    }
+
+    gate = evaluate_governance_gate(
+        run=AgentRun.model_validate(_run_row(status="queued", context={})),
+        runtime_context=context,
+        target=SubagentTarget(
+            slug="review-specialist",
+            name="Review Specialist",
+            agent_definition_id="agent-reviewer",
+            runtime_policy={"max_concurrent_delegations": 1},
+        ),
+    )
+
+    assert gate["allowed"] is False
+    assert gate["blockers"][0]["code"] == "concurrency_limit_exceeded"
+    assert gate["recovery"]["primary_code"] == "concurrency_limit_exceeded"
+    assert gate["recovery"]["actions"][0].startswith("Wait for an existing child run")

@@ -25,6 +25,14 @@
       <div class="tool-section-label">错误</div>
       <pre>{{ toolCall.error }}</pre>
     </div>
+
+    <div v-if="recoverySummary" class="tool-section">
+      <div class="tool-section-label">恢复建议</div>
+      <p class="tool-recovery-summary">{{ recoverySummary }}</p>
+      <div v-if="recoveryActions.length > 0" class="recovery-list">
+        <span v-for="action in recoveryActions" :key="action" class="recovery-chip">{{ action }}</span>
+      </div>
+    </div>
   </article>
 </template>
 
@@ -57,6 +65,18 @@ const formattedArguments = computed(() => JSON.stringify(props.toolCall.argument
 const hasArguments = computed(() => Object.keys(props.toolCall.arguments || {}).length > 0)
 const hasResult = computed(() => props.toolCall.result && Object.keys(props.toolCall.result).length > 0)
 const hasError = computed(() => !!props.toolCall.error)
+const recovery = computed(() => props.toolCall?.result?.recovery || props.toolCall?.recovery || {})
+const recoveryActions = computed(() => Array.isArray(recovery.value?.actions) ? recovery.value.actions.filter((action) => String(action || '').trim()) : [])
+const failureCategory = computed(() => String(props.toolCall?.result?.failure_category || props.toolCall?.result?.failureCategory || '').trim())
+const recoverySummary = computed(() => {
+  const summary = String(recovery.value?.summary || '').trim()
+  const primaryCode = String(recovery.value?.primaryCode || recovery.value?.primary_code || '').trim()
+  const category = failureCategory.value
+  if (summary || primaryCode || category) {
+    return [summary, primaryCode, category].filter(Boolean).join(' · ')
+  }
+  return ''
+})
 
 const formatTime = (value) => {
   if (!value) return '未知时间'
@@ -151,6 +171,28 @@ const formatTime = (value) => {
   color: var(--gray-600);
   text-transform: uppercase;
   margin-bottom: 8px;
+}
+
+.tool-recovery-summary {
+  margin: 0;
+  color: var(--gray-700);
+  line-height: 1.6;
+}
+
+.recovery-list {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recovery-chip {
+  padding: 6px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(245, 158, 11, 0.12);
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 pre {

@@ -424,6 +424,44 @@ class RunRepository:
         )
         return [_record_to_dict(row) for row in rows]
 
+    async def update_artifact_review_decision(
+        self,
+        *,
+        run_id: str,
+        artifact_id: str,
+        tenant_id: Optional[str],
+        decision: str,
+        reviewer_id: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        row = await self.db_pool.fetchrow(
+            """
+            UPDATE agent_artifacts AS artifact
+            SET metadata = COALESCE(artifact.metadata, '{}'::jsonb) || jsonb_build_object(
+                'review_decision', $4::varchar,
+                'reviewed_by', $5::varchar,
+                'review_note', $6::varchar,
+                'reviewed_at', now()
+            )
+            FROM agent_runs AS run
+            WHERE artifact.id = $1
+              AND artifact.run_id = $2
+              AND artifact.run_id = run.id
+              AND ($3::uuid IS NULL OR run.tenant_id = $3)
+            RETURNING artifact.id, artifact.run_id, artifact.step_id, artifact.artifact_type,
+                      artifact.name, artifact.mime_type, artifact.uri,
+                      artifact.payload AS artifact_payload, artifact.metadata,
+                      artifact.created_at, artifact.updated_at
+            """,
+            _serialize_uuid(artifact_id),
+            _serialize_uuid(run_id),
+            _serialize_uuid(tenant_id),
+            decision,
+            reviewer_id,
+            note,
+        )
+        return _record_to_dict(row) if row else None
+
     async def list_artifacts_for_runs(self, run_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
         serialized_run_ids = [_serialize_uuid(run_id) for run_id in run_ids if run_id]
         if not serialized_run_ids:
