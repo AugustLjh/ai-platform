@@ -50,6 +50,34 @@
             </select>
           </label>
 
+          <div class="field">
+            <span>默认 Workspace 绑定</span>
+            <div class="workspace-policy-grid">
+              <select v-model="editForm.workspaceMode" class="input">
+                <option value="none">每次会话手动选择</option>
+                <option value="existing">默认复制允许目录</option>
+              </select>
+              <select
+                v-if="editForm.workspaceMode === 'existing'"
+                v-model="editForm.workspacePath"
+                class="input"
+              >
+                <option value="">请选择允许目录</option>
+                <option
+                  v-for="source in workspaceSources"
+                  :key="source.path"
+                  :value="source.path"
+                >
+                  {{ formatWorkspaceSource(source) }}
+                </option>
+              </select>
+            </div>
+            <p class="field-help">
+              默认绑定只会复制到 run 级隔离 workspace，运行中的写入不会直接落到原项目目录。
+            </p>
+            <p v-if="workspaceError" class="field-error">{{ workspaceError }}</p>
+          </div>
+
           <label class="field">
             <span>System Prompt</span>
             <textarea v-model="editForm.systemPrompt" class="input textarea prompt-textarea" rows="14"></textarea>
@@ -84,6 +112,8 @@ import AgentPageHeader from '@/components/agent/AgentPageHeader.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useModelsStore } from '@/store/models'
 import { useToastStore } from '@/store/toast'
+import { agentsAPI } from '@/api'
+import { formatWorkspaceSource, getAgentWorkspaceBindingPolicy } from '@/utils/workspaceBindings'
 
 const route = useRoute()
 const agentsStore = useAgentsStore()
@@ -91,12 +121,16 @@ const modelsStore = useModelsStore()
 const toastStore = useToastStore()
 
 const saving = ref(false)
+const workspaceSources = ref([])
+const workspaceError = ref('')
 
 const editForm = reactive({
   name: '',
   description: '',
   model: '',
-  systemPrompt: ''
+  systemPrompt: '',
+  workspaceMode: 'none',
+  workspacePath: ''
 })
 
 const agent = computed(() => agentsStore.currentAgent)
@@ -108,6 +142,20 @@ const syncEditForm = () => {
   editForm.description = agent.value?.description || ''
   editForm.model = agent.value?.model || modelsStore.defaultModel?.id || ''
   editForm.systemPrompt = agent.value?.systemPrompt || ''
+  const workspacePolicy = getAgentWorkspaceBindingPolicy(agent.value || {})
+  editForm.workspaceMode = workspacePolicy.enabled ? workspacePolicy.mode : 'none'
+  editForm.workspacePath = workspacePolicy.path || ''
+}
+
+const loadWorkspaceSources = async () => {
+  workspaceError.value = ''
+  try {
+    const { data } = await agentsAPI.listWorkspaceSources()
+    workspaceSources.value = Array.isArray(data?.sources) ? data.sources : []
+  } catch (error) {
+    console.error('Failed to load workspace sources:', error)
+    workspaceError.value = error?.response?.data?.detail || error?.message || '加载 workspace 目录失败'
+  }
 }
 
 const loadPage = async () => {
@@ -116,9 +164,33 @@ const loadPage = async () => {
 
   await Promise.all([
     agentsStore.fetchAgent(agentId),
-    modelsStore.fetchModels()
+    modelsStore.fetchModels(),
+    loadWorkspaceSources()
   ])
   syncEditForm()
+}
+
+const buildAgentConfig = () => {
+  const currentConfig = agent.value?.config && typeof agent.value.config === 'object' ? agent.value.config : {}
+  const workspaceConfig = currentConfig.workspace && typeof currentConfig.workspace === 'object' ? currentConfig.workspace : {}
+  const defaultSource = editForm.workspaceMode === 'existing'
+    ? {
+        enabled: true,
+        type: 'existing',
+        path: editForm.workspacePath.trim()
+      }
+    : {
+        enabled: false,
+        type: 'none',
+        path: ''
+      }
+  return {
+    ...currentConfig,
+    workspace: {
+      ...workspaceConfig,
+      default_source: defaultSource
+    }
+  }
 }
 
 const reloadPage = async () => {
@@ -133,6 +205,10 @@ const reloadPage = async () => {
 
 const saveAgent = async () => {
   if (!agent.value?.id) return
+  if (editForm.workspaceMode === 'existing' && !editForm.workspacePath.trim()) {
+    toastStore.showToast({ type: 'error', message: '请选择默认绑定的允许目录' })
+    return
+  }
   saving.value = true
   try {
     await agentsStore.updateAgent(agent.value.id, {
@@ -140,7 +216,7 @@ const saveAgent = async () => {
       description: editForm.description.trim(),
       system_prompt: editForm.systemPrompt,
       model: editForm.model || '',
-      config: agent.value.config || {},
+      config: buildAgentConfig(),
       metadata: agent.value.metadata || {}
     })
     toastStore.showToast({ type: 'success', message: '基础设置已保存' })
@@ -234,6 +310,27 @@ onMounted(async () => {
   color: var(--gray-700);
 }
 
+.field-help,
+.field-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-help {
+  color: var(--gray-500);
+}
+
+.field-error {
+  color: #b91c1c;
+}
+
+.workspace-policy-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.45fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
 .input {
   width: 100%;
   border: 1px solid var(--gray-200);
@@ -267,6 +364,10 @@ onMounted(async () => {
 
 @media (max-width: 980px) {
   .page-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-policy-grid {
     grid-template-columns: 1fr;
   }
 }

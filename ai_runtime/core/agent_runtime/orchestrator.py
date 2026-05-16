@@ -2395,6 +2395,7 @@ class AgentOrchestrator:
                 user_id=run.user_id,
                 run_input=run.input,
                 metadata=run.metadata,
+                agent_config=definition.config,
                 existing_context=runtime_context,
             )
             for event in workspace_events:

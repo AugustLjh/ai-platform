@@ -92,6 +92,22 @@ export const agentsAPI = {
     return api.post(`/api/v1/agents/${agentId}/runs`, payload)
   },
 
+  listWorkspaceSources(params = {}) {
+    return api.get('/api/v1/agents/workspace-sources', { params })
+  },
+
+  inspectWorkspaces() {
+    return api.get('/api/v1/agents/workspaces')
+  },
+
+  cleanupWorkspaces(params = {}) {
+    return api.post('/api/v1/agents/workspaces/cleanup', null, { params })
+  },
+
+  getRuntimeStatus() {
+    return api.get('/api/v1/agents/runtime-status')
+  },
+
   listTools(agentDefinitionId = '') {
     const params = {}
     if (agentDefinitionId) {

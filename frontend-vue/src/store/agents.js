@@ -308,6 +308,90 @@ const normalizeExecutionMode = (raw = {}) => ({
     : []
 })
 
+const normalizeRuntimeStatus = (raw = {}) => {
+  const providers = raw?.providers && typeof raw.providers === 'object' ? raw.providers : {}
+  const workspace = providers.workspace && typeof providers.workspace === 'object' ? providers.workspace : {}
+  const sandbox = providers.sandbox && typeof providers.sandbox === 'object' ? providers.sandbox : {}
+  const web = providers.web && typeof providers.web === 'object' ? providers.web : {}
+  const browser = providers.browser && typeof providers.browser === 'object' ? providers.browser : {}
+  const inspection = workspace.inspection && typeof workspace.inspection === 'object' ? workspace.inspection : {}
+  const lifecycle = raw?.workspace_lifecycle && typeof raw.workspace_lifecycle === 'object' ? raw.workspace_lifecycle : {}
+  const lifecycleLastRun = lifecycle.last_run && typeof lifecycle.last_run === 'object' ? lifecycle.last_run : null
+  return {
+    status: raw.status || 'idle',
+    started: Boolean(raw.started),
+    configuredProviders: Array.isArray(providers.configured) ? [...providers.configured] : [],
+    workspace: {
+      enabled: Boolean(workspace.enabled),
+      baseRoot: workspace.base_root || workspace.baseRoot || '',
+      sourceRoots: Array.isArray(workspace.source_roots || workspace.sourceRoots) ? [...(workspace.source_roots || workspace.sourceRoots)] : [],
+      maxFiles: Number(workspace.max_files || workspace.maxFiles || 0),
+      maxBytes: Number(workspace.max_bytes || workspace.maxBytes || 0),
+      retentionHours: Number(workspace.retention_hours || workspace.retentionHours || 0),
+      inspection: {
+        workspaceCount: Number(inspection.workspace_count || inspection.workspaceCount || 0),
+        expiredCount: Number(inspection.expired_count || inspection.expiredCount || 0),
+        quotaExceededCount: Number(inspection.quota_exceeded_count || inspection.quotaExceededCount || 0),
+        totalSizeBytes: Number(inspection.total_size_bytes || inspection.totalSizeBytes || 0),
+        totalFileCount: Number(inspection.total_file_count || inspection.totalFileCount || 0),
+        workspaces: Array.isArray(inspection.workspaces) ? [...inspection.workspaces] : [],
+        generatedAt: inspection.generated_at || inspection.generatedAt || null
+      }
+    },
+    sandbox: {
+      enabled: Boolean(sandbox.enabled),
+      configured: Boolean(sandbox.configured),
+      runnerConfigured: Boolean(sandbox.runner_configured || sandbox.runnerConfigured),
+      runnerBackend: sandbox.runner_backend || sandbox.runnerBackend || '',
+      dockerImage: sandbox.docker_image || sandbox.dockerImage || '',
+      networkMode: sandbox.network_mode || sandbox.networkMode || ''
+    },
+    web: {
+      enabled: Boolean(web.enabled),
+      configured: Boolean(web.configured),
+      networkConfigured: Boolean(web.network_configured || web.networkConfigured),
+      allowedDomains: Array.isArray(web.allowed_domains || web.allowedDomains) ? [...(web.allowed_domains || web.allowedDomains)] : [],
+      deniedDomains: Array.isArray(web.denied_domains || web.deniedDomains) ? [...(web.denied_domains || web.deniedDomains)] : [],
+      searchEndpoint: web.search_endpoint || web.searchEndpoint || ''
+    },
+    browser: {
+      enabled: Boolean(browser.enabled),
+      configured: Boolean(browser.configured),
+      backend: browser.backend || '',
+      name: browser.name || '',
+      runtimeAvailable: Boolean(browser.runtime_available || browser.runtimeAvailable),
+      runtimeReason: browser.runtime_reason || browser.runtimeReason || ''
+    },
+    workspaceLifecycle: {
+      enabled: Boolean(lifecycle.enabled),
+      running: Boolean(lifecycle.running),
+      intervalSeconds: Number(lifecycle.interval_seconds || lifecycle.intervalSeconds || 0),
+      dryRun: Boolean(lifecycle.dry_run || lifecycle.dryRun),
+      maxDeletePerCycle: Number(lifecycle.max_delete_per_cycle || lifecycle.maxDeletePerCycle || 0),
+      quotaAlertThresholdBytes: Number(lifecycle.quota_alert_threshold_bytes || lifecycle.quotaAlertThresholdBytes || 0),
+      quotaAlertThresholdCount: Number(lifecycle.quota_alert_threshold_count || lifecycle.quotaAlertThresholdCount || 0),
+      expiredAlertThreshold: Number(lifecycle.expired_alert_threshold || lifecycle.expiredAlertThreshold || 0),
+      lastRunAtMonotonic: lifecycle.last_run_at_monotonic || lifecycle.lastRunAtMonotonic || null,
+      lastCompletedAt: lifecycle.last_completed_at || lifecycle.lastCompletedAt || null,
+      lastRun: lifecycleLastRun
+        ? {
+            generatedAt: lifecycleLastRun.generated_at || lifecycleLastRun.generatedAt || null,
+            inspection: lifecycleLastRun.inspection && typeof lifecycleLastRun.inspection === 'object'
+              ? { ...lifecycleLastRun.inspection }
+              : {},
+            cleanup: lifecycleLastRun.cleanup && typeof lifecycleLastRun.cleanup === 'object'
+              ? { ...lifecycleLastRun.cleanup }
+              : null,
+            alerts: Array.isArray(lifecycleLastRun.alerts) ? [...lifecycleLastRun.alerts] : []
+          }
+        : null,
+      recentAlerts: Array.isArray(lifecycle.recent_alerts || lifecycle.recentAlerts)
+        ? [...(lifecycle.recent_alerts || lifecycle.recentAlerts)]
+        : []
+    }
+  }
+}
+
 const sortByUpdatedDesc = (items) => [...items].sort((a, b) => {
   const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime()
   const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime()
@@ -330,6 +414,9 @@ export const useAgentsStore = defineStore('agents', {
     executionSurface: null,
     availableTools: [],
     availableToolsExecutionMode: null,
+    runtimeStatus: null,
+    workspaceInspection: null,
+    workspaceCleanupResult: null,
     skills: [],
     mcpServers: [],
     mcpGovernanceSummary: null,
@@ -946,6 +1033,40 @@ export const useAgentsStore = defineStore('agents', {
         return this.availableTools
       } catch (error) {
         this.setError(error, 'Failed to fetch agent tools')
+        throw error
+      }
+    },
+
+    async fetchRuntimeStatus() {
+      try {
+        const { data } = await agentsAPI.getRuntimeStatus()
+        this.runtimeStatus = normalizeRuntimeStatus(data || {})
+        this.workspaceInspection = this.runtimeStatus.workspace?.inspection || null
+        return this.runtimeStatus
+      } catch (error) {
+        this.setError(error, 'Failed to fetch runtime status')
+        throw error
+      }
+    },
+
+    async inspectWorkspaces() {
+      try {
+        const { data } = await agentsAPI.inspectWorkspaces()
+        this.workspaceInspection = data || null
+        return this.workspaceInspection
+      } catch (error) {
+        this.setError(error, 'Failed to inspect workspaces')
+        throw error
+      }
+    },
+
+    async cleanupWorkspaces(params = {}) {
+      try {
+        const { data } = await agentsAPI.cleanupWorkspaces(params)
+        this.workspaceCleanupResult = data || null
+        return this.workspaceCleanupResult
+      } catch (error) {
+        this.setError(error, 'Failed to cleanup workspaces')
         throw error
       }
     },

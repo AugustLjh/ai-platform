@@ -18,6 +18,7 @@ from .knowledge_bases import router as kb_router
 from .mcp import router as runtime_mcp_router
 from .models import router as models_router
 from .uploads import router as uploads_router
+from .agents import get_agent_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,15 @@ def create_http_app() -> FastAPI:
     app.include_router(agents_router)
     app.include_router(runtime_mcp_router)
     app.include_router(uploads_router)
+
+    @app.on_event("startup")
+    async def _startup_runtime() -> None:
+        await get_agent_runtime().start()
+
+    @app.on_event("shutdown")
+    async def _shutdown_runtime() -> None:
+        runtime = get_agent_runtime()
+        await runtime.shutdown()
 
     @app.get("/", response_model=Dict[str, str])
     async def root():

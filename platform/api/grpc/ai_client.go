@@ -309,6 +309,47 @@ type runtimeMCPToolRefreshResponse struct {
 	Total int                       `json:"total"`
 }
 
+type RuntimeWorkspaceSourceResponse struct {
+	Status      string           `json:"status"`
+	Enabled     bool             `json:"enabled"`
+	BaseRoot    string           `json:"base_root"`
+	SourceRoots []string         `json:"source_roots"`
+	Count       int              `json:"count"`
+	MaxEntries  int              `json:"max_entries"`
+	MaxDepth    int              `json:"max_depth"`
+	Sources     []map[string]any `json:"sources"`
+}
+
+type RuntimeWorkspaceInspectionResponse struct {
+	Status             string           `json:"status"`
+	BaseRoot           string           `json:"base_root"`
+	RetentionHours     int              `json:"retention_hours"`
+	WorkspaceCount     int              `json:"workspace_count"`
+	ExpiredCount       int              `json:"expired_count"`
+	QuotaExceededCount int              `json:"quota_exceeded_count"`
+	TotalSizeBytes     int64            `json:"total_size_bytes"`
+	TotalFileCount     int64            `json:"total_file_count"`
+	GeneratedAt        string           `json:"generated_at"`
+	Workspaces         []map[string]any `json:"workspaces"`
+}
+
+type RuntimeWorkspaceCleanupResponse struct {
+	Status         string           `json:"status"`
+	DryRun         bool             `json:"dry_run"`
+	BaseRoot       string           `json:"base_root"`
+	TenantID       string           `json:"tenant_id,omitempty"`
+	RetentionHours int              `json:"retention_hours"`
+	CandidateCount int              `json:"candidate_count"`
+	SelectedCount  int              `json:"selected_count"`
+	DeletedCount   int              `json:"deleted_count"`
+	FailedCount    int              `json:"failed_count"`
+	GeneratedAt    string           `json:"generated_at"`
+	Deleted        []map[string]any `json:"deleted"`
+	Failed         []map[string]any `json:"failed"`
+}
+
+type RuntimeStatusResponse map[string]any
+
 func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
 	if c.httpClient == nil {
 		c.httpClient = &http.Client{}
@@ -549,6 +590,51 @@ func (c *AIClient) RefreshMCPServerTools(ctx context.Context, tenantID, serverID
 		return nil, err
 	}
 	return response.Tools, nil
+}
+
+func (c *AIClient) ListWorkspaceSources(ctx context.Context, tenantID, userID string, maxEntries, maxDepth int) (*RuntimeWorkspaceSourceResponse, error) {
+	path := fmt.Sprintf("/api/v1/agents/workspace-sources?max_entries=%d&max_depth=%d", maxEntries, maxDepth)
+	var response RuntimeWorkspaceSourceResponse
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, tenantID, userID, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (c *AIClient) InspectWorkspaces(ctx context.Context, tenantID, userID string) (*RuntimeWorkspaceInspectionResponse, error) {
+	var response RuntimeWorkspaceInspectionResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/workspaces", nil, tenantID, userID, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (c *AIClient) CleanupWorkspaces(
+	ctx context.Context,
+	tenantID, userID string,
+	dryRun bool,
+	maxDelete int,
+	confirmed bool,
+) (*RuntimeWorkspaceCleanupResponse, error) {
+	path := fmt.Sprintf(
+		"/api/v1/agents/workspaces/cleanup?dry_run=%t&max_delete=%d&confirmed=%t",
+		dryRun,
+		maxDelete,
+		confirmed,
+	)
+	var response RuntimeWorkspaceCleanupResponse
+	if err := c.doJSON(ctx, http.MethodPost, path, nil, tenantID, userID, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (c *AIClient) GetRuntimeStatus(ctx context.Context, tenantID, userID string) (map[string]any, error) {
+	var response RuntimeStatusResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/runtime-status", nil, tenantID, userID, &response); err != nil {
+		return nil, err
+	}
+	return map[string]any(response), nil
 }
 
 func (c *AIClient) StreamAgentRunEvents(ctx context.Context, runID, tenantID string, afterSequence int64) (<-chan *database.AgentRunEvent, error) {

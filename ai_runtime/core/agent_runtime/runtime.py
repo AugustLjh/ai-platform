@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncIterator, Optional
+import os
+from copy import deepcopy
+from typing import Any, AsyncIterator, Optional
 
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
 from ai_runtime.core.agent_runtime.execution_modes import normalize_execution_mode
@@ -41,6 +43,10 @@ from ai_runtime.core.agent_runtime.tools.base import ToolLookupContext
 from ai_runtime.core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
 from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 from ai_runtime.core.agent_runtime.tracing import AgentTracer
+from ai_runtime.core.agent_runtime.workspace_lifecycle import (
+    WorkspaceLifecyclePolicy,
+    WorkspaceLifecycleScheduler,
+)
 from ai_runtime.core.agent_runtime.workspace_manager import WorkspaceManager
 from ai_runtime.core.uploads.bundle_store import get_attachment_bundle_store, normalize_bundle_ids
 
@@ -59,6 +65,23 @@ class AgentRuntime:
         self.subagent_registry = SubagentRegistry(db_pool, self.agent_repository)
         self.llm_service = AgentLLMService()
         self.workspace_manager = WorkspaceManager()
+        self.workspace_lifecycle = WorkspaceLifecycleScheduler(
+            self.workspace_manager,
+            WorkspaceLifecyclePolicy(
+                enabled=os.getenv("AGENT_WORKSPACE_LIFECYCLE_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+                interval_seconds=int(os.getenv("AGENT_WORKSPACE_LIFECYCLE_INTERVAL_SECONDS", "3600")),
+                dry_run=os.getenv("AGENT_WORKSPACE_LIFECYCLE_DRY_RUN", "false").lower() in {"1", "true", "yes", "on"},
+                max_delete_per_cycle=int(os.getenv("AGENT_WORKSPACE_LIFECYCLE_MAX_DELETE", "100")),
+                quota_alert_threshold_bytes=int(os.getenv("AGENT_WORKSPACE_LIFECYCLE_ALERT_BYTES", str(500 * 1024 * 1024))),
+                quota_alert_threshold_count=int(os.getenv("AGENT_WORKSPACE_LIFECYCLE_ALERT_COUNT", "200")),
+                expired_alert_threshold=int(os.getenv("AGENT_WORKSPACE_LIFECYCLE_ALERT_EXPIRED", "20")),
+            ),
+            alert_callback=self._handle_workspace_lifecycle_alert,
+            inspection_callback=self._handle_workspace_lifecycle_inspection,
+        )
+        self._started = False
+        self._workspace_lifecycle_alerts: list[dict[str, Any]] = []
+        self._workspace_lifecycle_last_run: dict[str, Any] | None = None
 
         self.tracer = AgentTracer(
             self.run_repository,
@@ -88,6 +111,129 @@ class AgentRuntime:
             subagent_handoff=self.subagent_handoff,
             workspace_manager=self.workspace_manager,
         )
+
+    async def _handle_workspace_lifecycle_alert(self, payload: dict) -> None:
+        # Keep lifecycle telemetry in service logs rather than user-visible run streams.
+        self._workspace_lifecycle_alerts.append(dict(payload))
+        self._workspace_lifecycle_alerts = self._workspace_lifecycle_alerts[-20:]
+        return None
+
+    async def _handle_workspace_lifecycle_inspection(self, payload: dict) -> None:
+        cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else None
+        inspection = payload.get("inspection") if isinstance(payload.get("inspection"), dict) else {}
+        self._workspace_lifecycle_last_run = {
+            "generated_at": payload.get("generated_at"),
+            "inspection": {
+                "workspace_count": int(inspection.get("workspace_count") or 0),
+                "expired_count": int(inspection.get("expired_count") or 0),
+                "quota_exceeded_count": int(inspection.get("quota_exceeded_count") or 0),
+                "total_size_bytes": int(inspection.get("total_size_bytes") or 0),
+                "total_file_count": int(inspection.get("total_file_count") or 0),
+            },
+            "cleanup": (
+                {
+                    "status": cleanup.get("status"),
+                    "dry_run": bool(cleanup.get("dry_run")),
+                    "candidate_count": int(cleanup.get("candidate_count") or 0),
+                    "selected_count": int(cleanup.get("selected_count") or 0),
+                    "deleted_count": int(cleanup.get("deleted_count") or 0),
+                    "failed_count": int(cleanup.get("failed_count") or 0),
+                }
+                if cleanup is not None
+                else None
+            ),
+            "alerts": [dict(alert) for alert in payload.get("alerts", []) if isinstance(alert, dict)],
+        }
+        return None
+
+    def runtime_status(self) -> dict[str, Any]:
+        workspace_inspection = self.workspace_manager.inspect_workspaces()
+        lifecycle_policy = self.workspace_lifecycle.policy
+        browser_runtime_available = False
+        browser_runtime_reason = "browser runtime is not configured"
+        try:
+            from ai_runtime.core.agent_runtime.tools.providers.web import _browser_runtime_status
+
+            browser_runtime_available, browser_runtime_reason = _browser_runtime_status()
+        except Exception as exc:  # pragma: no cover - defensive, runtime status must stay available
+            browser_runtime_reason = str(exc)
+
+        provider_names = sorted(self.registry.provider_names)
+        provider_name_set = set(provider_names)
+        return {
+            "status": "ready" if self._started else "idle",
+            "started": self._started,
+            "providers": {
+                "configured": provider_names,
+                "workspace": {
+                    "enabled": self.workspace_manager.config.enabled,
+                    "base_root": str(self.workspace_manager.config.base_root),
+                    "source_roots": [str(path) for path in self.workspace_manager.config.source_roots],
+                    "max_files": self.workspace_manager.config.max_files,
+                    "max_bytes": self.workspace_manager.config.max_bytes,
+                    "retention_hours": self.workspace_manager.config.retention_hours,
+                    "inspection": workspace_inspection,
+                },
+                "sandbox": {
+                    "enabled": "sandbox-exec" in provider_name_set,
+                    "configured": os.getenv("AGENT_SANDBOX_EXEC_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+                    "runner_configured": os.getenv("AGENT_SANDBOX_RUNNER_CONFIGURED", "false").lower() in {"1", "true", "yes", "on"},
+                    "runner_backend": os.getenv("AGENT_SANDBOX_RUNNER_BACKEND", "docker"),
+                    "docker_image": os.getenv("AGENT_SANDBOX_DOCKER_IMAGE", "python:3.12-slim"),
+                    "network_mode": os.getenv("AGENT_SANDBOX_DOCKER_NETWORK", "none"),
+                },
+                "web": {
+                    "enabled": "web" in provider_name_set,
+                    "configured": os.getenv("AGENT_WEB_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+                    "network_configured": os.getenv("AGENT_WEB_NETWORK_CONFIGURED", "false").lower() in {"1", "true", "yes", "on"},
+                    "allowed_domains": [
+                        item.strip()
+                        for item in os.getenv("AGENT_WEB_ALLOWED_DOMAINS", "").split(",")
+                        if item.strip()
+                    ],
+                    "denied_domains": [
+                        item.strip()
+                        for item in os.getenv("AGENT_WEB_DENIED_DOMAINS", "").split(",")
+                        if item.strip()
+                    ],
+                    "search_endpoint": os.getenv("AGENT_WEB_SEARCH_ENDPOINT", "").strip() or None,
+                },
+                "browser": {
+                    "enabled": os.getenv("AGENT_BROWSER_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+                    "configured": os.getenv("AGENT_BROWSER_CONFIGURED", "false").lower() in {"1", "true", "yes", "on"},
+                    "backend": os.getenv("AGENT_BROWSER_BACKEND", "playwright"),
+                    "name": os.getenv("AGENT_BROWSER_NAME", "chromium"),
+                    "runtime_available": browser_runtime_available,
+                    "runtime_reason": browser_runtime_reason,
+                },
+            },
+            "workspace_lifecycle": {
+                "enabled": lifecycle_policy.enabled,
+                "running": self.workspace_lifecycle.running,
+                "interval_seconds": lifecycle_policy.interval_seconds,
+                "dry_run": lifecycle_policy.dry_run,
+                "max_delete_per_cycle": lifecycle_policy.max_delete_per_cycle,
+                "quota_alert_threshold_bytes": lifecycle_policy.quota_alert_threshold_bytes,
+                "quota_alert_threshold_count": lifecycle_policy.quota_alert_threshold_count,
+                "expired_alert_threshold": lifecycle_policy.expired_alert_threshold,
+                "last_run_at_monotonic": self.workspace_lifecycle.last_run_at,
+                "last_completed_at": self.workspace_lifecycle.last_completed_at,
+                "last_run": deepcopy(self._workspace_lifecycle_last_run),
+                "recent_alerts": deepcopy(self._workspace_lifecycle_alerts[-5:]),
+            },
+        }
+
+    async def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        await self.workspace_lifecycle.start()
+
+    async def shutdown(self) -> None:
+        await self.workspace_lifecycle.stop()
+        await self.mcp_registry.close()
+        await self.state_store.close_all()
+        self._started = False
 
     def _hydrate_upload_context(
         self,
@@ -311,6 +457,20 @@ class AgentRuntime:
             }
             for tool in tools
         ]
+
+    async def list_workspace_sources(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str | None = None,
+        max_entries: int = 200,
+        max_depth: int = 2,
+    ) -> dict[str, Any]:
+        del tenant_id, user_id
+        return self.workspace_manager.list_available_sources(
+            max_entries=max_entries,
+            max_depth=max_depth,
+        )
 
     async def test_mcp_server(self, *, tenant_id: str, server_id: str) -> dict:
         return (await self.mcp_registry.test_server(tenant_id=tenant_id, server_id=server_id)).model_dump(mode="json")

@@ -33,14 +33,41 @@ def get_agent_runtime() -> AgentRuntime:
     return _runtime
 
 
+async def get_started_agent_runtime() -> AgentRuntime:
+    runtime = get_agent_runtime()
+    await runtime.start()
+    return runtime
+
+
 @router.post("/runs", response_model=AgentRunSummaryResponse, status_code=201)
 async def create_run(
     request: RuntimeCreateRunRequest,
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     payload = request.model_copy(update={"tenant_id": tenant_id, "user_id": user_id or request.user_id})
+    try:
+        return await runtime.create_run(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{agent_definition_id}/runs", response_model=AgentRunSummaryResponse, status_code=201)
+async def create_run_for_agent(
+    agent_definition_id: str,
+    request: RuntimeCreateRunRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    runtime = await get_started_agent_runtime()
+    payload = request.model_copy(
+        update={
+            "agent_definition_id": agent_definition_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id or request.user_id,
+        }
+    )
     try:
         return await runtime.create_run(payload)
     except Exception as exc:
@@ -53,7 +80,7 @@ async def list_tools(
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     agent_definition = None
     if agent_definition_id:
         agent_definition = await runtime.agent_repository.get_definition(agent_definition_id, tenant_id)
@@ -68,12 +95,38 @@ async def list_tools(
     return {"tools": tools, "total": len(tools), "execution_mode": execution_mode}
 
 
+@router.get("/workspace-sources")
+async def list_workspace_sources(
+    max_entries: int = Query(default=200, ge=1, le=1000),
+    max_depth: int = Query(default=2, ge=0, le=6),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    runtime = await get_started_agent_runtime()
+    return await runtime.list_workspace_sources(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        max_entries=max_entries,
+        max_depth=max_depth,
+    )
+
+
+@router.get("/runtime-status")
+async def get_runtime_status(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    del tenant_id, user_id
+    runtime = await get_started_agent_runtime()
+    return runtime.runtime_status()
+
+
 @router.get("/workspaces")
 async def inspect_workspaces(
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     inspection = runtime.workspace_manager.inspect_workspaces()
     workspaces = [
         item
@@ -103,7 +156,7 @@ async def cleanup_workspaces(
 ):
     if not dry_run and not confirmed:
         raise HTTPException(status_code=400, detail="workspace cleanup requires confirmed=true when dry_run=false")
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     result = runtime.workspace_manager.cleanup_expired_workspaces(
         dry_run=dry_run,
         max_delete=max_delete,
@@ -130,13 +183,13 @@ async def list_runs(
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     return await runtime.list_runs(tenant_id=tenant_id, user_id=user_id, limit=limit, offset=offset)
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunSummaryResponse)
 async def get_run(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.get_run(run_id, tenant_id)
     except ValueError as exc:
@@ -145,7 +198,7 @@ async def get_run(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
 
 @router.get("/runs/{run_id}/invocations", response_model=AgentSubagentInvocationListResponse)
 async def get_run_invocations(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.list_subagent_invocations(run_id, tenant_id)
     except ValueError as exc:
@@ -158,7 +211,7 @@ async def get_run_tree(
     max_depth: int = Query(default=4, ge=1, le=8),
     tenant_id: str = Depends(get_current_tenant_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.get_run_tree(run_id, tenant_id, max_depth=max_depth)
     except ValueError as exc:
@@ -173,7 +226,7 @@ async def get_run_events(
     limit: int = Query(default=500, ge=1, le=1000),
     tenant_id: str = Depends(get_current_tenant_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     if not stream:
         try:
             return await runtime.list_events(run_id, tenant_id, after_sequence=after_sequence, limit=limit)
@@ -203,7 +256,7 @@ async def get_run_events(
 
 @router.post("/runs/{run_id}/cancel", response_model=AgentRunSummaryResponse)
 async def cancel_run(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.cancel_run(run_id, tenant_id)
     except ValueError as exc:
@@ -216,7 +269,7 @@ async def resume_run(
     request: RuntimeResumeRunRequest,
     tenant_id: str = Depends(get_current_tenant_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.resume_run(run_id, tenant_id, input_patch=request.input_patch)
     except ValueError as exc:
@@ -231,7 +284,7 @@ async def review_run_artifact(
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.review_artifact(
             run_id=run_id,

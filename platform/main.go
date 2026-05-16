@@ -282,6 +282,38 @@ func main() {
 			guardMiddleware.Handler,
 		))
 
+	mux.Handle("/api/v1/agents/runtime-status",
+		chain(
+			http.HandlerFunc(agentHandler.HandleRuntimeStatus),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspace-sources",
+		chain(
+			http.HandlerFunc(agentHandler.HandleWorkspaceSources),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspaces/cleanup",
+		chain(
+			http.HandlerFunc(agentHandler.HandleCleanupWorkspaces),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspaces",
+		chain(
+			http.HandlerFunc(agentHandler.HandleInspectWorkspaces),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
 	mux.Handle("/api/v1/agents/",
 		chain(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

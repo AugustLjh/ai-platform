@@ -62,6 +62,10 @@
       <router-link :to="manageMCPRoute" class="inline-action">继续处理</router-link>
     </div>
 
+    <div v-if="runtimeStatusSummary" class="info-banner">
+      Runtime 治理状态：{{ runtimeStatusSummary }}
+    </div>
+
     <div v-if="selectedMCPWarnings.length > 0" class="warning-banner">
       <strong>当前选中的 MCP 绑定需要关注：</strong>
       <ul class="tips-list compact warning-action-list">
@@ -349,6 +353,53 @@
         <div class="card">
           <div class="section-head">
             <div>
+              <h2>运行时治理</h2>
+              <p>核对 workspace、sandbox、web、browser 和生命周期调度的真实可用状态。</p>
+            </div>
+            <button type="button" class="btn btn-secondary" :disabled="runtimeStatusLoading" @click="refreshRuntimeStatus">
+              {{ runtimeStatusLoading ? '刷新中...' : '刷新状态' }}
+            </button>
+          </div>
+
+          <div v-if="runtimeStatus" class="runtime-status-grid">
+            <article v-for="item in runtimeGovernanceCards" :key="item.key" :class="['runtime-card', `tone-${item.tone}`]">
+              <div class="runtime-card-head">
+                <strong>{{ item.label }}</strong>
+                <span>{{ item.statusLabel }}</span>
+              </div>
+              <p>{{ item.summary }}</p>
+              <small v-if="item.detail">{{ item.detail }}</small>
+            </article>
+          </div>
+          <div v-else class="panel-empty">当前还没有加载到运行时治理状态。</div>
+
+          <div v-if="workspaceInspectionSummary" class="runtime-inspection-panel">
+            <strong>Workspace 生命周期</strong>
+            <p>{{ workspaceInspectionSummary }}</p>
+            <div v-if="workspaceLifecycleLastRunSummary" class="runtime-lifecycle-last-run">
+              <span>最近巡检</span>
+              <p>{{ workspaceLifecycleLastRunSummary }}</p>
+            </div>
+            <div v-if="workspaceLifecycleAlerts.length > 0" class="runtime-alert-list">
+              <span>最近告警</span>
+              <ul>
+                <li v-for="(alert, index) in workspaceLifecycleAlerts" :key="`${alert.type}-${index}`">
+                  {{ lifecycleAlertLabel(alert) }}
+                </li>
+              </ul>
+            </div>
+            <div class="runtime-action-row">
+              <button type="button" class="btn btn-secondary btn-inline" :disabled="cleanupLoading" @click="runWorkspaceCleanup(true)">
+                {{ cleanupLoading ? '处理中...' : '试运行清理' }}
+              </button>
+            </div>
+            <p v-if="workspaceCleanupSummary" class="runtime-cleanup-summary">{{ workspaceCleanupSummary }}</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-head">
+            <div>
               <h2>页面说明</h2>
               <p>配置层和结果层已经分开，这里只负责来源绑定与结果预览。</p>
             </div>
@@ -397,6 +448,8 @@ const selectedSkillIds = ref([])
 const selectedMCPServerIds = ref([])
 const selectedKnowledgeBaseIds = ref([])
 const selectedSubagentIds = ref([])
+const runtimeStatusLoading = ref(false)
+const cleanupLoading = ref(false)
 
 const agent = computed(() => agentsStore.currentAgent)
 const skills = computed(() => agentsStore.skills)
@@ -406,6 +459,9 @@ const mcpServers = computed(() => agentsStore.mcpServers)
 const subagents = computed(() => agentsStore.subagents)
 const knowledgeBases = computed(() => knowledgeStore.knowledgeBases)
 const errorMessage = computed(() => agentsStore.error || knowledgeStore.error || '')
+const runtimeStatus = computed(() => agentsStore.runtimeStatus)
+const workspaceInspection = computed(() => agentsStore.workspaceInspection || runtimeStatus.value?.workspace?.inspection || null)
+const workspaceCleanupResult = computed(() => agentsStore.workspaceCleanupResult)
 const fixedSkillIds = computed(() => skills.value
   .filter((skill) => isFixedSkill(skill))
   .map((skill) => skill.id)
@@ -420,6 +476,54 @@ const manageMCPRoute = computed(() => buildMCPManageRoute(focusedMCPServerId.val
   agentId: agent.value?.id || '',
   agentName: agent.value?.name || ''
 }))
+const runtimeStatusSummary = computed(() => {
+  if (!runtimeStatus.value) return ''
+  const providers = Array.isArray(runtimeStatus.value.configuredProviders) ? runtimeStatus.value.configuredProviders.length : 0
+  const lifecycle = runtimeStatus.value.workspaceLifecycle?.enabled
+    ? `生命周期调度${runtimeStatus.value.workspaceLifecycle.running ? '运行中' : '已启用'}`
+    : '生命周期调度未启用'
+  return `${runtimeStatus.value.started ? 'runtime 已启动' : 'runtime 未启动'} · 已配置 ${providers} 个 provider · ${lifecycle}`
+})
+const workspaceInspectionSummary = computed(() => {
+  const inspection = workspaceInspection.value
+  if (!inspection) return ''
+  return [
+    `共 ${Number(inspection.workspaceCount || inspection.workspace_count || 0)} 个 workspace`,
+    `过期 ${Number(inspection.expiredCount || inspection.expired_count || 0)} 个`,
+    `超配额 ${Number(inspection.quotaExceededCount || inspection.quota_exceeded_count || 0)} 个`,
+    `总大小 ${formatBytes(Number(inspection.totalSizeBytes || inspection.total_size_bytes || 0))}`
+  ].join(' · ')
+})
+const workspaceCleanupSummary = computed(() => {
+  const result = workspaceCleanupResult.value
+  if (!result) return ''
+  return `${result.dry_run ? '试运行' : '正式清理'}：候选 ${Number(result.candidate_count || result.candidateCount || 0)} 个，删除 ${Number(result.deleted_count || result.deletedCount || 0)} 个，失败 ${Number(result.failed_count || result.failedCount || 0)} 个。`
+})
+const workspaceLifecycleLastRunSummary = computed(() => {
+  const lifecycle = runtimeStatus.value?.workspaceLifecycle
+  const lastRun = lifecycle?.lastRun
+  if (!lastRun) return ''
+  const inspection = lastRun.inspection || {}
+  const cleanup = lastRun.cleanup || null
+  const generatedAt = formatDateTime(lastRun.generatedAt || lifecycle.lastCompletedAt)
+  const base = [
+    `时间 ${generatedAt || '未知'}`,
+    `workspace ${Number(inspection.workspace_count || inspection.workspaceCount || 0)} 个`,
+    `过期 ${Number(inspection.expired_count || inspection.expiredCount || 0)} 个`,
+    `超配额 ${Number(inspection.quota_exceeded_count || inspection.quotaExceededCount || 0)} 个`
+  ]
+  if (cleanup) {
+    base.push(`${cleanup.dry_run ? '试运行' : '清理'}候选 ${Number(cleanup.candidate_count || cleanup.candidateCount || 0)} 个，失败 ${Number(cleanup.failed_count || cleanup.failedCount || 0)} 个`)
+  }
+  return base.join(' · ')
+})
+const workspaceLifecycleAlerts = computed(() => {
+  const lifecycle = runtimeStatus.value?.workspaceLifecycle || {}
+  const alerts = Array.isArray(lifecycle.recentAlerts) && lifecycle.recentAlerts.length > 0
+    ? lifecycle.recentAlerts
+    : (Array.isArray(lifecycle.lastRun?.alerts) ? lifecycle.lastRun.alerts : [])
+  return alerts.slice(-5).reverse()
+})
 
 const normalizeIds = (value = []) => [...new Set((Array.isArray(value) ? value : []).filter(Boolean))].sort()
 
@@ -464,7 +568,8 @@ const loadPage = async () => {
     agentsStore.fetchMCPServers().catch(() => []),
     agentsStore.fetchSubagents().catch(() => []),
     knowledgeStore.fetchKnowledgeBases(1, 100).catch(() => []),
-    agentsStore.fetchTools(agentId).catch(() => [])
+    agentsStore.fetchTools(agentId).catch(() => []),
+    agentsStore.fetchRuntimeStatus().catch(() => [])
   ])
   syncSelections()
 }
@@ -505,6 +610,37 @@ const saveBindings = async () => {
     toastStore.showToast({ type: 'error', message: agentsStore.error || '保存失败' })
   } finally {
     saving.value = false
+  }
+}
+
+const refreshRuntimeStatus = async () => {
+  runtimeStatusLoading.value = true
+  try {
+    await agentsStore.fetchRuntimeStatus()
+    toastStore.showToast({ type: 'success', message: '运行时治理状态已刷新' })
+  } catch (error) {
+    console.error('Failed to refresh runtime status:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '刷新运行时治理状态失败' })
+  } finally {
+    runtimeStatusLoading.value = false
+  }
+}
+
+const runWorkspaceCleanup = async (dryRun = true) => {
+  cleanupLoading.value = true
+  try {
+    await agentsStore.cleanupWorkspaces({
+      dry_run: dryRun,
+      confirmed: dryRun ? false : true,
+      max_delete: 50
+    })
+    await agentsStore.fetchRuntimeStatus().catch(() => [])
+    toastStore.showToast({ type: 'success', message: dryRun ? 'workspace 清理试运行已完成' : 'workspace 清理已完成' })
+  } catch (error) {
+    console.error('Failed to cleanup workspaces:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || 'workspace 清理失败' })
+  } finally {
+    cleanupLoading.value = false
   }
 }
 
@@ -797,6 +933,100 @@ const countToolsByKind = (kind) => availableTools.value.filter((tool) => tool.ki
 const isServerSelected = (serverId) => selectedMCPServerIds.value.includes(serverId)
 
 const isServerSelectionLocked = (server) => Boolean(server?.availability) && !isServerSelected(server?.id) && !server.availability.bindable
+
+const formatBytes = (value) => {
+  const bytes = Number(value || 0)
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
+const formatDateTime = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString()
+}
+
+const lifecycleAlertLabel = (alert = {}) => {
+  const typeMap = {
+    expired_workspaces: '过期 workspace 数量超过阈值',
+    quota_exceeded_workspaces: '超配额 workspace 数量超过阈值',
+    quota_bytes: 'workspace 总存储超过阈值'
+  }
+  const label = typeMap[alert.type] || alert.message || alert.type || '生命周期告警'
+  const hasBytes = Object.prototype.hasOwnProperty.call(alert, 'bytes') || alert.type === 'quota_bytes'
+  if (hasBytes) {
+    const value = formatBytes(Number(alert.bytes || 0))
+    const threshold = formatBytes(Number(alert.threshold || 0))
+    return `${label}：${value} / ${threshold}`
+  }
+  return `${label}：${Number(alert.count || 0)} / ${Number(alert.threshold || 0)}`
+}
+
+const runtimeGovernanceCards = computed(() => {
+  const status = runtimeStatus.value
+  if (!status) return []
+  const cards = []
+  const add = (key, label, ok, summary, detail = '') => {
+    cards.push({
+      key,
+      label,
+      tone: ok ? 'ready' : 'warning',
+      statusLabel: ok ? '可用' : '需处理',
+      summary,
+      detail
+    })
+  }
+  add(
+    'workspace',
+    'Workspace',
+    Boolean(status.workspace?.enabled),
+    status.workspace?.enabled
+      ? `base root 已配置，当前 ${status.workspace?.inspection?.workspaceCount || 0} 个 run workspace。`
+      : 'workspace manager 未启用。',
+    status.workspace?.baseRoot || ''
+  )
+  add(
+    'sandbox',
+    'Sandbox',
+    Boolean(status.sandbox?.enabled && status.sandbox?.runnerConfigured),
+    status.sandbox?.enabled && status.sandbox?.runnerConfigured
+      ? `runner=${status.sandbox?.runnerBackend || 'unknown'}，网络=${status.sandbox?.networkMode || 'unknown'}。`
+      : 'sandbox provider 或 runner 尚未完成配置。',
+    status.sandbox?.dockerImage || ''
+  )
+  add(
+    'web',
+    'Web',
+    Boolean(status.web?.enabled && status.web?.networkConfigured),
+    status.web?.enabled && status.web?.networkConfigured
+      ? `允许域名 ${status.web?.allowedDomains?.length || 0} 个，搜索端点 ${status.web?.searchEndpoint || '未配置'}。`
+      : 'web provider 或网络策略尚未完成配置。',
+    status.web?.deniedDomains?.length ? `deny ${status.web.deniedDomains.join(', ')}` : ''
+  )
+  add(
+    'browser',
+    'Browser',
+    Boolean(status.browser?.enabled && status.browser?.configured && status.browser?.runtimeAvailable),
+    status.browser?.enabled && status.browser?.configured && status.browser?.runtimeAvailable
+      ? `${status.browser?.backend || 'browser'} / ${status.browser?.name || 'default'} 已就绪。`
+      : 'browser 开关、配置或运行时依赖尚未满足。',
+    status.browser?.runtimeReason || ''
+  )
+  add(
+    'lifecycle',
+    'Lifecycle',
+    Boolean(status.workspaceLifecycle?.enabled),
+    status.workspaceLifecycle?.enabled
+      ? `周期 ${status.workspaceLifecycle?.intervalSeconds || 0}s，${status.workspaceLifecycle?.dryRun ? 'dry-run' : '执行删除'}，最近告警 ${workspaceLifecycleAlerts.value.length} 条。`
+      : 'workspace 生命周期调度未启用。',
+    status.workspaceLifecycle?.running ? `调度器运行中${status.workspaceLifecycle?.lastCompletedAt ? `，最近完成 ${formatDateTime(status.workspaceLifecycle.lastCompletedAt)}` : ''}` : '调度器未运行'
+  )
+  return cards
+})
 
 watch(() => route.params.id, async () => {
   try {
@@ -1211,6 +1441,102 @@ onMounted(async () => {
 .capability-item.status-missing > span {
   background: rgba(148, 163, 184, 0.18);
   color: #475569;
+}
+
+.runtime-status-grid {
+  margin-top: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.runtime-card {
+  padding: 14px 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.runtime-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.runtime-card-head span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.runtime-card p {
+  margin-top: 6px;
+  color: var(--gray-700);
+  font-size: 13px;
+}
+
+.runtime-card small {
+  display: block;
+  margin-top: 6px;
+  color: var(--gray-500);
+}
+
+.runtime-card.tone-ready {
+  border-color: rgba(16, 185, 129, 0.22);
+  background: rgba(16, 185, 129, 0.06);
+}
+
+.runtime-card.tone-warning {
+  border-color: rgba(245, 158, 11, 0.22);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.runtime-inspection-panel {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  background: rgba(14, 165, 233, 0.05);
+}
+
+.runtime-inspection-panel p {
+  margin-top: 6px;
+  color: var(--gray-700);
+}
+
+.runtime-action-row {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.runtime-cleanup-summary {
+  margin-top: 10px;
+  font-size: 13px;
+  color: #0f766e;
+}
+
+.runtime-lifecycle-last-run,
+.runtime-alert-list {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(14, 165, 233, 0.16);
+}
+
+.runtime-lifecycle-last-run span,
+.runtime-alert-list span {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0369a1;
+}
+
+.runtime-alert-list ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--gray-700);
+  font-size: 13px;
 }
 
 .tool-item {

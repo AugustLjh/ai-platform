@@ -36,29 +36,30 @@ def configure_tool_registry(registry, *, mcp_registry: MCPRegistry) -> None:
     enabled_providers = set(provider_names)
 
     if "builtin" in enabled_providers:
+        registry.register_provider_name("builtin")
         register_builtin_tools(registry)
     if "knowledge" in enabled_providers:
         register_knowledge_tools(registry)
     if "mcp" in enabled_providers:
-        registry.register_provider(MCPToolProvider(mcp_registry))
+        registry.register_provider(MCPToolProvider(mcp_registry), name="mcp")
     project_context_enabled = (
         "project-context" in enabled_providers
         or "project_context" in enabled_providers
         or "engineering" in enabled_providers
     )
     if project_context_enabled and _env_bool("AGENT_PROJECT_CONTEXT_ENABLED", _env_bool("AGENT_ENGINEERING_ENABLED", True)):
-        registry.register_provider(EngineeringToolProvider.from_env())
+        registry.register_provider(EngineeringToolProvider.from_env(), name="project-context")
     if "workspace" in enabled_providers and _env_bool("AGENT_WORKSPACE_ENABLED", False):
-        registry.register_provider(WorkspaceToolProvider.from_env())
+        registry.register_provider(WorkspaceToolProvider.from_env(), name="workspace")
     sandbox_exec_enabled = (
         "sandbox-exec" in enabled_providers
         or "sandbox_exec" in enabled_providers
         or "sandbox" in enabled_providers
     )
     if sandbox_exec_enabled and _env_bool("AGENT_SANDBOX_EXEC_ENABLED", False):
-        registry.register_provider(SandboxExecToolProvider.from_env())
+        registry.register_provider(SandboxExecToolProvider.from_env(), name="sandbox-exec")
     if "web" in enabled_providers and _env_bool("AGENT_WEB_ENABLED", False):
-        registry.register_provider(WebToolProvider.from_env())
+        registry.register_provider(WebToolProvider.from_env(), name="web")
 
     unknown_providers = sorted(
         name for name in enabled_providers

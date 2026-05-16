@@ -178,6 +178,54 @@
           {{ uploadError }}
         </div>
 
+        <div v-if="workspaceError" class="error-banner upload-error">
+          {{ workspaceError }}
+        </div>
+
+        <div class="workspace-bind-shell">
+          <div class="workspace-bind-head">
+            <strong>Workspace 绑定</strong>
+            <button
+              type="button"
+              class="workspace-refresh-btn"
+              :disabled="workspaceLoading"
+              @click="loadWorkspaceSources"
+            >
+              {{ workspaceLoading ? '刷新中...' : '刷新目录' }}
+            </button>
+          </div>
+          <div class="workspace-bind-grid">
+            <label class="workspace-option">
+              <span>模式</span>
+              <select v-model="workspaceMode" class="workspace-select">
+                <option value="none">仅聊天上下文</option>
+                <option value="upload_bundle">使用上传文件创建副本</option>
+                <option value="existing">从允许目录创建副本</option>
+              </select>
+            </label>
+
+            <label v-if="workspaceMode === 'existing'" class="workspace-option workspace-option-wide">
+              <span>项目目录</span>
+              <select v-model="selectedWorkspacePath" class="workspace-select">
+                <option value="">请选择允许目录</option>
+                <option
+                  v-for="source in workspaceSources"
+                  :key="source.path"
+                  :value="source.path"
+                >
+                  {{ formatWorkspaceSource(source) }}
+                </option>
+              </select>
+            </label>
+          </div>
+          <div class="workspace-bind-meta">
+            <span v-if="workspaceMode === 'upload_bundle'">当前会把上传文件物化为 run 级 workspace 副本。</span>
+            <span v-else-if="workspaceMode === 'existing'">当前会从允许目录复制项目到 run workspace，不会直接写原目录。</span>
+            <span v-else>当前不绑定 workspace，只基于聊天上下文、上传文件摘要和授权扩展执行。</span>
+            <span v-if="workspaceSummaryText">{{ workspaceSummaryText }}</span>
+          </div>
+        </div>
+
         <div v-if="bundles.length > 0" class="composer-upload-list">
           <div
             v-for="bundle in bundles"
@@ -324,6 +372,8 @@ import { useToastStore } from '@/store/toast'
 import { getRunAnswerText } from '@/utils/agentArtifacts'
 import { renderMarkdown } from '@/utils/markdown'
 import { useUploadBundles } from '@/composables/useUploadBundles'
+import { agentsAPI } from '@/api'
+import { buildWorkspaceSourcePayload, getAgentWorkspaceBindingPolicy, formatWorkspaceSource } from '@/utils/workspaceBindings'
 
 const route = useRoute()
 const router = useRouter()
@@ -338,6 +388,12 @@ const surfaceOpen = ref(false)
 const threadRef = ref(null)
 const textareaRef = ref(null)
 const draftSessionId = ref('')
+const workspaceMode = ref('none')
+const selectedWorkspacePath = ref('')
+const workspaceSources = ref([])
+const workspaceInspection = ref(null)
+const workspaceLoading = ref(false)
+const workspaceError = ref('')
 const {
   bundles,
   bundleIds,
@@ -425,6 +481,31 @@ const requestedSessionId = computed(() => {
 const currentSessionId = computed(() => {
   const value = String(currentRun.value?.sessionId || requestedSessionId.value || draftSessionId.value || '').trim()
   return value || ''
+})
+const currentWorkspaceSource = computed(() => {
+  const source = currentRun.value?.input?.workspace_source || currentRun.value?.input?.workspace || {}
+  return source && typeof source === 'object' ? source : {}
+})
+const defaultWorkspacePolicy = computed(() => getAgentWorkspaceBindingPolicy(agent.value || {}))
+const workspaceSummaryText = computed(() => {
+  const inspection = workspaceInspection.value || {}
+  const parts = []
+  if (typeof inspection.workspace_count === 'number') {
+    parts.push(`现有 ${inspection.workspace_count} 个 workspace`)
+  }
+  if (typeof inspection.expired_count === 'number' && inspection.expired_count > 0) {
+    parts.push(`过期 ${inspection.expired_count} 个`)
+  }
+  if (workspaceMode.value === 'existing' && selectedWorkspacePath.value) {
+    parts.push(`将复制 ${selectedWorkspacePath.value}`)
+  }
+  if (workspaceMode.value === 'upload_bundle' && bundleIds.value.length > 0) {
+    parts.push(`将物化 ${bundleIds.value.length} 个上传包`)
+  }
+  if (!currentRun.value && defaultWorkspacePolicy.value.enabled && workspaceMode.value !== 'none') {
+    parts.push('已套用智能体默认绑定策略')
+  }
+  return parts.join(' · ')
 })
 
 const createSessionId = () => {
@@ -717,7 +798,8 @@ const loadConversation = async () => {
 
   await Promise.all([
     agentsStore.fetchAgent(agentId),
-    agentsStore.fetchRuns()
+    agentsStore.fetchRuns(),
+    loadWorkspaceSources()
   ])
 
   const latestRun = agentsStore.sortedRuns.find((run) => {
@@ -732,10 +814,62 @@ const loadConversation = async () => {
   if (latestRun?.id) {
     draftSessionId.value = latestRun.sessionId || requestedSessionId.value || ''
     await agentsStore.openRun(latestRun.id, { stream: true })
+    syncWorkspaceBindingFromRun()
     return
   }
 
   draftSessionId.value = requestedSessionId.value || createSessionId()
+  syncWorkspaceBindingFromRun()
+}
+
+const syncWorkspaceBindingFromRun = () => {
+  const source = currentWorkspaceSource.value
+  const sourceType = String(source.type || source.source_type || '').trim()
+  if (sourceType === 'upload_bundle') {
+    workspaceMode.value = 'upload_bundle'
+    selectedWorkspacePath.value = ''
+    return
+  }
+  if (sourceType === 'existing' || sourceType === 'bound' || sourceType === 'local_path') {
+    workspaceMode.value = 'existing'
+    selectedWorkspacePath.value = String(source.root || source.path || '').trim()
+    return
+  }
+  if (!currentRun.value && defaultWorkspacePolicy.value.enabled) {
+    workspaceMode.value = defaultWorkspacePolicy.value.mode
+    selectedWorkspacePath.value = defaultWorkspacePolicy.value.path
+    return
+  }
+  workspaceMode.value = 'none'
+  selectedWorkspacePath.value = ''
+}
+
+const loadWorkspaceSources = async () => {
+  workspaceLoading.value = true
+  workspaceError.value = ''
+  try {
+    const [{ data: sourcesData }, { data: inspectionData }] = await Promise.all([
+      agentsAPI.listWorkspaceSources(),
+      agentsAPI.inspectWorkspaces()
+    ])
+    workspaceSources.value = Array.isArray(sourcesData?.sources) ? sourcesData.sources : []
+    workspaceInspection.value = inspectionData || null
+  } catch (error) {
+    console.error('Failed to load workspace sources:', error)
+    workspaceError.value = error?.response?.data?.detail || error?.message || '加载 workspace 目录失败'
+  } finally {
+    workspaceLoading.value = false
+  }
+}
+
+const resolveWorkspaceSourcePayload = () => {
+  const existingBundleIds = Array.isArray(currentRun.value?.input?.upload_bundle_ids) ? currentRun.value.input.upload_bundle_ids : []
+  return buildWorkspaceSourcePayload({
+    mode: workspaceMode.value,
+    selectedPath: selectedWorkspacePath.value,
+    bundleIds: bundleIds.value,
+    existingBundleIds
+  })
 }
 
 const scrollThreadToBottom = async () => {
@@ -838,6 +972,7 @@ const submitMessage = async () => {
 
   submitLoading.value = true
   try {
+    const workspaceSource = resolveWorkspaceSourcePayload()
     const mergedBundleIds = bundleIds.value.length > 0
       ? Array.from(new Set([
           ...(Array.isArray(currentRun.value?.input?.upload_bundle_ids) ? currentRun.value.input.upload_bundle_ids : []),
@@ -849,6 +984,9 @@ const submitMessage = async () => {
       if (mergedBundleIds.length > 0) {
         inputPatch.upload_bundle_ids = mergedBundleIds
       }
+      if (workspaceSource) {
+        inputPatch.workspace_source = workspaceSource
+      }
       await agentsStore.resumeRun(currentRun.value.id, inputPatch)
       toastStore.showToast({ type: 'success', message: '已继续执行' })
     } else {
@@ -856,7 +994,8 @@ const submitMessage = async () => {
       const createdRun = await agentsStore.createRun(agent.value.id, {
         input: {
           message,
-          ...(bundleIds.value.length > 0 ? { upload_bundle_ids: bundleIds.value } : {})
+          ...(bundleIds.value.length > 0 ? { upload_bundle_ids: bundleIds.value } : {}),
+          ...(workspaceSource ? { workspace_source: workspaceSource } : {})
         },
         session_id: nextSessionId,
         metadata: {},
@@ -919,6 +1058,7 @@ watch(() => [route.params.id, route.query.session], async () => {
 
 watch(() => currentRun.value?.id, () => {
   surfaceOpen.value = false
+  syncWorkspaceBindingFromRun()
 })
 
 watch(showStructuredSurface, (visible) => {
@@ -962,6 +1102,7 @@ const formatTime = (value) => {
     minute: '2-digit'
   })
 }
+
 </script>
 
 <style scoped>
@@ -1363,6 +1504,78 @@ const formatTime = (value) => {
   display: none;
 }
 
+.workspace-bind-shell {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.workspace-bind-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #0f172a;
+}
+
+.workspace-refresh-btn {
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  background: rgba(15, 118, 110, 0.06);
+  color: #0f766e;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workspace-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.workspace-bind-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.workspace-option {
+  display: grid;
+  gap: 8px;
+}
+
+.workspace-option span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.workspace-option-wide {
+  grid-column: 1 / -1;
+}
+
+.workspace-select {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #fff;
+  color: #0f172a;
+  padding: 11px 12px;
+}
+
+.workspace-bind-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 12px;
+  color: #64748b;
+}
+
 .composer-form {
   display: block;
 }
@@ -1729,6 +1942,10 @@ const formatTime = (value) => {
 
   .composer-tool-meta {
     padding-left: 0;
+  }
+
+  .workspace-bind-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

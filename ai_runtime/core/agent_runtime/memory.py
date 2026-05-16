@@ -39,6 +39,14 @@ class RuntimeStateStore:
         for queue in self._subscribers.pop(run_id, []):
             await queue.put(None)
 
+    async def close_all(self) -> None:
+        for run_id in list(self._subscribers.keys()):
+            await self.close(run_id)
+        for task in list(self._tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._tasks.clear()
+
     async def subscribe(self, run_id: str) -> AsyncIterator[AgentRunEvent]:
         queue: asyncio.Queue[Optional[AgentRunEvent]] = asyncio.Queue()
         self._subscribers[run_id].append(queue)

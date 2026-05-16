@@ -201,6 +201,47 @@ type AgentToolListResponse struct {
 	ExecutionMode map[string]any   `json:"execution_mode,omitempty"`
 }
 
+type AgentWorkspaceSourceResponse struct {
+	Status      string           `json:"status"`
+	Enabled     bool             `json:"enabled"`
+	BaseRoot    string           `json:"base_root"`
+	SourceRoots []string         `json:"source_roots"`
+	Count       int              `json:"count"`
+	MaxEntries  int              `json:"max_entries"`
+	MaxDepth    int              `json:"max_depth"`
+	Sources     []map[string]any `json:"sources"`
+}
+
+type AgentWorkspaceInspectionResponse struct {
+	Status             string           `json:"status"`
+	BaseRoot           string           `json:"base_root"`
+	RetentionHours     int              `json:"retention_hours"`
+	WorkspaceCount     int              `json:"workspace_count"`
+	ExpiredCount       int              `json:"expired_count"`
+	QuotaExceededCount int              `json:"quota_exceeded_count"`
+	TotalSizeBytes     int64            `json:"total_size_bytes"`
+	TotalFileCount     int64            `json:"total_file_count"`
+	GeneratedAt        string           `json:"generated_at"`
+	Workspaces         []map[string]any `json:"workspaces"`
+}
+
+type AgentWorkspaceCleanupResponse struct {
+	Status         string           `json:"status"`
+	DryRun         bool             `json:"dry_run"`
+	BaseRoot       string           `json:"base_root"`
+	TenantID       string           `json:"tenant_id,omitempty"`
+	RetentionHours int              `json:"retention_hours"`
+	CandidateCount int              `json:"candidate_count"`
+	SelectedCount  int              `json:"selected_count"`
+	DeletedCount   int              `json:"deleted_count"`
+	FailedCount    int              `json:"failed_count"`
+	GeneratedAt    string           `json:"generated_at"`
+	Deleted        []map[string]any `json:"deleted"`
+	Failed         []map[string]any `json:"failed"`
+}
+
+type AgentRuntimeStatusResponse map[string]any
+
 type MCPServerUpsertRequest struct {
 	Name      string          `json:"name"`
 	Transport string          `json:"transport"`
@@ -674,6 +715,73 @@ func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDe
 		Total:         len(result),
 		ExecutionMode: response.ExecutionMode,
 	}, nil
+}
+
+func (s *AgentService) ListWorkspaceSources(ctx context.Context, tenantID, userID string, maxEntries, maxDepth int) (*AgentWorkspaceSourceResponse, error) {
+	response, err := s.aiClient.ListWorkspaceSources(ctx, tenantID, userID, maxEntries, maxDepth)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentWorkspaceSourceResponse{
+		Status:      response.Status,
+		Enabled:     response.Enabled,
+		BaseRoot:    response.BaseRoot,
+		SourceRoots: response.SourceRoots,
+		Count:       response.Count,
+		MaxEntries:  response.MaxEntries,
+		MaxDepth:    response.MaxDepth,
+		Sources:     response.Sources,
+	}, nil
+}
+
+func (s *AgentService) InspectWorkspaces(ctx context.Context, tenantID, userID string) (*AgentWorkspaceInspectionResponse, error) {
+	response, err := s.aiClient.InspectWorkspaces(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentWorkspaceInspectionResponse{
+		Status:             response.Status,
+		BaseRoot:           response.BaseRoot,
+		RetentionHours:     response.RetentionHours,
+		WorkspaceCount:     response.WorkspaceCount,
+		ExpiredCount:       response.ExpiredCount,
+		QuotaExceededCount: response.QuotaExceededCount,
+		TotalSizeBytes:     response.TotalSizeBytes,
+		TotalFileCount:     response.TotalFileCount,
+		GeneratedAt:        response.GeneratedAt,
+		Workspaces:         response.Workspaces,
+	}, nil
+}
+
+func (s *AgentService) CleanupWorkspaces(
+	ctx context.Context,
+	tenantID, userID string,
+	dryRun bool,
+	maxDelete int,
+	confirmed bool,
+) (*AgentWorkspaceCleanupResponse, error) {
+	response, err := s.aiClient.CleanupWorkspaces(ctx, tenantID, userID, dryRun, maxDelete, confirmed)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentWorkspaceCleanupResponse{
+		Status:         response.Status,
+		DryRun:         response.DryRun,
+		BaseRoot:       response.BaseRoot,
+		TenantID:       response.TenantID,
+		RetentionHours: response.RetentionHours,
+		CandidateCount: response.CandidateCount,
+		SelectedCount:  response.SelectedCount,
+		DeletedCount:   response.DeletedCount,
+		FailedCount:    response.FailedCount,
+		GeneratedAt:    response.GeneratedAt,
+		Deleted:        response.Deleted,
+		Failed:         response.Failed,
+	}, nil
+}
+
+func (s *AgentService) GetRuntimeStatus(ctx context.Context, tenantID, userID string) (map[string]any, error) {
+	return s.aiClient.GetRuntimeStatus(ctx, tenantID, userID)
 }
 
 func (s *AgentService) ListSkills(tenantID string) ([]*database.Skill, error) {
