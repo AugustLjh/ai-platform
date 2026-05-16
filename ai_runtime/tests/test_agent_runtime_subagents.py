@@ -1374,12 +1374,102 @@ async def test_orchestrator_collects_pending_subagent_completion_without_double_
     assert terminal is None
     assert runtime_context["pending_subagent_invocations"] == []
     assert runtime_context["step_history"][0]["result"]["status"] == "completed"
+    assert runtime_context["resolved_subagent_invocations"][0]["child_run_id"] == "child-run-1"
+    assert runtime_context["resolved_subagent_invocations"][0]["pending_completion"] is True
     history = runtime_context["subagent_governance_ledger"]["targets"]["parallel-worker"]["history"]
     assert history["attempt_count"] == 1
     assert history["active_child_count"] == 0
     assert runtime_context["subagent_governance_ledger"]["targets"]["parallel-worker"]["usage"]["total_tokens"] == 120
     completed_event = next(event for event in tracer.events if event["event_type"] == "subagent.completed")
     assert completed_event["payload"]["child_run_id"] == "child-run-1"
+
+
+async def test_orchestrator_collects_async_subagent_artifacts_into_parent_context():
+    target = SubagentTarget(
+        slug="parallel-worker",
+        name="Parallel Worker",
+        agent_definition_id="agent-worker",
+        runtime_policy={"delegation_mode": "parallel_worker"},
+    )
+    artifact = {
+        "artifact_type": "verification_report",
+        "name": "async-worker-report",
+        "payload": {"status": "passed"},
+    }
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-1",
+        status="completed",
+        target=target,
+        summary="Async worker verified the change.",
+        final_output_text="Async worker verified the change.",
+        artifacts=[artifact],
+        progress={
+            "protocol_version": "managed-subagent.progress.v1",
+            "state": "completed",
+            "summary": "Async worker verified the change.",
+            "artifact_count": 1,
+        },
+        metadata={
+            "invocation_id": "invocation-1",
+            "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+            "review_result": {"protocol_version": "managed-subagent.review-result.v1", "decision": "not_required"},
+            "governance_policy": {
+                "protocol_version": "managed-subagent.governance.v1",
+                "target_slug": "parallel-worker",
+            },
+        },
+    )
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=object(),
+        summarizer=object(),
+        llm_service=None,
+        tracer=FakeTracer(),
+        agent_repository=None,
+        run_repository=FakeRunRepository(),
+        tool_call_repository=None,
+        state_store=FakeStateStore(),
+        subagent_handoff=FakeHandoff(delegation),
+    )
+    runtime_context = {
+        "step_history": [],
+        "pending_subagent_invocations": [
+            {
+                "child_run_id": "child-run-1",
+                "target": target.model_dump(mode="json"),
+                "parent_step_id": "step-1",
+                "parent_step_index": 1,
+                "planner_result": PlannerResult(
+                    action=PlannerAction(
+                        type="delegate",
+                        title="Ask parallel worker",
+                        delegate_target="parallel-worker",
+                        delegate_task="Run async verification",
+                    ),
+                    reasoning="Parallelizable verification.",
+                    iteration=2,
+                ).model_dump(mode="json"),
+                "delegation_gate": {"governance": {"prior_usage": {}}},
+                "invocation_id": "invocation-1",
+                "handoff_envelope": {"protocol_version": "managed-subagent.v1"},
+                "child_input": {"message": "Run async verification"},
+            }
+        ],
+    }
+
+    terminal = await orchestrator._collect_pending_subagent_invocations(
+        run=_build_run(),
+        runtime_context=runtime_context,
+    )
+
+    assert terminal is None
+    assert runtime_context["pending_subagent_invocations"] == []
+    assert runtime_context["promoted_artifacts"][0]["artifact_type"] == "verification_report"
+    assert runtime_context["step_history"][0]["result"]["promoted_artifacts"][0]["name"] == "async-worker-report"
+    resolved = runtime_context["resolved_subagent_invocations"][0]
+    assert resolved["child_run_id"] == "child-run-1"
+    assert resolved["artifacts"][0]["name"] == "async-worker-report"
+    assert resolved["promoted_artifacts"][0]["name"] == "async-worker-report"
 
 
 async def test_orchestrator_subagent_waiting_user_event_exposes_protocol_question():

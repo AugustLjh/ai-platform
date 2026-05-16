@@ -104,6 +104,10 @@ export const agentsAPI = {
     return api.post('/api/v1/agents/workspaces/cleanup', null, { params })
   },
 
+  cleanupWorkspaceLocks(params = {}) {
+    return api.post('/api/v1/agents/workspaces/locks/cleanup', null, { params })
+  },
+
   getRuntimeStatus() {
     return api.get('/api/v1/agents/runtime-status')
   },
@@ -152,6 +156,10 @@ export const agentsAPI = {
 
   reviewRunArtifact(runId, artifactId, payload = {}) {
     return api.post(`/api/v1/agents/runs/${runId}/artifacts/${artifactId}/review`, payload)
+  },
+
+  writebackRunWorkspace(runId, payload = {}) {
+    return api.post(`/api/v1/agents/runs/${runId}/workspace/writeback`, payload)
   },
 
   async streamRunEvents(runId, { afterSequence = 0, signal, onEvent, onError } = {}) {

@@ -569,6 +569,51 @@ def test_browser_snapshot_tool_result_promotes_to_document_excerpt_artifact():
     assert artifacts[0]["metadata"]["url"] == "https://app.example.com/dashboard"
 
 
+def test_browser_verify_tool_result_promotes_to_verification_report_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "completed",
+            "session_id": "browser-session-1",
+            "url": "https://app.example.com/dashboard",
+            "title": "Dashboard",
+            "text": "Ready",
+            "console_messages": [
+                {"type": "console", "level": "error", "text": "boom", "timestamp": "2026-05-16T00:00:00+00:00"}
+            ],
+            "network_errors": [
+                {"url": "https://app.example.com/api", "method": "GET", "text": "failed", "timestamp": "2026-05-16T00:00:00+00:00"}
+            ],
+            "kind": "browser_verify",
+            "summary": "Browser verification completed.",
+            "structured_report": {
+                "schema_version": "verification_report.v1",
+                "reports": [
+                    {
+                        "kind": "browser_verify",
+                        "format": "browser_diagnostics",
+                        "summary": {"finding_count": 2},
+                        "findings": [
+                            {"title": "boom", "severity": "error"},
+                            {"title": "failed", "severity": "error"},
+                        ],
+                    }
+                ],
+            },
+            "source": "browser_verify",
+        },
+        tool_name="browser_verify",
+        tool_kind="web",
+        step_id="step-browser",
+        tool_call_id="tool-browser",
+    )
+
+    assert artifacts[0]["artifact_type"] == "verification_report"
+    assert artifacts[0]["name"] == "browser_verify - Browser Verification"
+    assert artifacts[0]["payload"]["kind"] == "browser_verify"
+    assert artifacts[0]["payload"]["structured_report"]["reports"][0]["kind"] == "browser_verify"
+    assert artifacts[0]["metadata"]["session_id"] == "browser-session-1"
+
+
 def test_browser_screenshot_tool_result_promotes_to_media_gallery_artifact():
     artifacts = build_artifacts_from_tool_result(
         {

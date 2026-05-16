@@ -222,6 +222,8 @@ type AgentWorkspaceInspectionResponse struct {
 	TotalSizeBytes     int64            `json:"total_size_bytes"`
 	TotalFileCount     int64            `json:"total_file_count"`
 	GeneratedAt        string           `json:"generated_at"`
+	LockSummary        map[string]any   `json:"lock_summary,omitempty"`
+	Health             map[string]any   `json:"health,omitempty"`
 	Workspaces         []map[string]any `json:"workspaces"`
 }
 
@@ -235,9 +237,11 @@ type AgentWorkspaceCleanupResponse struct {
 	SelectedCount  int              `json:"selected_count"`
 	DeletedCount   int              `json:"deleted_count"`
 	FailedCount    int              `json:"failed_count"`
+	SkippedCount   int              `json:"skipped_count,omitempty"`
 	GeneratedAt    string           `json:"generated_at"`
 	Deleted        []map[string]any `json:"deleted"`
 	Failed         []map[string]any `json:"failed"`
+	Skipped        []map[string]any `json:"skipped,omitempty"`
 }
 
 type AgentRuntimeStatusResponse map[string]any
@@ -749,6 +753,8 @@ func (s *AgentService) InspectWorkspaces(ctx context.Context, tenantID, userID s
 		TotalSizeBytes:     response.TotalSizeBytes,
 		TotalFileCount:     response.TotalFileCount,
 		GeneratedAt:        response.GeneratedAt,
+		LockSummary:        response.LockSummary,
+		Health:             response.Health,
 		Workspaces:         response.Workspaces,
 	}, nil
 }
@@ -774,9 +780,39 @@ func (s *AgentService) CleanupWorkspaces(
 		SelectedCount:  response.SelectedCount,
 		DeletedCount:   response.DeletedCount,
 		FailedCount:    response.FailedCount,
+		SkippedCount:   response.SkippedCount,
 		GeneratedAt:    response.GeneratedAt,
 		Deleted:        response.Deleted,
 		Failed:         response.Failed,
+		Skipped:        response.Skipped,
+	}, nil
+}
+
+func (s *AgentService) CleanupWorkspaceLocks(
+	ctx context.Context,
+	tenantID, userID string,
+	dryRun bool,
+	maxDelete int,
+	confirmed bool,
+) (*AgentWorkspaceCleanupResponse, error) {
+	response, err := s.aiClient.CleanupWorkspaceLocks(ctx, tenantID, userID, dryRun, maxDelete, confirmed)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentWorkspaceCleanupResponse{
+		Status:         response.Status,
+		DryRun:         response.DryRun,
+		BaseRoot:       response.BaseRoot,
+		TenantID:       response.TenantID,
+		CandidateCount: response.CandidateCount,
+		SelectedCount:  response.SelectedCount,
+		DeletedCount:   response.DeletedCount,
+		FailedCount:    response.FailedCount,
+		SkippedCount:   response.SkippedCount,
+		GeneratedAt:    response.GeneratedAt,
+		Deleted:        response.Deleted,
+		Failed:         response.Failed,
+		Skipped:        response.Skipped,
 	}, nil
 }
 

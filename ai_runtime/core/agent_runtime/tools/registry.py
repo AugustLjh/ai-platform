@@ -39,6 +39,15 @@ class ToolRegistry:
     def provider_names(self) -> List[str]:
         return list(self._registered_provider_names)
 
+    def get_provider(self, name: str) -> ToolProvider | None:
+        provider_name = str(name or "").strip()
+        if not provider_name:
+            return None
+        for registered_name, provider in self._providers:
+            if registered_name == provider_name:
+                return provider
+        return None
+
     async def get(self, name: str, context: ToolLookupContext | None = None) -> BaseTool | None:
         tool = self._tools.get(name)
         if tool is not None:

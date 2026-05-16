@@ -193,6 +193,12 @@ class RuntimeArtifactReviewDecisionRequest(BaseModel):
     note: Optional[str] = None
 
 
+class RuntimeWorkspaceWritebackRequest(BaseModel):
+    dry_run: bool = True
+    confirmed: bool = False
+    max_diff_chars: int = Field(default=40000, ge=100, le=100000)
+
+
 class AgentRunSummaryResponse(BaseModel):
     run: AgentRun
 

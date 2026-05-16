@@ -392,6 +392,41 @@ export const normalizeRunTreeInvocation = (raw = {}) => {
   }
 }
 
+export const normalizeResolvedSubagentInvocation = (raw = {}) => {
+  const target = raw.target && typeof raw.target === 'object' ? raw.target : {}
+  return {
+    id: raw.invocation_id || raw.invocationId || raw.child_run_id || raw.childRunId || '',
+    childRunId: raw.child_run_id || raw.childRunId || '',
+    invocationId: raw.invocation_id || raw.invocationId || '',
+    parentStepId: raw.parent_step_id || raw.parentStepId || '',
+    parentStepIndex: Number(raw.parent_step_index || raw.parentStepIndex || 0),
+    target: {
+      slug: target.slug || '',
+      name: target.name || '',
+      publicationId: target.publication_id || target.publicationId || '',
+      versionId: target.version_id || target.versionId || '',
+      authorizationId: target.authorization_id || target.authorizationId || ''
+    },
+    status: raw.status || '',
+    stepStatus: raw.step_status || raw.stepStatus || '',
+    summary: raw.summary || '',
+    finalOutput: raw.final_output || raw.finalOutput || '',
+    finalOutputText: raw.final_output_text || raw.finalOutputText || '',
+    finalOutputJson: parseJSONSafe(raw.final_output_json || raw.finalOutputJson, null),
+    artifacts: Array.isArray(raw.artifacts) ? [...raw.artifacts] : [],
+    promotedArtifacts: Array.isArray(raw.promoted_artifacts || raw.promotedArtifacts)
+      ? [...(raw.promoted_artifacts || raw.promotedArtifacts)]
+      : [],
+    progress: normalizeSubagentProgress(raw.progress || {}),
+    clarification: normalizeSubagentClarification(raw.clarification || {}),
+    reviewResult: normalizeReviewResult(raw.review_result || raw.reviewResult || {}),
+    governancePolicy: normalizeGovernancePolicy(raw.governance_policy || raw.governancePolicy || {}),
+    failureStrategy: raw.failure_strategy || raw.failureStrategy || {},
+    pendingCompletion: Boolean(raw.pending_completion || raw.pendingCompletion),
+    reviewGateBlocked: Boolean(raw.review_gate_blocked || raw.reviewGateBlocked)
+  }
+}
+
 export const normalizeRunTreeNode = (raw = {}) => {
   const run = raw.run && typeof raw.run === 'object' ? raw.run : {}
   return {
@@ -450,6 +485,16 @@ export const collectRunTreeInvocations = (root) => {
     }
   }
   return items
+}
+
+export const collectResolvedSubagentInvocations = (run) => {
+  const context = run?.context && typeof run.context === 'object' ? run.context : {}
+  const rawItems = Array.isArray(context.resolved_subagent_invocations || context.resolvedSubagentInvocations)
+    ? (context.resolved_subagent_invocations || context.resolvedSubagentInvocations)
+    : []
+  return rawItems
+    .map((item) => normalizeResolvedSubagentInvocation(item))
+    .filter((item) => item.childRunId || item.invocationId || item.summary)
 }
 
 export const summarizeInvocationTarget = (invocation) => {

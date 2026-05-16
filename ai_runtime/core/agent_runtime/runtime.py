@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
@@ -25,6 +26,7 @@ from ai_runtime.core.agent_runtime.models import (
     AgentSubagentInvocationListResponse,
     RuntimeArtifactReviewDecisionRequest,
     RuntimeCreateRunRequest,
+    RuntimeWorkspaceWritebackRequest,
 )
 from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
 from ai_runtime.core.agent_runtime.skills.registry import SkillRegistry
@@ -41,6 +43,7 @@ from ai_runtime.core.agent_runtime.subagents.router import SubagentRouter
 from ai_runtime.core.agent_runtime.repositories.tool_call_repository import ToolCallRepository
 from ai_runtime.core.agent_runtime.tools.base import ToolLookupContext
 from ai_runtime.core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
+from ai_runtime.core.agent_runtime.tools.providers.sandbox_exec import SandboxExecToolProvider, build_sandbox_isolation_profile
 from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 from ai_runtime.core.agent_runtime.tracing import AgentTracer
 from ai_runtime.core.agent_runtime.workspace_lifecycle import (
@@ -82,6 +85,8 @@ class AgentRuntime:
         self._started = False
         self._workspace_lifecycle_alerts: list[dict[str, Any]] = []
         self._workspace_lifecycle_last_run: dict[str, Any] | None = None
+        self._workspace_lifecycle_history: list[dict[str, Any]] = []
+        self._browser_session_history: list[dict[str, Any]] = []
 
         self.tracer = AgentTracer(
             self.run_repository,
@@ -121,7 +126,9 @@ class AgentRuntime:
     async def _handle_workspace_lifecycle_inspection(self, payload: dict) -> None:
         cleanup = payload.get("cleanup") if isinstance(payload.get("cleanup"), dict) else None
         inspection = payload.get("inspection") if isinstance(payload.get("inspection"), dict) else {}
-        self._workspace_lifecycle_last_run = {
+        lock_summary = inspection.get("lock_summary") if isinstance(inspection.get("lock_summary"), dict) else {}
+        health = inspection.get("health") if isinstance(inspection.get("health"), dict) else {}
+        run_summary = {
             "generated_at": payload.get("generated_at"),
             "inspection": {
                 "workspace_count": int(inspection.get("workspace_count") or 0),
@@ -129,6 +136,21 @@ class AgentRuntime:
                 "quota_exceeded_count": int(inspection.get("quota_exceeded_count") or 0),
                 "total_size_bytes": int(inspection.get("total_size_bytes") or 0),
                 "total_file_count": int(inspection.get("total_file_count") or 0),
+                "health": {
+                    "status": health.get("status"),
+                    "score": int(health.get("score") or 0),
+                    "summary": health.get("summary"),
+                    "issues": [dict(issue) for issue in health.get("issues", []) if isinstance(issue, dict)],
+                    "recovery_actions": [dict(action) for action in health.get("recovery_actions", []) if isinstance(action, dict)],
+                },
+                "lock_summary": {
+                    "lock_count": int(lock_summary.get("lock_count") or 0),
+                    "active_lock_count": int(lock_summary.get("active_lock_count") or 0),
+                    "stale_lock_count": int(lock_summary.get("stale_lock_count") or 0),
+                    "orphan_lock_count": int(lock_summary.get("orphan_lock_count") or 0),
+                    "oldest_lock_age_seconds": lock_summary.get("oldest_lock_age_seconds"),
+                    "locks": [dict(item) for item in lock_summary.get("locks", []) if isinstance(item, dict)],
+                },
             },
             "cleanup": (
                 {
@@ -138,13 +160,293 @@ class AgentRuntime:
                     "selected_count": int(cleanup.get("selected_count") or 0),
                     "deleted_count": int(cleanup.get("deleted_count") or 0),
                     "failed_count": int(cleanup.get("failed_count") or 0),
+                    "skipped_count": int(cleanup.get("skipped_count") or 0),
                 }
                 if cleanup is not None
                 else None
             ),
             "alerts": [dict(alert) for alert in payload.get("alerts", []) if isinstance(alert, dict)],
         }
+        self._workspace_lifecycle_last_run = run_summary
+        self._workspace_lifecycle_history.append(deepcopy(run_summary))
+        self._workspace_lifecycle_history = self._workspace_lifecycle_history[-12:]
         return None
+
+    def _build_workspace_lifecycle_trend(self) -> dict[str, Any]:
+        history = self._workspace_lifecycle_history[-12:]
+        if not history:
+            return {
+                "status": "insufficient_data",
+                "window_size": 0,
+                "summary": "workspace lifecycle trend has no completed inspections",
+                "delta": {},
+            }
+
+        first = history[0].get("inspection", {}) if isinstance(history[0].get("inspection"), dict) else {}
+        last = history[-1].get("inspection", {}) if isinstance(history[-1].get("inspection"), dict) else {}
+        first_health = first.get("health") if isinstance(first.get("health"), dict) else {}
+        last_health = last.get("health") if isinstance(last.get("health"), dict) else {}
+        first_locks = first.get("lock_summary") if isinstance(first.get("lock_summary"), dict) else {}
+        last_locks = last.get("lock_summary") if isinstance(last.get("lock_summary"), dict) else {}
+
+        def _delta(key: str) -> int:
+            return int(last.get(key) or 0) - int(first.get(key) or 0)
+
+        delta = {
+            "workspace_count": _delta("workspace_count"),
+            "expired_count": _delta("expired_count"),
+            "quota_exceeded_count": _delta("quota_exceeded_count"),
+            "total_size_bytes": _delta("total_size_bytes"),
+            "total_file_count": _delta("total_file_count"),
+            "health_score": int(last_health.get("score") or 0) - int(first_health.get("score") or 0),
+            "stale_lock_count": int(last_locks.get("stale_lock_count") or 0) - int(first_locks.get("stale_lock_count") or 0),
+            "orphan_lock_count": int(last_locks.get("orphan_lock_count") or 0) - int(first_locks.get("orphan_lock_count") or 0),
+        }
+
+        risk_deltas = [
+            delta["expired_count"],
+            delta["quota_exceeded_count"],
+            delta["stale_lock_count"],
+            delta["orphan_lock_count"],
+        ]
+        if len(history) == 1:
+            status = "baseline"
+            summary = "workspace lifecycle trend baseline captured"
+        elif any(value > 0 for value in risk_deltas) or delta["health_score"] < 0:
+            status = "worsening"
+            summary = "workspace lifecycle risk is increasing"
+        elif any(value < 0 for value in risk_deltas) or delta["health_score"] > 0:
+            status = "improving"
+            summary = "workspace lifecycle risk is decreasing"
+        else:
+            status = "stable"
+            summary = "workspace lifecycle trend is stable"
+
+        return {
+            "status": status,
+            "window_size": len(history),
+            "first_generated_at": history[0].get("generated_at"),
+            "last_generated_at": history[-1].get("generated_at"),
+            "summary": summary,
+            "delta": delta,
+        }
+
+    def _build_browser_session_health(self, session_summary: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(session_summary, dict):
+            return {
+                "status": "unknown",
+                "score": 0,
+                "summary": "browser session telemetry is unavailable",
+                "issues": [],
+                "recovery_actions": [],
+            }
+
+        session_count = int(session_summary.get("session_count") or 0)
+        expired_session_count = int(session_summary.get("expired_session_count") or 0)
+        session_ttl_seconds = int(session_summary.get("session_ttl_seconds") or 0)
+        oldest_session_age_seconds = session_summary.get("oldest_session_age_seconds")
+        oldest_age = int(oldest_session_age_seconds or 0)
+        sessions = [item for item in session_summary.get("sessions", []) if isinstance(item, dict)]
+        console_message_count = sum(int(item.get("console_message_count") or 0) for item in sessions)
+        network_error_count = sum(int(item.get("network_error_count") or 0) for item in sessions)
+
+        issues: list[dict[str, Any]] = []
+        if expired_session_count > 0:
+            issues.append(
+                {
+                    "code": "expired_browser_sessions",
+                    "severity": "warning" if expired_session_count < 3 else "critical",
+                    "count": expired_session_count,
+                    "message": "Browser sessions have exceeded their TTL",
+                }
+            )
+        if session_ttl_seconds > 0 and oldest_age >= session_ttl_seconds:
+            issues.append(
+                {
+                    "code": "stale_browser_session_age",
+                    "severity": "warning",
+                    "age_seconds": oldest_age,
+                    "threshold_seconds": session_ttl_seconds,
+                    "message": "Oldest browser session has reached the TTL",
+                }
+            )
+        if network_error_count > 0:
+            issues.append(
+                {
+                    "code": "browser_network_errors",
+                    "severity": "warning" if network_error_count < 10 else "critical",
+                    "count": network_error_count,
+                    "message": "Browser sessions recorded network failures",
+                }
+            )
+        if console_message_count >= 20:
+            issues.append(
+                {
+                    "code": "browser_console_noise",
+                    "severity": "warning",
+                    "count": console_message_count,
+                    "message": "Browser sessions recorded many console messages",
+                }
+            )
+
+        if not issues:
+            status = "healthy"
+        elif any(issue["severity"] == "critical" for issue in issues):
+            status = "critical"
+        else:
+            status = "warning"
+
+        score = 100
+        score -= min(35, expired_session_count * 12)
+        score -= min(25, network_error_count * 3)
+        score -= min(10, console_message_count // 5)
+        if session_ttl_seconds > 0 and oldest_age >= session_ttl_seconds:
+            score -= 15
+        score = max(0, min(100, score))
+
+        if not issues:
+            summary = "browser sessions are healthy" if session_count else "no active browser sessions"
+        else:
+            summary = "browser sessions need attention: " + ", ".join(
+                f"{issue['code']}={issue.get('count', issue.get('age_seconds', 0))}"
+                for issue in issues[:3]
+            )
+
+        recovery_actions: list[dict[str, Any]] = []
+        if expired_session_count > 0 or (session_ttl_seconds > 0 and oldest_age >= session_ttl_seconds):
+            recovery_actions.append(
+                {
+                    "key": "close_stale_browser_sessions",
+                    "label": "关闭陈旧 Browser 会话",
+                    "category": "browser_session_cleanup",
+                    "priority": "medium",
+                    "requires_confirmation": False,
+                    "tenant_scoped": False,
+                }
+            )
+        if network_error_count > 0:
+            recovery_actions.append(
+                {
+                    "key": "inspect_browser_network_errors",
+                    "label": "检查 Browser 网络错误",
+                    "category": "browser_diagnostics",
+                    "priority": "medium",
+                    "requires_confirmation": False,
+                    "tenant_scoped": False,
+                }
+            )
+
+        return {
+            "status": status,
+            "score": score,
+            "summary": summary,
+            "issues": issues,
+            "recovery_actions": recovery_actions,
+        }
+
+    def _build_browser_session_alerts(self, session_summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not isinstance(session_summary, dict):
+            return []
+        alerts: list[dict[str, Any]] = []
+        expired_count = int(session_summary.get("expired_session_count") or 0)
+        if expired_count > 0:
+            alerts.append(
+                {
+                    "type": "expired_browser_sessions",
+                    "severity": "warning" if expired_count < 3 else "critical",
+                    "count": expired_count,
+                    "threshold": 0,
+                }
+            )
+        sessions = [item for item in session_summary.get("sessions", []) if isinstance(item, dict)]
+        network_error_count = sum(int(item.get("network_error_count") or 0) for item in sessions)
+        if network_error_count > 0:
+            alerts.append(
+                {
+                    "type": "browser_network_errors",
+                    "severity": "warning" if network_error_count < 10 else "critical",
+                    "count": network_error_count,
+                    "threshold": 0,
+                }
+            )
+        return alerts
+
+    def _build_browser_session_trend(self) -> dict[str, Any]:
+        history = self._browser_session_history[-12:]
+        if not history:
+            return {
+                "status": "insufficient_data",
+                "window_size": 0,
+                "summary": "browser session trend has no samples",
+                "delta": {},
+            }
+
+        first = history[0]
+        last = history[-1]
+        first_health = first.get("health") if isinstance(first.get("health"), dict) else {}
+        last_health = last.get("health") if isinstance(last.get("health"), dict) else {}
+
+        def _delta(key: str) -> int:
+            return int(last.get(key) or 0) - int(first.get(key) or 0)
+
+        delta = {
+            "session_count": _delta("session_count"),
+            "active_session_count": _delta("active_session_count"),
+            "expired_session_count": _delta("expired_session_count"),
+            "network_error_count": _delta("network_error_count"),
+            "console_message_count": _delta("console_message_count"),
+            "health_score": int(last_health.get("score") or 0) - int(first_health.get("score") or 0),
+        }
+        risk_deltas = [delta["expired_session_count"], delta["network_error_count"]]
+        if len(history) == 1:
+            status = "baseline"
+            summary = "browser session trend baseline captured"
+        elif any(value > 0 for value in risk_deltas) or delta["health_score"] < 0:
+            status = "worsening"
+            summary = "browser session risk is increasing"
+        elif any(value < 0 for value in risk_deltas) or delta["health_score"] > 0:
+            status = "improving"
+            summary = "browser session risk is decreasing"
+        else:
+            status = "stable"
+            summary = "browser session trend is stable"
+        return {
+            "status": status,
+            "window_size": len(history),
+            "first_sampled_at": history[0].get("sampled_at"),
+            "last_sampled_at": history[-1].get("sampled_at"),
+            "summary": summary,
+            "delta": delta,
+        }
+
+    def _enrich_browser_session_summary(self, session_summary: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(session_summary, dict):
+            return None
+        enriched = deepcopy(session_summary)
+        sessions = [item for item in enriched.get("sessions", []) if isinstance(item, dict)]
+        network_error_count = sum(int(item.get("network_error_count") or 0) for item in sessions)
+        console_message_count = sum(int(item.get("console_message_count") or 0) for item in sessions)
+        enriched["network_error_count"] = network_error_count
+        enriched["console_message_count"] = console_message_count
+        enriched["health"] = self._build_browser_session_health(enriched)
+        enriched["alerts"] = self._build_browser_session_alerts(enriched)
+        sample = {
+            "sampled_at": datetime.now(timezone.utc).isoformat(),
+            "session_count": int(enriched.get("session_count") or 0),
+            "active_session_count": int(enriched.get("active_session_count") or 0),
+            "expired_session_count": int(enriched.get("expired_session_count") or 0),
+            "network_error_count": network_error_count,
+            "console_message_count": console_message_count,
+            "health": {
+                "status": enriched["health"].get("status"),
+                "score": int(enriched["health"].get("score") or 0),
+            },
+        }
+        self._browser_session_history.append(sample)
+        self._browser_session_history = self._browser_session_history[-12:]
+        enriched["history"] = deepcopy(self._browser_session_history[-12:])
+        enriched["trend"] = self._build_browser_session_trend()
+        return enriched
 
     def runtime_status(self) -> dict[str, Any]:
         workspace_inspection = self.workspace_manager.inspect_workspaces()
@@ -160,6 +462,16 @@ class AgentRuntime:
 
         provider_names = sorted(self.registry.provider_names)
         provider_name_set = set(provider_names)
+        sandbox_provider = SandboxExecToolProvider.from_env()
+        sandbox_profile = build_sandbox_isolation_profile(sandbox_provider.policy)
+        web_provider = self.registry.get_provider("web")
+        web_session_summary = None
+        if web_provider is not None and hasattr(web_provider, "browser_session_snapshot"):
+            try:
+                web_session_summary = web_provider.browser_session_snapshot()
+            except Exception:
+                web_session_summary = None
+        web_session_summary = self._enrich_browser_session_summary(web_session_summary)
         return {
             "status": "ready" if self._started else "idle",
             "started": self._started,
@@ -177,10 +489,20 @@ class AgentRuntime:
                 "sandbox": {
                     "enabled": "sandbox-exec" in provider_name_set,
                     "configured": os.getenv("AGENT_SANDBOX_EXEC_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
-                    "runner_configured": os.getenv("AGENT_SANDBOX_RUNNER_CONFIGURED", "false").lower() in {"1", "true", "yes", "on"},
-                    "runner_backend": os.getenv("AGENT_SANDBOX_RUNNER_BACKEND", "docker"),
-                    "docker_image": os.getenv("AGENT_SANDBOX_DOCKER_IMAGE", "python:3.12-slim"),
-                    "network_mode": os.getenv("AGENT_SANDBOX_DOCKER_NETWORK", "none"),
+                    "runner_configured": sandbox_provider.policy.runner_configured,
+                    "runner_backend": sandbox_provider.policy.runner_backend,
+                    "docker_image": sandbox_provider.policy.docker_image,
+                    "network_mode": sandbox_provider.policy.docker_network,
+                    "limits": sandbox_profile["limits"],
+                    "isolation": {
+                        "status": sandbox_profile["status"],
+                        "production_ready": sandbox_profile["production_ready"],
+                        "passed": sandbox_profile["passed"],
+                        "failed": sandbox_profile["failed"],
+                        "warning": sandbox_profile["warning"],
+                        "checks": sandbox_profile["checks"],
+                        "recovery_actions": sandbox_profile["recovery_actions"],
+                    },
                 },
                 "web": {
                     "enabled": "web" in provider_name_set,
@@ -197,6 +519,19 @@ class AgentRuntime:
                         if item.strip()
                     ],
                     "search_endpoint": os.getenv("AGENT_WEB_SEARCH_ENDPOINT", "").strip() or None,
+                    "search_quality": {
+                        "require_url": os.getenv("AGENT_WEB_SEARCH_REQUIRE_URL", "true").lower() in {"1", "true", "yes", "on"},
+                        "require_title": os.getenv("AGENT_WEB_SEARCH_REQUIRE_TITLE", "true").lower() in {"1", "true", "yes", "on"},
+                        "require_snippet": os.getenv("AGENT_WEB_SEARCH_REQUIRE_SNIPPET", "false").lower() in {"1", "true", "yes", "on"},
+                        "allowed_schemes": [
+                            item.strip().lower()
+                            for item in os.getenv("AGENT_WEB_SEARCH_ALLOWED_SCHEMES", "https").split(",")
+                            if item.strip()
+                        ],
+                        "reject_disallowed_domains": os.getenv("AGENT_WEB_SEARCH_REJECT_DISALLOWED_DOMAINS", "true").lower() in {"1", "true", "yes", "on"},
+                        "reject_duplicates": os.getenv("AGENT_WEB_SEARCH_REJECT_DUPLICATES", "true").lower() in {"1", "true", "yes", "on"},
+                    },
+                    "browser_sessions": web_session_summary,
                 },
                 "browser": {
                     "enabled": os.getenv("AGENT_BROWSER_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
@@ -205,6 +540,7 @@ class AgentRuntime:
                     "name": os.getenv("AGENT_BROWSER_NAME", "chromium"),
                     "runtime_available": browser_runtime_available,
                     "runtime_reason": browser_runtime_reason,
+                    "session_ttl_seconds": int(os.getenv("AGENT_BROWSER_SESSION_TTL_SECONDS", "900")),
                 },
             },
             "workspace_lifecycle": {
@@ -219,7 +555,14 @@ class AgentRuntime:
                 "last_run_at_monotonic": self.workspace_lifecycle.last_run_at,
                 "last_completed_at": self.workspace_lifecycle.last_completed_at,
                 "last_run": deepcopy(self._workspace_lifecycle_last_run),
+                "history": deepcopy(self._workspace_lifecycle_history[-12:]),
+                "trend": self._build_workspace_lifecycle_trend(),
                 "recent_alerts": deepcopy(self._workspace_lifecycle_alerts[-5:]),
+                "recovery_actions": deepcopy(
+                    self._workspace_lifecycle_last_run.get("inspection", {}).get("health", {}).get("recovery_actions", [])
+                    if self._workspace_lifecycle_last_run
+                    else []
+                ),
             },
         }
 
@@ -702,4 +1045,85 @@ class AgentRuntime:
             note=request.note,
             reviewer_id=reviewer_id,
         )
+        return AgentRunSummaryResponse(run=self._hydrate_run_row(run, artifacts=artifacts, steps=steps, tool_calls=tool_calls))
+
+    async def writeback_run_workspace(
+        self,
+        run_id: str,
+        tenant_id: Optional[str],
+        reviewer_id: Optional[str],
+        request: RuntimeWorkspaceWritebackRequest,
+    ) -> AgentRunSummaryResponse:
+        run = await self.run_repository.get_run(run_id, tenant_id)
+        if run is None:
+            raise ValueError("run not found")
+        context = run.get("context") if isinstance(run.get("context"), dict) else {}
+        workspace = context.get("workspace") if isinstance(context.get("workspace"), dict) else {}
+        workspace_root = str(context.get("workspace_root") or workspace.get("root") or "").strip()
+        source = workspace.get("source") if isinstance(workspace.get("source"), dict) else {}
+        source_path = str(source.get("path") or source.get("root") or "").strip()
+        source_type = str(source.get("type") or "").strip()
+        if not workspace_root:
+            raise ValueError("run has no bound workspace")
+        if not source_path or source_type == "upload_bundle":
+            raise ValueError("workspace source is not a writable registered repository")
+
+        result = self.workspace_manager.apply_workspace_writeback(
+            workspace_root=workspace_root,
+            source_path=source_path,
+            tenant_id=str(run.get("tenant_id") or tenant_id or ""),
+            dry_run=request.dry_run,
+            confirmed=request.confirmed,
+            max_diff_chars=request.max_diff_chars,
+        )
+        artifact = {
+            "artifact_type": "code_patch",
+            "name": "Workspace Repository Writeback",
+            "payload": {
+                "operation": "repository_writeback",
+                "status": result.get("status"),
+                "dry_run": bool(result.get("dry_run")),
+                "files": result.get("files") or [],
+                "diff": result.get("diff") or "",
+                "truncated": bool(result.get("truncated")),
+                "review_notes": [
+                    "This artifact was produced by an explicit user-triggered writeback from the isolated run workspace.",
+                    "Review source repository status before committing or opening a PR.",
+                ],
+                "merge_policy": "explicit_user_writeback",
+                "writeback": {
+                    "source_path": result.get("source_path"),
+                    "workspace_root": result.get("workspace_root"),
+                    "change_count": result.get("change_count"),
+                    "applied_count": result.get("applied_count"),
+                    "failed_count": result.get("failed_count"),
+                    "status": result.get("status"),
+                },
+            },
+            "metadata": {
+                "source": "workspace_writeback",
+                "requested_by": reviewer_id,
+                "dry_run": bool(result.get("dry_run")),
+                "confirmed": bool(request.confirmed),
+                "source_path": result.get("source_path"),
+                "workspace_root": result.get("workspace_root"),
+                "generated_at": result.get("generated_at"),
+                "completed_at": result.get("completed_at"),
+            },
+        }
+        await self.run_repository.create_artifact(run_id, artifact)
+        await self.tracer.emit_event(
+            run_id,
+            "workspace.writeback",
+            dry_run=bool(result.get("dry_run")),
+            status=result.get("status"),
+            change_count=result.get("change_count"),
+            applied_count=result.get("applied_count"),
+            failed_count=result.get("failed_count"),
+            source_path=result.get("source_path"),
+            reviewer_id=reviewer_id,
+        )
+        artifacts = await self.run_repository.list_artifacts(run_id)
+        steps = await self.run_repository.list_steps(run_id)
+        tool_calls = await self.tool_call_repository.list_tool_calls(run_id)
         return AgentRunSummaryResponse(run=self._hydrate_run_row(run, artifacts=artifacts, steps=steps, tool_calls=tool_calls))

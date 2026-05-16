@@ -274,6 +274,28 @@ func (h *AgentHandler) HandleCleanupWorkspaces(w http.ResponseWriter, r *http.Re
 	respondJSON(w, result, http.StatusOK)
 }
 
+func (h *AgentHandler) HandleCleanupWorkspaceLocks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	dryRun := !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("dry_run")), "false")
+	confirmed := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("confirmed")), "true")
+	maxDelete := parseQueryInt(r, "max_delete", 100)
+	result, err := h.agentService.CleanupWorkspaceLocks(r.Context(), user.TenantID, user.ID, dryRun, maxDelete, confirmed)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
 func (h *AgentHandler) HandleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)

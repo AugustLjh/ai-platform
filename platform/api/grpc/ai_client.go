@@ -330,6 +330,8 @@ type RuntimeWorkspaceInspectionResponse struct {
 	TotalSizeBytes     int64            `json:"total_size_bytes"`
 	TotalFileCount     int64            `json:"total_file_count"`
 	GeneratedAt        string           `json:"generated_at"`
+	LockSummary        map[string]any   `json:"lock_summary,omitempty"`
+	Health             map[string]any   `json:"health,omitempty"`
 	Workspaces         []map[string]any `json:"workspaces"`
 }
 
@@ -343,9 +345,11 @@ type RuntimeWorkspaceCleanupResponse struct {
 	SelectedCount  int              `json:"selected_count"`
 	DeletedCount   int              `json:"deleted_count"`
 	FailedCount    int              `json:"failed_count"`
+	SkippedCount   int              `json:"skipped_count,omitempty"`
 	GeneratedAt    string           `json:"generated_at"`
 	Deleted        []map[string]any `json:"deleted"`
 	Failed         []map[string]any `json:"failed"`
+	Skipped        []map[string]any `json:"skipped,omitempty"`
 }
 
 type RuntimeStatusResponse map[string]any
@@ -618,6 +622,26 @@ func (c *AIClient) CleanupWorkspaces(
 ) (*RuntimeWorkspaceCleanupResponse, error) {
 	path := fmt.Sprintf(
 		"/api/v1/agents/workspaces/cleanup?dry_run=%t&max_delete=%d&confirmed=%t",
+		dryRun,
+		maxDelete,
+		confirmed,
+	)
+	var response RuntimeWorkspaceCleanupResponse
+	if err := c.doJSON(ctx, http.MethodPost, path, nil, tenantID, userID, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (c *AIClient) CleanupWorkspaceLocks(
+	ctx context.Context,
+	tenantID, userID string,
+	dryRun bool,
+	maxDelete int,
+	confirmed bool,
+) (*RuntimeWorkspaceCleanupResponse, error) {
+	path := fmt.Sprintf(
+		"/api/v1/agents/workspaces/locks/cleanup?dry_run=%t&max_delete=%d&confirmed=%t",
 		dryRun,
 		maxDelete,
 		confirmed,

@@ -102,7 +102,7 @@
             @click="detailsOpen = !detailsOpen"
           >
             <span>执行细节</span>
-            <span>{{ steps.length }} 步 · {{ toolCalls.length }} 次工具 · {{ runTreeInvocations.length }} 次委派 · {{ runEvents.length }} 个事件</span>
+            <span>{{ steps.length }} 步 · {{ toolCalls.length }} 次工具 · {{ runTreeInvocations.length }} 次委派 · {{ resolvedSubagentInvocations.length }} 个已收敛结果 · {{ runEvents.length }} 个事件</span>
           </button>
         </div>
 
@@ -195,7 +195,11 @@
       </div>
       <AgentRunTree v-if="currentRunTree" :root="currentRunTree" />
       <AgentSubagentProtocolPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
-      <AgentSubagentInvocationPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
+      <AgentSubagentInvocationPanel
+        v-if="runTreeInvocations.length > 0 || resolvedSubagentInvocations.length > 0"
+        :items="runTreeInvocations"
+        :resolved-items="resolvedSubagentInvocations"
+      />
       <AgentTimeline :events="runEvents" />
       <AgentStepList :steps="steps" :tool-calls="toolCalls" />
     </section>
@@ -216,6 +220,7 @@ import AgentSubagentClarificationCard from '@/components/agent/AgentSubagentClar
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
 import { getRunAnswerText } from '@/utils/agentArtifacts'
+import { collectResolvedSubagentInvocations } from '@/utils/agentRunTree'
 import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
@@ -239,6 +244,7 @@ const artifacts = computed(() => agentsStore.artifacts)
 const executionSurface = computed(() => agentsStore.executionSurface)
 const currentRunTree = computed(() => agentsStore.currentRunTree)
 const runTreeInvocations = computed(() => agentsStore.currentRunInvocations)
+const resolvedSubagentInvocations = computed(() => collectResolvedSubagentInvocations(run.value))
 const errorMessage = computed(() => agentsStore.error || '')
 
 const statusMap = {

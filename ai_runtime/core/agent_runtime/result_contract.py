@@ -1784,6 +1784,7 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
             "truncated": bool(source.get("truncated")),
             "review_notes": [str(item) for item in review_notes or [] if str(item).strip()],
             "merge_policy": str(source.get("merge_policy") or source.get("mergePolicy") or "manual_review_required"),
+            "writeback": source.get("writeback") if isinstance(source.get("writeback"), dict) else None,
         }
 
     if normalized_type == "verification_report":
@@ -1791,8 +1792,17 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
         command = source.get("command") if isinstance(source.get("command"), list) else []
         logs = source.get("logs") if isinstance(source.get("logs"), dict) else {}
         runner = source.get("runner") if isinstance(source.get("runner"), dict) else {}
+        structured_report = source.get("structured_report") if isinstance(source.get("structured_report"), dict) else source.get("structuredReport")
+        if not isinstance(structured_report, dict):
+            structured_report = None
+        source_kind = str(source.get("kind") or source.get("purpose") or "").strip()
+        if source_kind == "browser_verify":
+            structured_report = _browser_verification_report(source)
+        kind = str(source.get("kind") or source.get("purpose") or "shell").strip() or "shell"
+        if source_kind == "browser_verify":
+            kind = "browser_verify"
         return {
-            "kind": str(source.get("kind") or source.get("purpose") or "shell").strip() or "shell",
+            "kind": kind,
             "status": str(source.get("status") or "unknown").strip() or "unknown",
             "exit_code": source.get("exit_code"),
             "command": [str(item) for item in command],
@@ -1811,13 +1821,7 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
             "target": source.get("target"),
             "ecosystem": source.get("ecosystem"),
             "report_format": source.get("report_format") or source.get("reportFormat"),
-            "structured_report": (
-                dict(source.get("structured_report"))
-                if isinstance(source.get("structured_report"), dict)
-                else dict(source.get("structuredReport"))
-                if isinstance(source.get("structuredReport"), dict)
-                else None
-            ),
+            "structured_report": structured_report,
         }
 
     if normalized_type == "file_bundle":
@@ -1944,6 +1948,8 @@ def _verification_title(tool_name: str, purpose: str | None) -> str:
 
 
 def _verification_kind(tool_name: str, purpose: str | None) -> str:
+    if tool_name == "browser_verify" or purpose == "browser_verify":
+        return "browser_verify"
     if tool_name in {"run_tests", "test_run"} or purpose == "test":
         return "test"
     if tool_name in {"run_lint", "lint_run"} or purpose == "lint":
@@ -1957,6 +1963,63 @@ def _verification_kind(tool_name: str, purpose: str | None) -> str:
     if tool_name == "dependency_audit" or purpose == "dependency_audit":
         return "dependency_audit"
     return "shell"
+
+
+def _browser_verification_report(payload: dict[str, Any]) -> dict[str, Any]:
+    console_messages = payload.get("console_messages") if isinstance(payload.get("console_messages"), list) else []
+    network_errors = payload.get("network_errors") if isinstance(payload.get("network_errors"), list) else []
+    findings: list[dict[str, Any]] = []
+    for item in console_messages:
+        if not isinstance(item, dict):
+            continue
+        level = str(item.get("level") or "info").strip() or "info"
+        if level not in {"error", "warning", "warn"}:
+            continue
+        findings.append(
+            {
+                "title": str(item.get("text") or "Browser console issue").strip() or "Browser console issue",
+                "severity": "error" if level == "error" else "warning",
+                "type": "console",
+                "source": "browser_console",
+                "message": str(item.get("text") or "").strip(),
+            }
+        )
+    for item in network_errors:
+        if not isinstance(item, dict):
+            continue
+        findings.append(
+            {
+                "title": str(item.get("url") or "Browser network error").strip() or "Browser network error",
+                "severity": "error",
+                "type": "network",
+                "source": str(item.get("url") or "browser_network").strip() or "browser_network",
+                "message": str(item.get("text") or "request failed").strip() or "request failed",
+            }
+        )
+    return {
+        "schema_version": "verification_report.v1",
+        "summary": {
+            "report_count": 1,
+            "finding_count": len(findings),
+            "console_message_count": len(console_messages),
+            "network_error_count": len(network_errors),
+        },
+        "reports": [
+            {
+                "kind": "browser_verify",
+                "format": "browser_diagnostics",
+                "summary": {
+                    "finding_count": len(findings),
+                    "console_message_count": len(console_messages),
+                    "network_error_count": len(network_errors),
+                    "url": payload.get("url"),
+                    "title": payload.get("title"),
+                },
+                "findings": findings,
+                "truncated": bool(payload.get("truncated")),
+            }
+        ],
+    }
 
 
 def _verification_summary(status: Any, exit_code: Any, failure_category: Any) -> str:
@@ -2403,6 +2466,46 @@ def build_artifacts_from_tool_result(
                     "promoted_to_run": True,
                     "url": payload.get("url"),
                     "status": payload.get("status"),
+                    "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "browser_verify":
+        promoted.append(
+            {
+                "artifact_type": "verification_report",
+                "name": _tool_artifact_name(tool_name, None, "Browser Verification"),
+                "payload": {
+                    "kind": "browser_verify",
+                    "status": payload.get("status") or "unknown",
+                    "summary": str(payload.get("summary") or "Browser verification completed.").strip(),
+                    "truncated": bool(payload.get("truncated")),
+                    "structured_report": (
+                        payload.get("structured_report")
+                        if isinstance(payload.get("structured_report"), dict)
+                        else payload.get("structuredReport")
+                        if isinstance(payload.get("structuredReport"), dict)
+                        else _browser_verification_report(payload)
+                    ),
+                    "logs": {
+                        "stdout": payload.get("text") or payload.get("html") or "",
+                        "stderr": "",
+                    },
+                    "runner": {
+                        "backend": "browser",
+                        "url": payload.get("url"),
+                        "session_id": payload.get("session_id"),
+                    },
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                    "url": payload.get("url"),
+                    "session_id": payload.get("session_id"),
                     "truncated": payload.get("truncated"),
                 },
                 "step_id": step_id,

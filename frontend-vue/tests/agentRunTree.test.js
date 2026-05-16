@@ -5,6 +5,7 @@ import {
   buildGovernanceRecoverySummary,
   buildInvocationProtocolEntry,
   buildPendingSubagentClarificationEntry,
+  collectResolvedSubagentInvocations,
   clarificationStateLabel,
   collectRunTreeInvocations,
   collectRunTreeNodes,
@@ -138,6 +139,49 @@ test('collectRunTreeNodes and collectRunTreeInvocations flatten nested structure
     collectRunTreeInvocations(root).map((item) => item.invocation.id),
     ['invocation-1', 'invocation-2']
   )
+})
+
+test('collectResolvedSubagentInvocations normalizes async child results from run context', () => {
+  const resolved = collectResolvedSubagentInvocations({
+    context: {
+      resolved_subagent_invocations: [
+        {
+          child_run_id: 'child-run-1',
+          invocation_id: 'invocation-1',
+          target: { slug: 'parallel-worker', name: 'Parallel Worker' },
+          status: 'completed',
+          step_status: 'completed',
+          summary: 'Worker complete.',
+          final_output_text: 'Worker complete.',
+          promoted_artifacts: [
+            { artifact_type: 'verification_report', name: 'async-worker-report' }
+          ],
+          progress: {
+            protocol_version: 'managed-subagent.progress.v1',
+            state: 'completed',
+            summary: 'Worker complete.'
+          },
+          review_result: {
+            decision: 'not_required',
+            mode: 'none'
+          },
+          governance_policy: {
+            protocol_version: 'managed-subagent.governance.v1',
+            history: { attempt_count: 1 }
+          },
+          pending_completion: true
+        }
+      ]
+    }
+  })
+
+  assert.equal(resolved.length, 1)
+  assert.equal(resolved[0].target.name, 'Parallel Worker')
+  assert.equal(resolved[0].promotedArtifacts[0].name, 'async-worker-report')
+  assert.equal(resolved[0].progress.state, 'completed')
+  assert.equal(resolved[0].reviewResult.decision, 'not_required')
+  assert.equal(resolved[0].governancePolicy.history.attemptCount, 1)
+  assert.equal(resolved[0].pendingCompletion, true)
 })
 
 test('summarizeInvocationTarget and summarizeInvocationTask prefer structured handoff fields', () => {

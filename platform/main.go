@@ -306,6 +306,24 @@ func main() {
 			guardMiddleware.Handler,
 		))
 
+	mux.Handle("/api/v1/agents/workspaces/locks/cleanup",
+		chain(
+			http.HandlerFunc(agentHandler.HandleCleanupWorkspaceLocks),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspaces/",
+		chain(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.NotFound(w, r)
+			}),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
 	mux.Handle("/api/v1/agents/workspaces",
 		chain(
 			http.HandlerFunc(agentHandler.HandleInspectWorkspaces),

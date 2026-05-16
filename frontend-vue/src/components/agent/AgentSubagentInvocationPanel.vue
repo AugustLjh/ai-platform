@@ -5,10 +5,10 @@
         <h3>委派明细</h3>
         <p>聚合展示 handoff、policy snapshot、child run 状态、恢复语义与最终结果摘要。</p>
       </div>
-      <span class="panel-count">{{ entries.length }}</span>
+      <span class="panel-count">{{ totalEntries }}</span>
     </div>
 
-    <div v-if="entries.length === 0" class="empty-state">
+    <div v-if="totalEntries === 0" class="empty-state">
       当前没有发生 subagent 委派。
     </div>
 
@@ -128,8 +128,63 @@
           <span v-if="entry.completedAt">结束于 {{ formatTime(entry.completedAt) }}</span>
         </div>
 
+        <div v-if="entry.promotedArtifacts.length > 0" class="meta-section">
+          <span class="meta-label">已提升产物</span>
+          <div class="meta-chip-list">
+            <span v-for="artifact in entry.promotedArtifacts" :key="artifactKey(artifact)" class="meta-chip">
+              {{ artifactLabel(artifact) }}
+            </span>
+          </div>
+        </div>
+
         <AgentSubagentReviewCard :review-result="entry.reviewResult" />
         <pre v-if="entry.resultSummary" class="result-preview">{{ entry.resultSummary }}</pre>
+      </article>
+
+      <article
+        v-for="entry in resolvedEntries"
+        :key="`resolved-${entry.id}`"
+        class="invocation-card resolved-card"
+      >
+        <div class="invocation-head">
+          <div>
+            <div class="invocation-title">{{ entry.targetName }}</div>
+            <div class="invocation-subtitle">
+              <span v-if="entry.parentStepId" class="mono">step {{ entry.parentStepId.slice(0, 8) }}</span>
+              <span v-if="entry.childRunId" class="mono">child {{ entry.childRunId.slice(0, 8) }}</span>
+            </div>
+          </div>
+          <span :class="['status-pill', entry.status]">已收敛</span>
+        </div>
+
+        <p v-if="entry.summary" class="invocation-task">{{ entry.summary }}</p>
+        <div class="fact-grid">
+          <div v-if="entry.finalOutputText" class="fact-card">
+            <span>最终文本</span>
+            <strong>{{ entry.finalOutputText }}</strong>
+          </div>
+          <div v-if="entry.promotedArtifacts.length > 0" class="fact-card">
+            <span>提升产物</span>
+            <strong>{{ entry.promotedArtifacts.length }} 个</strong>
+          </div>
+          <div v-if="entry.reviewResult.decision" class="fact-card">
+            <span>决策</span>
+            <strong>{{ entry.reviewResult.decision }}</strong>
+          </div>
+          <div v-if="entry.progress.summary" class="fact-card">
+            <span>进度</span>
+            <strong>{{ entry.progress.summary }}</strong>
+          </div>
+        </div>
+
+        <div v-if="entry.promotedArtifacts.length > 0" class="meta-section">
+          <span class="meta-label">已提升产物</span>
+          <div class="meta-chip-list">
+            <span v-for="artifact in entry.promotedArtifacts" :key="artifactKey(artifact)" class="meta-chip">
+              {{ artifactLabel(artifact) }}
+            </span>
+          </div>
+        </div>
       </article>
     </div>
   </section>
@@ -144,6 +199,10 @@ const props = defineProps({
   items: {
     type: Array,
     default: () => []
+  },
+  resolvedItems: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -153,10 +212,43 @@ const entries = computed(() => (
     return {
       ...entry,
       parentRunId: item.parentRun?.id || '',
-      publicationId: item.invocation?.publicationId || ''
+      publicationId: item.invocation?.publicationId || '',
+      promotedArtifacts: item.invocation?.resultPayload?.final_result?.artifacts || item.invocation?.resultPayload?.finalResult?.artifacts || []
     }
   })
 ))
+
+const resolvedEntries = computed(() => (
+  props.resolvedItems.map((item) => ({
+    id: item.id || item.invocationId || item.childRunId,
+    targetName: item.target?.name || item.target?.slug || '已收敛子任务',
+    childRunId: item.childRunId || '',
+    parentStepId: item.parentStepId || '',
+    status: item.stepStatus || item.status || 'completed',
+    summary: item.summary || '',
+    finalOutputText: item.finalOutputText || '',
+    promotedArtifacts: item.promotedArtifacts || [],
+    progress: item.progress || { summary: '', state: 'unknown' },
+    reviewResult: item.reviewResult || { decision: '' }
+  }))
+))
+
+const totalEntries = computed(() => entries.value.length + resolvedEntries.value.length)
+
+const artifactLabel = (artifact) => {
+  if (!artifact || typeof artifact !== 'object') return '未命名产物'
+  return artifact.title || artifact.name || artifact.artifact_type || artifact.artifactType || '未命名产物'
+}
+
+const artifactKey = (artifact) => {
+  if (!artifact || typeof artifact !== 'object') return 'artifact'
+  return [
+    artifact.artifact_type || artifact.artifactType || '',
+    artifact.title || artifact.name || '',
+    artifact.uri || '',
+    artifact.path || ''
+  ].join(':')
+}
 
 const formatTime = (value) => {
   if (!value) return '未知时间'

@@ -499,7 +499,10 @@ const normalizeArtifactPayload = (artifactType, payload) => {
         : Array.isArray(source.reviewNotes)
           ? source.reviewNotes.map((item) => String(item || '').trim()).filter(Boolean)
           : [],
-      mergePolicy: String(source.merge_policy || source.mergePolicy || 'manual_review_required').trim()
+      mergePolicy: String(source.merge_policy || source.mergePolicy || 'manual_review_required').trim(),
+      writeback: source.writeback && typeof source.writeback === 'object' && !Array.isArray(source.writeback)
+        ? { ...source.writeback }
+        : null
     }
   }
 

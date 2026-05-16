@@ -376,9 +376,30 @@
           <div v-if="workspaceInspectionSummary" class="runtime-inspection-panel">
             <strong>Workspace 生命周期</strong>
             <p>{{ workspaceInspectionSummary }}</p>
+            <div v-if="workspaceHealthSummary" class="runtime-health-summary">
+              <span>健康摘要</span>
+              <p>{{ workspaceHealthSummary }}</p>
+            </div>
+            <div v-if="workspaceLockSummary" class="runtime-lock-summary">
+              <span>锁观测</span>
+              <p>{{ workspaceLockSummary }}</p>
+            </div>
             <div v-if="workspaceLifecycleLastRunSummary" class="runtime-lifecycle-last-run">
               <span>最近巡检</span>
               <p>{{ workspaceLifecycleLastRunSummary }}</p>
+            </div>
+            <div v-if="workspaceLifecycleTrendSummary" class="runtime-lifecycle-trend">
+              <span>趋势摘要</span>
+              <p>{{ workspaceLifecycleTrendSummary }}</p>
+            </div>
+            <div v-if="workspaceLifecycleHistory.length > 0" class="runtime-lifecycle-history">
+              <span>巡检窗口</span>
+              <ul>
+                <li v-for="item in workspaceLifecycleHistory" :key="item.generatedAt || item.inspection?.generated_at || item.inspection?.generatedAt || item.index">
+                  <strong>{{ formatDateTime(item.generatedAt) || '未知时间' }}</strong>
+                  <span>{{ workspaceLifecycleHistoryItemSummary(item) }}</span>
+                </li>
+              </ul>
             </div>
             <div v-if="workspaceLifecycleAlerts.length > 0" class="runtime-alert-list">
               <span>最近告警</span>
@@ -388,10 +409,42 @@
                 </li>
               </ul>
             </div>
+            <div v-if="browserSessionSummary" class="runtime-browser-summary">
+              <span>Browser 会话</span>
+              <p>{{ browserSessionSummary }}</p>
+            </div>
+            <div v-if="browserSessionHealthSummary" class="runtime-browser-summary">
+              <span>Browser 健康</span>
+              <p>{{ browserSessionHealthSummary }}</p>
+            </div>
+            <div v-if="browserSessionTrendSummary" class="runtime-browser-summary">
+              <span>Browser 趋势</span>
+              <p>{{ browserSessionTrendSummary }}</p>
+            </div>
+            <div v-if="browserSessionAlerts.length > 0" class="runtime-alert-list">
+              <span>Browser 告警</span>
+              <ul>
+                <li v-for="(alert, index) in browserSessionAlerts" :key="`${alert.type}-${index}`">
+                  {{ browserSessionAlertLabel(alert) }}
+                </li>
+              </ul>
+            </div>
             <div class="runtime-action-row">
               <button type="button" class="btn btn-secondary btn-inline" :disabled="cleanupLoading" @click="runWorkspaceCleanup(true)">
                 {{ cleanupLoading ? '处理中...' : '试运行清理' }}
               </button>
+              <button type="button" class="btn btn-secondary btn-inline" :disabled="cleanupLoading" @click="runWorkspaceLockCleanup(true)">
+                {{ cleanupLoading ? '处理中...' : '试运行回收锁' }}
+              </button>
+            </div>
+            <div v-if="workspaceRecoveryActions.length > 0" class="runtime-recovery-list">
+              <span>恢复动作</span>
+              <ul>
+                <li v-for="action in workspaceRecoveryActions" :key="action.key || action.label">
+                  <strong>{{ action.label || action.key }}</strong>
+                  <span>{{ recoveryActionLabel(action) }}</span>
+                </li>
+              </ul>
             </div>
             <p v-if="workspaceCleanupSummary" class="runtime-cleanup-summary">{{ workspaceCleanupSummary }}</p>
           </div>
@@ -479,10 +532,14 @@ const manageMCPRoute = computed(() => buildMCPManageRoute(focusedMCPServerId.val
 const runtimeStatusSummary = computed(() => {
   if (!runtimeStatus.value) return ''
   const providers = Array.isArray(runtimeStatus.value.configuredProviders) ? runtimeStatus.value.configuredProviders.length : 0
+  const browserSessions = runtimeStatus.value?.web?.browserSessions
+  const browserSummary = browserSessions
+    ? `browser 会话 ${Number(browserSessions.activeSessionCount || 0)}/${Number(browserSessions.sessionCount || 0)}`
+    : 'browser 会话未加载'
   const lifecycle = runtimeStatus.value.workspaceLifecycle?.enabled
     ? `生命周期调度${runtimeStatus.value.workspaceLifecycle.running ? '运行中' : '已启用'}`
     : '生命周期调度未启用'
-  return `${runtimeStatus.value.started ? 'runtime 已启动' : 'runtime 未启动'} · 已配置 ${providers} 个 provider · ${lifecycle}`
+  return `${runtimeStatus.value.started ? 'runtime 已启动' : 'runtime 未启动'} · 已配置 ${providers} 个 provider · ${browserSummary} · ${lifecycle}`
 })
 const workspaceInspectionSummary = computed(() => {
   const inspection = workspaceInspection.value
@@ -491,13 +548,39 @@ const workspaceInspectionSummary = computed(() => {
     `共 ${Number(inspection.workspaceCount || inspection.workspace_count || 0)} 个 workspace`,
     `过期 ${Number(inspection.expiredCount || inspection.expired_count || 0)} 个`,
     `超配额 ${Number(inspection.quotaExceededCount || inspection.quota_exceeded_count || 0)} 个`,
-    `总大小 ${formatBytes(Number(inspection.totalSizeBytes || inspection.total_size_bytes || 0))}`
+    `总大小 ${formatBytes(Number(inspection.totalSizeBytes || inspection.total_size_bytes || 0))}`,
+    `锁 ${Number(inspection.lockSummary?.lockCount || inspection.lock_summary?.lock_count || 0)} 个`
   ].join(' · ')
+})
+const workspaceHealthSummary = computed(() => {
+  const health = workspaceInspection.value?.health || runtimeStatus.value?.workspace?.inspection?.health || {}
+  if (!health) return ''
+  const score = Number(health.score || 0)
+  const status = health.status || 'unknown'
+  const summary = health.summary || ''
+  return `状态 ${status} · 评分 ${score}/100${summary ? ` · ${summary}` : ''}`
+})
+const workspaceLockSummary = computed(() => {
+  const locks = workspaceInspection.value?.lockSummary || runtimeStatus.value?.workspace?.inspection?.lockSummary || {}
+  if (!locks) return ''
+  const oldest = locks.oldestLockAgeSeconds ? ` · 最老 ${Math.floor(Number(locks.oldestLockAgeSeconds) / 3600)}h` : ''
+  return `总计 ${Number(locks.lockCount || 0)} 个，活动 ${Number(locks.activeLockCount || 0)} 个，陈旧 ${Number(locks.staleLockCount || 0)} 个，孤立 ${Number(locks.orphanLockCount || 0)} 个${oldest}`
 })
 const workspaceCleanupSummary = computed(() => {
   const result = workspaceCleanupResult.value
   if (!result) return ''
   return `${result.dry_run ? '试运行' : '正式清理'}：候选 ${Number(result.candidate_count || result.candidateCount || 0)} 个，删除 ${Number(result.deleted_count || result.deletedCount || 0)} 个，失败 ${Number(result.failed_count || result.failedCount || 0)} 个。`
+})
+const workspaceRecoveryActions = computed(() => {
+  const health = workspaceInspection.value?.health || runtimeStatus.value?.workspace?.inspection?.health || {}
+  const actions = Array.isArray(health.recoveryActions) && health.recoveryActions.length > 0
+    ? health.recoveryActions
+    : Array.isArray(health.recovery_actions) && health.recovery_actions.length > 0
+      ? health.recovery_actions
+      : Array.isArray(runtimeStatus.value?.workspaceLifecycle?.recoveryActions)
+      ? runtimeStatus.value.workspaceLifecycle.recoveryActions
+      : []
+  return actions
 })
 const workspaceLifecycleLastRunSummary = computed(() => {
   const lifecycle = runtimeStatus.value?.workspaceLifecycle
@@ -517,12 +600,96 @@ const workspaceLifecycleLastRunSummary = computed(() => {
   }
   return base.join(' · ')
 })
+const workspaceLifecycleHistory = computed(() => {
+  const lifecycle = runtimeStatus.value?.workspaceLifecycle || {}
+  const history = Array.isArray(lifecycle.history) ? lifecycle.history : []
+  return history.slice(-5).reverse().map((item, index) => ({
+    ...item,
+    index
+  }))
+})
+const workspaceLifecycleTrendSummary = computed(() => {
+  const trend = runtimeStatus.value?.workspaceLifecycle?.trend || null
+  if (!trend) return ''
+  const windowSize = Number(trend.windowSize || trend.window_size || 0)
+  const delta = trend.delta || {}
+  const parts = [
+    `窗口 ${windowSize} 次`,
+    trend.status || 'unknown',
+    trend.summary || ''
+  ]
+  const changeParts = []
+  if (Number(delta.health_score || 0) !== 0) {
+    changeParts.push(`健康评分 ${formatSignedNumber(Number(delta.health_score || 0))}`)
+  }
+  if (Number(delta.expired_count || 0) !== 0) {
+    changeParts.push(`过期 ${formatSignedNumber(Number(delta.expired_count || 0))}`)
+  }
+  if (Number(delta.stale_lock_count || 0) !== 0) {
+    changeParts.push(`陈旧锁 ${formatSignedNumber(Number(delta.stale_lock_count || 0))}`)
+  }
+  if (changeParts.length > 0) {
+    parts.push(changeParts.join(' · '))
+  }
+  return parts.filter(Boolean).join(' · ')
+})
 const workspaceLifecycleAlerts = computed(() => {
   const lifecycle = runtimeStatus.value?.workspaceLifecycle || {}
   const alerts = Array.isArray(lifecycle.recentAlerts) && lifecycle.recentAlerts.length > 0
     ? lifecycle.recentAlerts
     : (Array.isArray(lifecycle.lastRun?.alerts) ? lifecycle.lastRun.alerts : [])
   return alerts.slice(-5).reverse()
+})
+const browserSessionSummary = computed(() => {
+  const sessions = runtimeStatus.value?.web?.browserSessions || null
+  if (!sessions) return ''
+  const active = Number(sessions.activeSessionCount || 0)
+  const total = Number(sessions.sessionCount || 0)
+  const expired = Number(sessions.expiredSessionCount || 0)
+  const ttl = Number(sessions.sessionTtlSeconds || 0)
+  const networkErrors = Number(sessions.networkErrorCount || 0)
+  const consoleMessages = Number(sessions.consoleMessageCount || 0)
+  const oldest = sessions.oldestSessionAgeSeconds != null
+    ? `${Math.floor(Number(sessions.oldestSessionAgeSeconds) / 60)}m`
+    : '未知'
+  return `活跃 ${active}/${total}，过期 ${expired}，网络错误 ${networkErrors}，Console ${consoleMessages}，TTL ${ttl}s，最老 ${oldest}`
+})
+const browserSessionHealthSummary = computed(() => {
+  const health = runtimeStatus.value?.web?.browserSessions?.health || null
+  if (!health) return ''
+  const score = Number(health.score || 0)
+  const status = health.status || 'unknown'
+  const summary = health.summary || ''
+  return `状态 ${status} · 评分 ${score}/100${summary ? ` · ${summary}` : ''}`
+})
+const browserSessionTrendSummary = computed(() => {
+  const trend = runtimeStatus.value?.web?.browserSessions?.trend || null
+  if (!trend) return ''
+  const windowSize = Number(trend.windowSize || trend.window_size || 0)
+  const delta = trend.delta || {}
+  const parts = [
+    `窗口 ${windowSize} 次`,
+    trend.status || 'unknown',
+    trend.summary || ''
+  ]
+  const changeParts = []
+  if (Number(delta.health_score || 0) !== 0) {
+    changeParts.push(`健康评分 ${formatSignedNumber(Number(delta.health_score || 0))}`)
+  }
+  if (Number(delta.expired_session_count || 0) !== 0) {
+    changeParts.push(`过期会话 ${formatSignedNumber(Number(delta.expired_session_count || 0))}`)
+  }
+  if (Number(delta.network_error_count || 0) !== 0) {
+    changeParts.push(`网络错误 ${formatSignedNumber(Number(delta.network_error_count || 0))}`)
+  }
+  if (changeParts.length > 0) {
+    parts.push(changeParts.join(' · '))
+  }
+  return parts.filter(Boolean).join(' · ')
+})
+const browserSessionAlerts = computed(() => {
+  const sessions = runtimeStatus.value?.web?.browserSessions || {}
+  return Array.isArray(sessions.alerts) ? sessions.alerts.slice(-5).reverse() : []
 })
 
 const normalizeIds = (value = []) => [...new Set((Array.isArray(value) ? value : []).filter(Boolean))].sort()
@@ -639,6 +806,24 @@ const runWorkspaceCleanup = async (dryRun = true) => {
   } catch (error) {
     console.error('Failed to cleanup workspaces:', error)
     toastStore.showToast({ type: 'error', message: agentsStore.error || 'workspace 清理失败' })
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
+const runWorkspaceLockCleanup = async (dryRun = true) => {
+  cleanupLoading.value = true
+  try {
+    await agentsStore.cleanupWorkspaceLocks({
+      dry_run: dryRun,
+      confirmed: dryRun ? false : true,
+      max_delete: 50
+    })
+    await agentsStore.fetchRuntimeStatus().catch(() => [])
+    toastStore.showToast({ type: 'success', message: dryRun ? 'workspace 锁回收试运行已完成' : 'workspace 锁回收已完成' })
+  } catch (error) {
+    console.error('Failed to cleanup workspace locks:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || 'workspace 锁回收失败' })
   } finally {
     cleanupLoading.value = false
   }
@@ -943,6 +1128,12 @@ const formatBytes = (value) => {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
+const formatSignedNumber = (value) => {
+  const number = Number(value || 0)
+  if (!Number.isFinite(number) || number === 0) return '0'
+  return number > 0 ? `+${number}` : `${number}`
+}
+
 const formatDateTime = (value) => {
   if (!value) return ''
   const date = new Date(value)
@@ -954,7 +1145,9 @@ const lifecycleAlertLabel = (alert = {}) => {
   const typeMap = {
     expired_workspaces: '过期 workspace 数量超过阈值',
     quota_exceeded_workspaces: '超配额 workspace 数量超过阈值',
-    quota_bytes: 'workspace 总存储超过阈值'
+    quota_bytes: 'workspace 总存储超过阈值',
+    stale_cleanup_locks: '陈旧清理锁数量超过阈值',
+    orphan_cleanup_locks: '孤立清理锁需要清理'
   }
   const label = typeMap[alert.type] || alert.message || alert.type || '生命周期告警'
   const hasBytes = Object.prototype.hasOwnProperty.call(alert, 'bytes') || alert.type === 'quota_bytes'
@@ -964,6 +1157,38 @@ const lifecycleAlertLabel = (alert = {}) => {
     return `${label}：${value} / ${threshold}`
   }
   return `${label}：${Number(alert.count || 0)} / ${Number(alert.threshold || 0)}`
+}
+
+const browserSessionAlertLabel = (alert = {}) => {
+  const typeMap = {
+    expired_browser_sessions: 'Browser 会话已超过 TTL',
+    browser_network_errors: 'Browser 会话存在网络错误'
+  }
+  const label = typeMap[alert.type] || alert.message || alert.type || 'Browser 告警'
+  return `${label}：${Number(alert.count || 0)} / ${Number(alert.threshold || 0)}`
+}
+
+const recoveryActionLabel = (action = {}) => {
+  const details = []
+  if (action.category) details.push(action.category)
+  if (action.priority) details.push(`优先级 ${action.priority}`)
+  if (action.requires_confirmation) details.push('需要确认')
+  if (action.tenant_scoped) details.push('租户级')
+  return details.join(' · ')
+}
+
+const workspaceLifecycleHistoryItemSummary = (item = {}) => {
+  const inspection = item.inspection || {}
+  const cleanup = item.cleanup || null
+  const parts = [
+    `workspace ${Number(inspection.workspace_count || inspection.workspaceCount || 0)} 个`,
+    `过期 ${Number(inspection.expired_count || inspection.expiredCount || 0)} 个`,
+    `超配额 ${Number(inspection.quota_exceeded_count || inspection.quotaExceededCount || 0)} 个`
+  ]
+  if (cleanup) {
+    parts.push(`${cleanup.dry_run ? '试运行' : '清理'}候选 ${Number(cleanup.candidate_count || cleanup.candidateCount || 0)} 个`)
+  }
+  return parts.join(' · ')
 }
 
 const runtimeGovernanceCards = computed(() => {
@@ -994,9 +1219,13 @@ const runtimeGovernanceCards = computed(() => {
     'Sandbox',
     Boolean(status.sandbox?.enabled && status.sandbox?.runnerConfigured),
     status.sandbox?.enabled && status.sandbox?.runnerConfigured
-      ? `runner=${status.sandbox?.runnerBackend || 'unknown'}，网络=${status.sandbox?.networkMode || 'unknown'}。`
+      ? `runner=${status.sandbox?.runnerBackend || 'unknown'}，网络=${status.sandbox?.networkMode || 'unknown'}，隔离=${status.sandbox?.isolation?.status || 'unknown'}。`
       : 'sandbox provider 或 runner 尚未完成配置。',
-    status.sandbox?.dockerImage || ''
+    [
+      status.sandbox?.dockerImage || '',
+      status.sandbox?.isolation?.productionReady ? 'production-ready' : '',
+      status.sandbox?.isolation?.recoveryActions?.length ? `${status.sandbox.isolation.recoveryActions.length} recovery actions` : ''
+    ].filter(Boolean).join(' · ')
   )
   add(
     'web',
@@ -1005,7 +1234,15 @@ const runtimeGovernanceCards = computed(() => {
     status.web?.enabled && status.web?.networkConfigured
       ? `允许域名 ${status.web?.allowedDomains?.length || 0} 个，搜索端点 ${status.web?.searchEndpoint || '未配置'}。`
       : 'web provider 或网络策略尚未完成配置。',
-    status.web?.deniedDomains?.length ? `deny ${status.web.deniedDomains.join(', ')}` : ''
+    [
+      status.web?.deniedDomains?.length ? `deny ${status.web.deniedDomains.join(', ')}` : '',
+      status.web?.searchQuality
+        ? `search rules: url=${status.web.searchQuality.requireUrl ? 'on' : 'off'}, title=${status.web.searchQuality.requireTitle ? 'on' : 'off'}, snippet=${status.web.searchQuality.requireSnippet ? 'on' : 'off'}, schemes=${status.web.searchQuality.allowedSchemes?.join(', ') || 'none'}`
+        : '',
+      status.web?.browserSessions
+        ? `${status.web.browserSessions.activeSessionCount || 0}/${status.web.browserSessions.sessionCount || 0} browser sessions, health=${status.web.browserSessions.health?.status || 'unknown'}`
+        : ''
+    ].filter(Boolean).join(' · ')
   )
   add(
     'browser',
@@ -1014,7 +1251,10 @@ const runtimeGovernanceCards = computed(() => {
     status.browser?.enabled && status.browser?.configured && status.browser?.runtimeAvailable
       ? `${status.browser?.backend || 'browser'} / ${status.browser?.name || 'default'} 已就绪。`
       : 'browser 开关、配置或运行时依赖尚未满足。',
-    status.browser?.runtimeReason || ''
+    [
+      status.browser?.runtimeReason || '',
+      status.browser?.sessionTtlSeconds ? `session ttl ${status.browser.sessionTtlSeconds}s` : ''
+    ].filter(Boolean).join(' · ')
   )
   add(
     'lifecycle',
@@ -1023,7 +1263,10 @@ const runtimeGovernanceCards = computed(() => {
     status.workspaceLifecycle?.enabled
       ? `周期 ${status.workspaceLifecycle?.intervalSeconds || 0}s，${status.workspaceLifecycle?.dryRun ? 'dry-run' : '执行删除'}，最近告警 ${workspaceLifecycleAlerts.value.length} 条。`
       : 'workspace 生命周期调度未启用。',
-    status.workspaceLifecycle?.running ? `调度器运行中${status.workspaceLifecycle?.lastCompletedAt ? `，最近完成 ${formatDateTime(status.workspaceLifecycle.lastCompletedAt)}` : ''}` : '调度器未运行'
+    [
+      status.workspaceLifecycle?.running ? `调度器运行中${status.workspaceLifecycle?.lastCompletedAt ? `，最近完成 ${formatDateTime(status.workspaceLifecycle.lastCompletedAt)}` : ''}` : '调度器未运行',
+      status.workspaceLifecycle?.recoveryActions?.length ? `${status.workspaceLifecycle.recoveryActions.length} 个恢复动作` : ''
+    ].filter(Boolean).join(' · ')
   )
   return cards
 })
@@ -1502,6 +1745,53 @@ onMounted(async () => {
 .runtime-inspection-panel p {
   margin-top: 6px;
   color: var(--gray-700);
+}
+
+.runtime-health-summary,
+.runtime-lock-summary,
+.runtime-lifecycle-last-run,
+.runtime-lifecycle-trend,
+.runtime-lifecycle-history,
+.runtime-alert-list,
+.runtime-browser-summary,
+.runtime-recovery-list {
+  margin-top: 12px;
+}
+
+.runtime-health-summary span,
+.runtime-lock-summary span,
+.runtime-lifecycle-last-run span,
+.runtime-lifecycle-trend span,
+.runtime-lifecycle-history span,
+.runtime-alert-list span,
+.runtime-browser-summary span,
+.runtime-recovery-list span {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.runtime-lifecycle-history ul,
+.runtime-alert-list ul,
+.runtime-recovery-list ul {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding-left: 18px;
+}
+
+.runtime-lifecycle-history li,
+.runtime-alert-list li,
+.runtime-recovery-list li {
+  color: var(--gray-700);
+  font-size: 13px;
+}
+
+.runtime-lifecycle-history strong,
+.runtime-alert-list strong,
+.runtime-recovery-list strong {
+  color: var(--gray-900);
 }
 
 .runtime-action-row {

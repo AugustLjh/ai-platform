@@ -17,6 +17,7 @@ from ai_runtime.core.agent_runtime.models import (
     RuntimeArtifactReviewDecisionRequest,
     RuntimeCreateRunRequest,
     RuntimeResumeRunRequest,
+    RuntimeWorkspaceWritebackRequest,
 )
 from ai_runtime.core.database import get_db_manager
 from ai_runtime.core.dependencies import get_current_tenant_id, get_current_user_id
@@ -133,6 +134,30 @@ async def inspect_workspaces(
         for item in inspection.get("workspaces", [])
         if str(item.get("tenant_id") or "") == tenant_id
     ]
+    lock_summary = inspection.get("lock_summary") if isinstance(inspection.get("lock_summary"), dict) else {}
+    tenant_lock_summary = {
+        **lock_summary,
+        "locks": [
+            item
+            for item in lock_summary.get("locks", [])
+            if str(item.get("tenant_id") or "") == tenant_id
+        ],
+    }
+    tenant_lock_summary["lock_count"] = len(tenant_lock_summary["locks"])
+    tenant_lock_summary["active_lock_count"] = sum(1 for item in tenant_lock_summary["locks"] if not item.get("stale"))
+    tenant_lock_summary["stale_lock_count"] = sum(1 for item in tenant_lock_summary["locks"] if item.get("stale"))
+    tenant_lock_summary["orphan_lock_count"] = sum(1 for item in tenant_lock_summary["locks"] if item.get("orphan"))
+    health = runtime.workspace_manager.build_workspace_health(
+        {
+            **inspection,
+            "workspace_count": len(workspaces),
+            "expired_count": sum(1 for item in workspaces if item.get("expired")),
+            "quota_exceeded_count": sum(1 for item in workspaces if item.get("quota_exceeded")),
+            "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in workspaces),
+            "total_file_count": sum(int(item.get("file_count") or 0) for item in workspaces),
+        },
+        lock_summary=tenant_lock_summary,
+    )
     return {
         **inspection,
         "tenant_id": tenant_id,
@@ -142,6 +167,8 @@ async def inspect_workspaces(
         "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in workspaces),
         "total_file_count": sum(int(item.get("file_count") or 0) for item in workspaces),
         "workspaces": workspaces,
+        "lock_summary": tenant_lock_summary,
+        "health": health,
         "requested_by": user_id,
     }
 
@@ -158,6 +185,36 @@ async def cleanup_workspaces(
         raise HTTPException(status_code=400, detail="workspace cleanup requires confirmed=true when dry_run=false")
     runtime = await get_started_agent_runtime()
     result = runtime.workspace_manager.cleanup_expired_workspaces(
+        dry_run=dry_run,
+        max_delete=max_delete,
+        tenant_id=tenant_id,
+    )
+    selected = list(result.get("deleted", []))
+    failed = list(result.get("failed", []))
+    return {
+        **result,
+        "tenant_id": tenant_id,
+        "selected_count": len(selected),
+        "deleted_count": sum(1 for item in selected if item.get("deleted")),
+        "failed_count": len(failed),
+        "deleted": selected,
+        "failed": failed,
+        "requested_by": user_id,
+    }
+
+
+@router.post("/workspaces/locks/cleanup")
+async def cleanup_workspace_locks(
+    dry_run: bool = Query(default=True),
+    confirmed: bool = Query(default=False),
+    max_delete: int = Query(default=100, ge=1, le=1000),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    if not dry_run and not confirmed:
+        raise HTTPException(status_code=400, detail="workspace lock cleanup requires confirmed=true when dry_run=false")
+    runtime = await get_started_agent_runtime()
+    result = runtime.workspace_manager.cleanup_stale_locks(
         dry_run=dry_run,
         max_delete=max_delete,
         tenant_id=tenant_id,
@@ -295,3 +352,26 @@ async def review_run_artifact(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/workspace/writeback", response_model=AgentRunSummaryResponse)
+async def writeback_run_workspace(
+    run_id: str,
+    request: RuntimeWorkspaceWritebackRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    if not request.dry_run and not request.confirmed:
+        raise HTTPException(status_code=400, detail="workspace writeback requires confirmed=true when dry_run=false")
+    runtime = await get_started_agent_runtime()
+    try:
+        return await runtime.writeback_run_workspace(
+            run_id=run_id,
+            tenant_id=tenant_id,
+            reviewer_id=user_id,
+            request=request,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc

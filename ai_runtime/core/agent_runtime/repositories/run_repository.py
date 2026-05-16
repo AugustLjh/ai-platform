@@ -411,6 +411,27 @@ class RunRepository:
                     created.append(_record_to_dict(row))
         return created
 
+    async def create_artifact(self, run_id: str, artifact: Dict[str, Any]) -> Dict[str, Any]:
+        row = await self.db_pool.fetchrow(
+            """
+            INSERT INTO agent_artifacts (
+                run_id, step_id, artifact_type, name, mime_type, uri, payload, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id, run_id, step_id, artifact_type, name, mime_type, uri,
+                      payload AS artifact_payload, metadata, created_at, updated_at
+            """,
+            _serialize_uuid(run_id),
+            _serialize_uuid(artifact.get("step_id")),
+            artifact.get("artifact_type"),
+            artifact.get("name"),
+            artifact.get("mime_type"),
+            artifact.get("uri"),
+            encode_json(artifact.get("payload"), {}),
+            encode_json(artifact.get("metadata"), {}),
+        )
+        return _record_to_dict(row)
+
     async def list_artifacts(self, run_id: str) -> List[Dict[str, Any]]:
         rows = await self.db_pool.fetch(
             """

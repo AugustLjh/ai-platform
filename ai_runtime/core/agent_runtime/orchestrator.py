@@ -801,6 +801,7 @@ class AgentOrchestrator:
             runtime_context.get("promoted_artifacts"),
             delegation.artifacts,
         )
+        runtime_context["promoted_artifacts"] = promoted_artifacts
         runtime_context["pending_question"] = question
         runtime_context["pending_subagent_clarification"] = {
             "child_run_id": delegation.child_run_id,
@@ -819,6 +820,7 @@ class AgentOrchestrator:
             ),
             "handoff": handoff_summary,
             "artifacts": delegation.artifacts,
+            "promoted_artifacts": promoted_artifacts,
         }
         self._append_conversation_message(runtime_context, role="assistant", content=question or delegation.summary or "")
         return {
@@ -846,6 +848,8 @@ class AgentOrchestrator:
                     else []
                 ),
                 "handoff": handoff_summary,
+                "artifacts": delegation.artifacts,
+                "promoted_artifacts": promoted_artifacts,
             },
             "artifacts": promoted_artifacts,
             "context": runtime_context,
@@ -991,6 +995,65 @@ class AgentOrchestrator:
             pending = []
             runtime_context["pending_subagent_invocations"] = pending
         return pending
+
+    def _resolved_subagent_invocations(self, runtime_context: Dict[str, Any]) -> list[dict[str, Any]]:
+        resolved = runtime_context.get("resolved_subagent_invocations")
+        if not isinstance(resolved, list):
+            resolved = []
+            runtime_context["resolved_subagent_invocations"] = resolved
+        return resolved
+
+    def _promote_subagent_artifacts(
+        self,
+        runtime_context: Dict[str, Any],
+        artifacts: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        promoted = merge_artifacts(runtime_context.get("promoted_artifacts"), artifacts)
+        if promoted:
+            runtime_context["promoted_artifacts"] = promoted
+        return promoted
+
+    def _record_resolved_subagent_invocation(
+        self,
+        runtime_context: Dict[str, Any],
+        *,
+        step: Dict[str, Any],
+        target: SubagentTarget,
+        delegation: SubagentDelegationResult,
+        review_result: dict[str, Any] | None,
+        governance_policy: dict[str, Any],
+        failure_strategy: dict[str, Any],
+        promoted_artifacts: list[dict[str, Any]],
+        step_status: str,
+        pending_completion: bool,
+        review_gate_blocked: bool,
+    ) -> None:
+        resolved = self._resolved_subagent_invocations(runtime_context)
+        resolved.append(
+            {
+                "child_run_id": delegation.child_run_id,
+                "invocation_id": delegation.metadata.get("invocation_id") if isinstance(delegation.metadata, dict) else None,
+                "target": target.model_dump(mode="json"),
+                "parent_step_id": step["id"],
+                "parent_step_index": step.get("step_index"),
+                "status": delegation.status,
+                "step_status": step_status,
+                "summary": delegation.summary,
+                "final_output": delegation.final_output,
+                "final_output_text": delegation.final_output_text,
+                "final_output_json": delegation.final_output_json,
+                "artifacts": delegation.artifacts,
+                "promoted_artifacts": promoted_artifacts,
+                "progress": delegation.progress,
+                "clarification": delegation.clarification or None,
+                "review_result": review_result,
+                "governance_policy": governance_policy,
+                "failure_strategy": failure_strategy,
+                "pending_completion": pending_completion,
+                "review_gate_blocked": review_gate_blocked,
+            }
+        )
+        runtime_context["resolved_subagent_invocations"] = resolved[-20:]
 
     def _register_pending_subagent_invocation(
         self,
@@ -1188,7 +1251,13 @@ class AgentOrchestrator:
             "failure_strategy": failure_strategy,
             "progress": delegation.progress,
             "clarification": delegation.clarification or None,
+            "artifacts": delegation.artifacts,
         }
+        promoted_artifacts: list[dict[str, Any]] = []
+        if delegation.status in {"completed", "waiting_user"}:
+            promoted_artifacts = self._promote_subagent_artifacts(runtime_context, delegation.artifacts)
+            if promoted_artifacts:
+                step_output["promoted_artifacts"] = promoted_artifacts
         if review_gate_blocked or delegation.status == "failed":
             step_status = "failed"
         elif delegation.status == "cancelled":
@@ -1299,6 +1368,8 @@ class AgentOrchestrator:
                 "status": "review_blocked" if review_gate_blocked else delegation.status,
                 "summary": delegation.summary,
                 "final_output_text": delegation.final_output_text,
+                "artifacts": delegation.artifacts,
+                "promoted_artifacts": promoted_artifacts,
                 "review_result": review_result,
                 "governance_policy": resolved_governance_policy,
                 "governance_usage": cumulative_usage,
@@ -1312,6 +1383,19 @@ class AgentOrchestrator:
             },
             error=step_error,
             delegate_target=target.slug,
+        )
+        self._record_resolved_subagent_invocation(
+            runtime_context,
+            step=step,
+            target=target,
+            delegation=delegation,
+            review_result=review_result,
+            governance_policy=resolved_governance_policy,
+            failure_strategy=failure_strategy,
+            promoted_artifacts=promoted_artifacts,
+            step_status=step_status,
+            pending_completion=pending_completion,
+            review_gate_blocked=review_gate_blocked,
         )
         if review_gate_blocked or delegation.status in {"failed", "cancelled"}:
             return observation, None
