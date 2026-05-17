@@ -5,6 +5,8 @@ import posixpath
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from ai_runtime.core.agent_runtime.events import sanitize_runtime_payload
+
 
 TEXT_CANDIDATE_KEYS = (
     "final_output_text",
@@ -102,6 +104,10 @@ MEDIA_EXTENSIONS = {
 
 def _is_non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _sanitize_artifact_payload(value: Any) -> Any:
+    return sanitize_runtime_payload(value)
 
 
 def _compact_title(key: str, fallback: str) -> str:
@@ -1721,8 +1727,8 @@ def _append_artifact(
         {
             "artifact_type": artifact_type,
             "name": name,
-            "payload": payload,
-            "metadata": metadata or {},
+            "payload": _sanitize_artifact_payload(payload),
+            "metadata": _sanitize_artifact_payload(metadata or {}),
         }
     )
 
@@ -1857,7 +1863,7 @@ def _normalize_artifact_payload(artifact_type: str, payload: Any) -> Any:
         table_payload = _normalize_table_payload(payload)
         return table_payload or payload
 
-    return payload
+    return _sanitize_artifact_payload(payload)
 
 
 def _normalize_mcp_content_items(value: Any) -> list[dict[str, Any]]:
@@ -2118,11 +2124,13 @@ def _normalize_artifact_entry(artifact: Dict[str, Any]) -> dict[str, Any]:
     return {
         "artifact_type": artifact_type,
         "name": str(artifact.get("name") or "Untitled Artifact").strip() or "Untitled Artifact",
-        "payload": _normalize_artifact_payload(
-            artifact_type,
-            artifact.get("payload") if artifact.get("payload") is not None else {},
+        "payload": _sanitize_artifact_payload(
+            _normalize_artifact_payload(
+                artifact_type,
+                artifact.get("payload") if artifact.get("payload") is not None else {},
+            )
         ),
-        "metadata": dict(artifact.get("metadata") or {}),
+        "metadata": _sanitize_artifact_payload(dict(artifact.get("metadata") or {})),
         "step_id": artifact.get("step_id"),
         "mime_type": artifact.get("mime_type"),
         "uri": artifact.get("uri"),

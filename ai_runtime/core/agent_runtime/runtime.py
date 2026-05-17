@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Optional
 
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
 from ai_runtime.core.agent_runtime.execution_modes import normalize_execution_mode
+from ai_runtime.core.agent_runtime.events import sanitize_runtime_payload
 from ai_runtime.core.agent_runtime.llm_service import AgentLLMService
 from ai_runtime.core.agent_runtime.memory import RuntimeStateStore
 from ai_runtime.core.agent_runtime.mcp.registry import MCPRegistry
@@ -44,6 +45,7 @@ from ai_runtime.core.agent_runtime.repositories.tool_call_repository import Tool
 from ai_runtime.core.agent_runtime.tools.base import ToolLookupContext
 from ai_runtime.core.agent_runtime.tools.providers.bootstrap import configure_tool_registry
 from ai_runtime.core.agent_runtime.tools.providers.sandbox_exec import SandboxExecToolProvider, build_sandbox_isolation_profile
+from ai_runtime.core.agent_runtime.tools.providers.observability import ObservabilityToolProvider
 from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 from ai_runtime.core.agent_runtime.tracing import AgentTracer
 from ai_runtime.core.agent_runtime.workspace_lifecycle import (
@@ -63,7 +65,7 @@ class AgentRuntime:
         self.state_store = RuntimeStateStore()
         self.registry = ToolRegistry()
         self.mcp_registry = MCPRegistry(db_pool)
-        configure_tool_registry(self.registry, mcp_registry=self.mcp_registry)
+        configure_tool_registry(self.registry, mcp_registry=self.mcp_registry, db_pool=db_pool)
         self.skill_registry = SkillRegistry(db_pool)
         self.subagent_registry = SubagentRegistry(db_pool, self.agent_repository)
         self.llm_service = AgentLLMService()
@@ -87,6 +89,7 @@ class AgentRuntime:
         self._workspace_lifecycle_last_run: dict[str, Any] | None = None
         self._workspace_lifecycle_history: list[dict[str, Any]] = []
         self._browser_session_history: list[dict[str, Any]] = []
+        self.observability_provider = ObservabilityToolProvider.from_env(db_pool=db_pool)
 
         self.tracer = AgentTracer(
             self.run_repository,
@@ -465,6 +468,7 @@ class AgentRuntime:
         sandbox_provider = SandboxExecToolProvider.from_env()
         sandbox_profile = build_sandbox_isolation_profile(sandbox_provider.policy)
         web_provider = self.registry.get_provider("web")
+        observability_provider = self.registry.get_provider("observability")
         web_session_summary = None
         if web_provider is not None and hasattr(web_provider, "browser_session_snapshot"):
             try:
@@ -472,6 +476,11 @@ class AgentRuntime:
             except Exception:
                 web_session_summary = None
         web_session_summary = self._enrich_browser_session_summary(web_session_summary)
+        observability_summary = (
+            observability_provider.status_summary(enabled=True)
+            if observability_provider is not None and hasattr(observability_provider, "status_summary")
+            else self.observability_provider.status_summary(enabled=False)
+        )
         return {
             "status": "ready" if self._started else "idle",
             "started": self._started,
@@ -542,6 +551,7 @@ class AgentRuntime:
                     "runtime_reason": browser_runtime_reason,
                     "session_ttl_seconds": int(os.getenv("AGENT_BROWSER_SESSION_TTL_SECONDS", "900")),
                 },
+                "observability": observability_summary,
             },
             "workspace_lifecycle": {
                 "enabled": lifecycle_policy.enabled,
@@ -1111,6 +1121,7 @@ class AgentRuntime:
                 "completed_at": result.get("completed_at"),
             },
         }
+        artifact = sanitize_runtime_payload(artifact)
         await self.run_repository.create_artifact(run_id, artifact)
         await self.tracer.emit_event(
             run_id,

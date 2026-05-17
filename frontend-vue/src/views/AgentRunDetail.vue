@@ -34,13 +34,18 @@
       {{ errorMessage }}
     </div>
 
-    <section :class="['workspace-status-card', { muted: !workspaceBound }]">
-      <div>
+    <details :class="['workspace-status-card', { muted: !workspaceBound }]">
+      <summary class="workspace-status-summary">
+        <span>{{ workspaceTitle }}</span>
+        <small v-if="workspaceBound">{{ workspaceSourceLabel }} · {{ workspaceSnapshot?.file_count ?? 0 }} 文件</small>
+        <small v-else>未绑定项目 workspace</small>
+      </summary>
+      <div class="workspace-status-body">
         <div class="workspace-kicker">Workspace</div>
         <h2>{{ workspaceTitle }}</h2>
         <p>{{ workspaceDescription }}</p>
       </div>
-      <div v-if="workspaceBound" class="workspace-meta-grid">
+      <div v-if="workspaceBound" class="workspace-meta-strip">
         <span>来源 {{ workspaceSourceLabel }}</span>
         <span>文件 {{ workspaceSnapshot?.file_count ?? 0 }}</span>
         <span>大小 {{ formatBytes(workspaceSnapshot?.total_size_bytes) }}</span>
@@ -50,7 +55,7 @@
         <span>当前降级为 project-context/上传文件问答。</span>
         <router-link v-if="run?.agentDefinitionId" :to="workspaceLink" class="workspace-link">返回会话绑定项目</router-link>
       </div>
-    </section>
+    </details>
 
     <section class="chat-stage">
       <div ref="threadRef" class="chat-thread">
@@ -578,16 +583,15 @@ const formatBytes = (value) => {
 <style scoped>
 .agent-chat-page {
   min-height: 100%;
-  padding: 20px 24px 24px;
+  height: 100%;
+  padding: 10px 14px 14px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  gap: 18px;
+  gap: 8px;
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  background:
-    radial-gradient(circle at top, rgba(16, 163, 127, 0.08), transparent 34%),
-    linear-gradient(180deg, #f4f7f6 0%, #eef3f2 100%);
+  background: #f6f7f8;
 }
 
 .chat-topbar {
@@ -595,17 +599,18 @@ const formatBytes = (value) => {
   top: 0;
   z-index: 5;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 18px 22px;
-  border-radius: 24px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(16px);
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+  gap: 12px;
+  width: min(1040px, 100%);
+  justify-self: center;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
   min-width: 0;
-  width: 100%;
   max-width: 100%;
 }
 
@@ -620,25 +625,26 @@ const formatBytes = (value) => {
 }
 
 .topbar-copy h1 {
-  font-size: 28px;
-  line-height: 1.08;
+  font-size: 20px;
+  line-height: 1.2;
   color: #0f172a;
 }
 
 .topbar-copy p {
-  margin-top: 8px;
-  max-width: 780px;
+  margin-top: 3px;
+  max-width: 540px;
   color: #475569;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .topbar-kicker {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: #0f766e;
-  margin-bottom: 8px;
+  margin-bottom: 3px;
 }
 
 .back-link {
@@ -646,27 +652,34 @@ const formatBytes = (value) => {
   text-decoration: none;
   color: #0f766e;
   font-weight: 700;
+  font-size: 13px;
 }
 
 .topbar-side {
   justify-items: end;
   flex-shrink: 0;
+  gap: 8px;
 }
 
 .topbar-meta {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 10px 14px;
+  gap: 6px 10px;
   color: #64748b;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .topbar-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 6px;
+}
+
+.topbar-actions .btn {
+  padding: 7px 10px;
+  font-size: 12px;
 }
 
 .mono {
@@ -677,9 +690,9 @@ const formatBytes = (value) => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 6px 10px;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -710,28 +723,61 @@ const formatBytes = (value) => {
 }
 
 .error-banner {
-  padding: 14px 16px;
-  border-radius: 18px;
+  width: min(1040px, 100%);
+  justify-self: center;
+  padding: 10px 12px;
+  border-radius: 12px;
   background: rgba(239, 68, 68, 0.08);
   border: 1px solid rgba(239, 68, 68, 0.18);
   color: #b91c1c;
+  font-size: 13px;
 }
 
 .workspace-status-card {
-  display: flex;
+  display: grid;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
-  padding: 16px 18px;
-  border-radius: 22px;
-  border: 1px solid rgba(15, 118, 110, 0.16);
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.06);
+  gap: 10px;
+  width: min(1040px, 100%);
+  justify-self: center;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: none;
+  overflow: hidden;
 }
 
 .workspace-status-card.muted {
-  border-color: rgba(245, 158, 11, 0.2);
-  background: rgba(255, 251, 235, 0.86);
+  border-color: rgba(245, 158, 11, 0.14);
+  background: rgba(255, 251, 235, 0.52);
+}
+
+.workspace-status-body {
+  padding: 0 12px 10px;
+}
+
+.workspace-status-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 12px;
+  cursor: pointer;
+  list-style: none;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.workspace-status-summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-status-summary small {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .workspace-kicker {
@@ -743,34 +789,34 @@ const formatBytes = (value) => {
 }
 
 .workspace-status-card h2 {
-  margin-top: 6px;
+  margin-top: 5px;
   color: #0f172a;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .workspace-status-card p {
-  margin-top: 6px;
+  margin-top: 4px;
   color: #64748b;
-  line-height: 1.6;
+  line-height: 1.5;
+  font-size: 13px;
 }
 
-.workspace-meta-grid,
+.workspace-meta-strip,
 .workspace-recovery {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  max-width: 560px;
+  gap: 6px;
+  max-width: 100%;
 }
 
-.workspace-meta-grid span,
+.workspace-meta-strip span,
 .workspace-recovery span,
 .workspace-link {
   display: inline-flex;
   align-items: center;
-  min-height: 32px;
-  padding: 6px 10px;
-  border-radius: 12px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border-radius: 10px;
   background: rgba(15, 118, 110, 0.08);
   color: #0f766e;
   font-size: 12px;
@@ -785,27 +831,27 @@ const formatBytes = (value) => {
 
 .chat-stage {
   min-height: 0;
+  width: min(1040px, 100%);
+  justify-self: center;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   width: 100%;
   max-width: 100%;
-  border-radius: 30px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background:
-    radial-gradient(circle at top left, rgba(110, 231, 183, 0.12), transparent 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.98) 100%);
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  background: #ffffff;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.06);
   overflow: hidden;
 }
 
 .chat-thread {
   min-height: 0;
   overflow-y: auto;
-  padding: 28px 24px 18px;
+  padding: 20px clamp(12px, 3vw, 36px) 14px;
   display: grid;
   align-content: start;
-  gap: 20px;
+  gap: 14px;
   min-width: 0;
 }
 
@@ -823,23 +869,25 @@ const formatBytes = (value) => {
 }
 
 .message-card {
-  width: min(820px, 100%);
+  width: min(760px, 100%);
   max-width: 100%;
   min-width: 0;
-  border-radius: 26px;
-  padding: 18px 20px;
+  border-radius: 16px;
+  padding: 13px 14px;
 }
 
 .user-card {
-  background: linear-gradient(135deg, #0f766e 0%, #115e59 100%);
+  width: fit-content;
+  max-width: min(640px, 84%);
+  background: #0f766e;
   color: white;
-  box-shadow: 0 20px 40px rgba(15, 118, 110, 0.18);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
 }
 
 .assistant-card {
   background: white;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
 }
 
 .assistant-card.tone-question {
@@ -862,7 +910,7 @@ const formatBytes = (value) => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .message-role {
@@ -881,9 +929,9 @@ const formatBytes = (value) => {
 }
 
 .user-bubble {
-  padding: 16px 18px;
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.1);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .plain-text {
@@ -954,13 +1002,13 @@ const formatBytes = (value) => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  width: min(820px, 100%);
+  width: min(760px, 100%);
   max-width: 100%;
   min-width: 0;
-  padding: 12px 16px;
-  border: 1px dashed rgba(15, 118, 110, 0.2);
-  border-radius: 18px;
-  background: rgba(15, 118, 110, 0.04);
+  padding: 9px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.8);
   color: #0f172a;
   cursor: pointer;
 }
@@ -981,23 +1029,27 @@ const formatBytes = (value) => {
 .result-surface {
   display: grid;
   gap: 16px;
-  max-height: min(76vh, 940px);
+  max-height: min(72vh, 880px);
   overflow: hidden;
 }
 
 .composer-shell {
   border-top: 1px solid rgba(15, 23, 42, 0.08);
-  padding: 18px 20px 20px;
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(12px);
+  padding: 9px clamp(10px, 2.5vw, 22px) 12px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
   display: grid;
-  gap: 14px;
+  gap: 8px;
   min-width: 0;
 }
 
 .composer-copy {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+  width: min(760px, 100%);
+  justify-self: center;
 }
 
 .composer-copy strong {
@@ -1006,25 +1058,28 @@ const formatBytes = (value) => {
 
 .composer-copy span {
   color: #64748b;
-  line-height: 1.6;
+  line-height: 1.45;
+  font-size: 13px;
 }
 
 .composer-form {
   display: flex;
   align-items: flex-end;
   gap: 12px;
+  width: min(760px, 100%);
+  justify-self: center;
   min-width: 0;
 }
 
 .composer-input {
   flex: 1;
   min-width: 0;
-  min-height: 56px;
+  min-height: 46px;
   max-height: 180px;
   resize: vertical;
   border: 1px solid rgba(148, 163, 184, 0.26);
-  border-radius: 20px;
-  padding: 16px 18px;
+  border-radius: 16px;
+  padding: 12px 14px;
   background: #f8fafc;
   font: inherit;
   line-height: 1.6;
@@ -1038,9 +1093,9 @@ const formatBytes = (value) => {
 }
 
 .composer-submit {
-  min-width: 136px;
-  height: 56px;
-  border-radius: 18px;
+  min-width: 116px;
+  height: 46px;
+  border-radius: 14px;
 }
 
 .composer-actions-readonly {
@@ -1050,11 +1105,13 @@ const formatBytes = (value) => {
 }
 
 .details-panel {
-  border-radius: 26px;
+  width: min(1040px, 100%);
+  justify-self: center;
+  border-radius: 16px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(255, 255, 255, 0.92);
-  padding: 20px;
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.06);
+  padding: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.05);
   min-width: 0;
   width: 100%;
   max-width: 100%;
@@ -1066,24 +1123,25 @@ const formatBytes = (value) => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .details-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-  gap: 16px;
-  margin-bottom: 16px;
+  grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .details-panel-head h2 {
-  font-size: 20px;
+  font-size: 18px;
   color: #0f172a;
 }
 
 .details-panel-head p {
-  margin-top: 6px;
+  margin-top: 4px;
   color: #64748b;
+  font-size: 13px;
 }
 
 .details-close {
@@ -1158,13 +1216,14 @@ const formatBytes = (value) => {
 
 @media (max-width: 960px) {
   .agent-chat-page {
-    padding: 16px;
+    padding: 8px;
+    gap: 8px;
   }
 
   .chat-topbar,
   .workspace-status-card,
   .details-panel {
-    border-radius: 22px;
+    border-radius: 16px;
   }
 
   .workspace-status-card {
@@ -1182,18 +1241,21 @@ const formatBytes = (value) => {
     flex-direction: column;
   }
 
+  .topbar-side {
+    width: 100%;
+    justify-items: start;
+  }
+
+  .topbar-actions {
+    justify-content: flex-start;
+  }
+
   .details-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .topbar-side,
-  .topbar-actions {
-    justify-items: start;
-    justify-content: flex-start;
-  }
-
   .chat-thread {
-    padding: 20px 16px 16px;
+    padding: 18px 12px 14px;
   }
 
   .message-card,
@@ -1207,6 +1269,13 @@ const formatBytes = (value) => {
   }
 
   .composer-submit {
+    width: 100%;
+  }
+
+  .workspace-status-card,
+  .chat-stage,
+  .details-panel,
+  .error-banner {
     width: 100%;
   }
 }

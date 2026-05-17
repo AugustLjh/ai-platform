@@ -5,6 +5,7 @@ import {
   normalizeArtifact,
   normalizeRunResult
 } from './agentArtifacts.js'
+import { redactRuntimePayload } from './runtimeRedaction.js'
 
 const executionBoundaryEventTypes = new Set(['run.resumed'])
 const runStatusByEventType = {
@@ -206,7 +207,7 @@ export const deriveRunState = (run, events) => {
         toolName: payload.tool_name || '',
         toolKind: payload.tool_kind || 'builtin',
         status: 'pending',
-        arguments: payload.arguments || {},
+        arguments: redactRuntimePayload(payload.arguments || {}),
         result: null,
         error: '',
         createdAt: event.createdAt,
@@ -220,21 +221,21 @@ export const deriveRunState = (run, events) => {
 
       if (event.eventType === 'tool.started') {
         existing.status = 'running'
-        existing.arguments = payload.arguments || existing.arguments
+        existing.arguments = redactRuntimePayload(payload.arguments || existing.arguments)
       }
 
       if (event.eventType === 'tool.completed') {
         existing.status = 'completed'
-        existing.result = payload.result || existing.result
+        existing.result = redactRuntimePayload(payload.result || existing.result)
       }
 
       if (event.eventType === 'tool.failed') {
         existing.status = 'failed'
         existing.error = payload.error || existing.error
         if (payload.result && typeof payload.result === 'object') {
-          existing.result = payload.result
+          existing.result = redactRuntimePayload(payload.result)
         } else if (payload.output && typeof payload.output === 'object') {
-          existing.result = payload.output.tool_result || payload.output || existing.result
+          existing.result = redactRuntimePayload(payload.output.tool_result || payload.output || existing.result)
         }
       }
 
@@ -242,9 +243,9 @@ export const deriveRunState = (run, events) => {
         existing.status = 'cancelled'
         existing.error = payload.error || existing.error
         if (payload.result && typeof payload.result === 'object') {
-          existing.result = payload.result
+          existing.result = redactRuntimePayload(payload.result)
         } else if (payload.output && typeof payload.output === 'object') {
-          existing.result = payload.output.tool_result || payload.output || existing.result
+          existing.result = redactRuntimePayload(payload.output.tool_result || payload.output || existing.result)
         }
       }
 

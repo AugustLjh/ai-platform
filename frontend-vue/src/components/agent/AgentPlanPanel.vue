@@ -72,12 +72,12 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
 .plan-panel {
   background: white;
   border: 1px solid rgba(16, 163, 127, 0.14);
-  border-radius: 24px;
-  padding: 22px;
+  border-radius: 16px;
+  padding: 14px;
   box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
-  max-height: min(72vh, 840px);
+  max-height: min(68vh, 760px);
   overflow: hidden;
 }
 
@@ -85,18 +85,19 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 18px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .panel-head h3 {
-  font-size: 18px;
-  margin: 0 0 6px;
+  font-size: 16px;
+  margin: 0 0 4px;
 }
 
 .panel-head p {
   color: var(--gray-600);
-  font-size: 14px;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .panel-badge {
@@ -111,7 +112,7 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
 }
 
 .empty-state {
-  padding: 20px;
+  padding: 14px;
   border-radius: var(--radius-lg);
   background: var(--gray-50);
   color: var(--gray-500);
@@ -120,7 +121,7 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
 
 .plan-content {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -128,10 +129,10 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
 
 .plan-card {
   border: 1px solid var(--gray-200);
-  border-radius: 18px;
-  padding: 16px;
+  border-radius: 14px;
+  padding: 12px;
   background: linear-gradient(180deg, #ffffff 0%, #f9fcfb 100%);
-  max-height: 320px;
+  max-height: 260px;
   overflow: auto;
 }
 
@@ -152,16 +153,19 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
 
 .plan-action strong {
   color: var(--gray-900);
+  font-size: 14px;
 }
 
 .plan-action span,
 .plan-card p {
   color: var(--gray-700);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .plan-steps {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .plan-step-row {
@@ -178,14 +182,14 @@ const actionType = computed(() => props.plan?.action?.type || '未生成')
 }
 
 pre {
-  margin-top: 10px;
-  padding: 12px;
-  border-radius: var(--radius-md);
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 10px;
   background: rgba(13, 13, 13, 0.04);
   font-size: 12px;
   line-height: 1.5;
   overflow: auto;
-  max-height: 220px;
+  max-height: 180px;
   font-family: var(--font-mono);
 }
 </style>

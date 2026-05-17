@@ -984,7 +984,8 @@ const toolKindLabel = (kind) => {
     engineering: '项目上下文',
     'project-context': '项目上下文',
     'sandbox-exec': 'Sandbox',
-    workspace: 'Workspace'
+    workspace: 'Workspace',
+    observability: '观测'
   }
   return mapping[kind] || kind || '未知'
 }

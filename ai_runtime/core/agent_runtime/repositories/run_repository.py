@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from ai_runtime.core.agent_runtime.events import sanitize_runtime_payload
 from ai_runtime.core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
 
 
@@ -51,10 +52,10 @@ class RunRepository:
             _serialize_uuid(payload.get("user_id")),
             _serialize_uuid(payload.get("session_id")),
             payload.get("status", "queued"),
-            encode_json(payload.get("input"), {}),
+            encode_json(sanitize_runtime_payload(payload.get("input")), {}),
             encode_json(payload.get("plan"), {}),
-            encode_json(payload.get("context"), {}),
-            encode_json(payload.get("metadata"), {}),
+            encode_json(sanitize_runtime_payload(payload.get("context")), {}),
+            encode_json(sanitize_runtime_payload(payload.get("metadata")), {}),
         )
         return _record_to_dict(row)
 
@@ -168,12 +169,12 @@ class RunRepository:
             _serialize_uuid(run_id),
             status,
             encode_json(plan, {}) if plan is not None else None,
-            encode_json(context, {}) if context is not None else None,
+            encode_json(sanitize_runtime_payload(context), {}) if context is not None else None,
             final_output,
             final_output_text,
-            encode_json(final_output_json, None) if final_output_json is not None else None,
+            encode_json(sanitize_runtime_payload(final_output_json), None) if final_output_json is not None else None,
             error_message,
-            encode_json(metadata, {}) if metadata is not None else None,
+            encode_json(sanitize_runtime_payload(metadata), {}) if metadata is not None else None,
         )
         return _record_to_dict(row) if row else None
 
@@ -186,7 +187,7 @@ class RunRepository:
             RETURNING *
             """,
             _serialize_uuid(run_id),
-            encode_json(input_patch, {}),
+            encode_json(sanitize_runtime_payload(input_patch), {}),
         )
         return _record_to_dict(row) if row else None
 
@@ -244,7 +245,7 @@ class RunRepository:
                     RETURNING *
                     """,
                     _serialize_uuid(run_id),
-                    encode_json(context, {}) if context is not None else None,
+                    encode_json(sanitize_runtime_payload(context), {}) if context is not None else None,
                 )
         return _record_to_dict(row) if row else None
 
@@ -300,8 +301,8 @@ class RunRepository:
             kind,
             title,
             status,
-            encode_json(input_payload, {}),
-            encode_json(metadata, {}),
+            encode_json(sanitize_runtime_payload(input_payload), {}),
+            encode_json(sanitize_runtime_payload(metadata), {}),
         )
         return _record_to_dict(row)
 
@@ -335,9 +336,9 @@ class RunRepository:
             """,
             _serialize_uuid(step_id),
             status,
-            encode_json(output_payload, {}) if output_payload is not None else None,
+            encode_json(sanitize_runtime_payload(output_payload), {}) if output_payload is not None else None,
             error_message,
-            encode_json(metadata, {}) if metadata is not None else None,
+            encode_json(sanitize_runtime_payload(metadata), {}) if metadata is not None else None,
         )
         return _record_to_dict(row) if row else None
 
@@ -405,8 +406,8 @@ class RunRepository:
                         artifact.get("name"),
                         artifact.get("mime_type"),
                         artifact.get("uri"),
-                        encode_json(artifact.get("payload"), {}),
-                        encode_json(artifact.get("metadata"), {}),
+                        encode_json(sanitize_runtime_payload(artifact.get("payload")), {}),
+                        encode_json(sanitize_runtime_payload(artifact.get("metadata")), {}),
                     )
                     created.append(_record_to_dict(row))
         return created
@@ -427,8 +428,8 @@ class RunRepository:
             artifact.get("name"),
             artifact.get("mime_type"),
             artifact.get("uri"),
-            encode_json(artifact.get("payload"), {}),
-            encode_json(artifact.get("metadata"), {}),
+            encode_json(sanitize_runtime_payload(artifact.get("payload")), {}),
+            encode_json(sanitize_runtime_payload(artifact.get("metadata")), {}),
         )
         return _record_to_dict(row)
 

@@ -279,42 +279,43 @@ const formatBytes = (value) => {
 .artifact-panel {
   background: white;
   border: 1px solid rgba(16, 163, 127, 0.14);
-  border-radius: 24px;
-  padding: 22px;
+  border-radius: 16px;
+  padding: 14px;
   box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
-  max-height: min(72vh, 840px);
+  max-height: min(68vh, 760px);
   overflow: hidden;
 }
 
 .panel-head {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   align-items: flex-start;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 
 .panel-head h3 {
-  font-size: 18px;
-  margin: 0 0 6px;
+  font-size: 16px;
+  margin: 0 0 4px;
 }
 
 .panel-head p {
   color: var(--gray-600);
-  font-size: 14px;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .surface-summary {
-  margin-top: 8px;
+  margin-top: 6px;
   color: var(--primary-700);
 }
 
 .panel-count {
-  min-width: 36px;
-  height: 36px;
-  border-radius: 12px;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 10px;
   background: rgba(16, 163, 127, 0.1);
   color: var(--primary-700);
   display: inline-flex;
@@ -324,7 +325,7 @@ const formatBytes = (value) => {
 }
 
 .empty-state {
-  padding: 20px;
+  padding: 14px;
   border-radius: var(--radius-lg);
   background: var(--gray-50);
   color: var(--gray-500);
@@ -333,7 +334,7 @@ const formatBytes = (value) => {
 
 .artifact-list {
   display: grid;
-  gap: 16px;
+  gap: 10px;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -341,10 +342,10 @@ const formatBytes = (value) => {
 
 .artifact-card {
   border: 1px solid var(--gray-200);
-  border-radius: 20px;
-  padding: 18px;
+  border-radius: 14px;
+  padding: 12px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
-  max-height: min(52vh, 520px);
+  max-height: min(48vh, 460px);
   overflow: auto;
 }
 
@@ -364,8 +365,8 @@ const formatBytes = (value) => {
 }
 
 .artifact-head h4 {
-  margin-top: 6px;
-  font-size: 17px;
+  margin-top: 4px;
+  font-size: 15px;
 }
 
 .answer-card :deep(p) {
@@ -373,7 +374,7 @@ const formatBytes = (value) => {
 }
 
 .table-wrap {
-  margin-top: 14px;
+  margin-top: 10px;
   overflow: auto;
 }
 
@@ -385,7 +386,7 @@ table {
 
 th,
 td {
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   text-align: left;
   font-size: 13px;
@@ -398,17 +399,17 @@ th {
 
 .excerpt-list {
   display: grid;
-  gap: 12px;
-  margin-top: 14px;
-  max-height: 320px;
+  gap: 10px;
+  margin-top: 10px;
+  max-height: 280px;
   overflow-y: auto;
   padding-right: 4px;
 }
 
 .excerpt-card {
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
-  padding: 14px;
+  border-radius: 12px;
+  padding: 10px;
   background: #fcfdfd;
 }
 
@@ -433,16 +434,16 @@ th {
 }
 
 .workspace-facts {
-  margin-top: 14px;
+  margin-top: 10px;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 
 .workspace-facts div {
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 14px;
-  padding: 12px;
+  border-radius: 10px;
+  padding: 9px;
   background: #fcfdfd;
 }
 
@@ -452,7 +453,7 @@ th {
 }
 
 .workspace-facts dd {
-  margin-top: 6px;
+  margin-top: 4px;
   color: #0f172a;
   font-weight: 700;
 }
@@ -463,15 +464,15 @@ th {
 }
 
 .media-grid {
-  margin-top: 14px;
+  margin-top: 10px;
   display: grid;
-  gap: 14px;
+  gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .media-card {
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
+  border-radius: 12px;
   overflow: hidden;
   background: #fcfdfd;
 }
@@ -491,8 +492,8 @@ th {
 
 .media-copy {
   display: grid;
-  gap: 6px;
-  padding: 14px;
+  gap: 5px;
+  padding: 10px;
 }
 
 .media-copy span {
@@ -501,12 +502,12 @@ th {
 }
 
 pre {
-  margin-top: 14px;
-  padding: 14px;
-  border-radius: 14px;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
   background: rgba(15, 23, 42, 0.04);
   overflow: auto;
-  max-height: 320px;
+  max-height: 280px;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono);

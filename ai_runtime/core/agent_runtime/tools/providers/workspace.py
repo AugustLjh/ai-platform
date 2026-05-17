@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import fnmatch
 import hashlib
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from difflib import unified_diff
@@ -19,6 +21,11 @@ DEFAULT_WORKSPACE_TOOL_NAMES = (
     "workspace_search_text",
     "workspace_file_info",
     "workspace_tree",
+    "code_symbols",
+    "code_references",
+    "code_call_graph",
+    "code_dependency_graph",
+    "code_semantic_search",
     "git_status",
     "git_diff",
     "git_show",
@@ -71,6 +78,31 @@ DEFAULT_PROTECTED_WRITE_PATTERNS = (
 )
 
 DELETE_REVIEW_NOTE = "Delete operations are permanent inside the run workspace and must be reviewed before external merge."
+DEFAULT_CODE_ANALYSIS_MAX_FILES = 2000
+DEFAULT_CODE_ANALYSIS_MAX_RESULTS = 100
+DEFAULT_CODE_ANALYSIS_MAX_HITS_PER_FILE = 5
+DEFAULT_CODE_ANALYSIS_MAX_SNIPPET_CHARS = 280
+DEFAULT_CODE_ANALYSIS_MAX_SOURCE_BYTES = 1_000_000
+CODE_ANALYSIS_SOURCE_EXTENSIONS = {
+    ".py",
+    ".pyi",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".go",
+}
+
+_IDENTIFIER_BOUNDARY_RE = re.compile(r"[^A-Za-z0-9_]+")
+_CAMEL_SPLIT_RE = re.compile(r"(?<!^)(?=[A-Z])")
+_PYTHON_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_JS_IMPORT_RE = re.compile(r"""^\s*import\s+.*?\s+from\s+['"]([^'"]+)['"]\s*;?\s*$""")
+_JS_SIDE_EFFECT_IMPORT_RE = re.compile(r"""^\s*import\s+['"]([^'"]+)['"]\s*;?\s*$""")
+_JS_REQUIRE_RE = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)""")
+_GO_IMPORT_RE = re.compile(r"""^\s*(?:import\s+)?(?:[A-Za-z_][A-Za-z0-9_]*\s+)?['"]([^'"]+)['"]\s*$""")
 
 
 def _parse_csv(value: str | None, default: Sequence[str]) -> list[str]:
@@ -322,6 +354,263 @@ class WorkspaceTool(BaseTool):
             "stderr": stderr,
             "truncated": stdout_truncated or stderr_truncated,
         }
+
+    def _iter_code_files(
+        self,
+        workspace_root: Path,
+        base_path: Path,
+        *,
+        extensions: Sequence[str] | None = None,
+        max_files: int = DEFAULT_CODE_ANALYSIS_MAX_FILES,
+        max_file_bytes: int = DEFAULT_CODE_ANALYSIS_MAX_SOURCE_BYTES,
+    ) -> tuple[list[Path], bool]:
+        normalized_extensions = {
+            item if item.startswith(".") else f".{item}"
+            for item in (extensions or CODE_ANALYSIS_SOURCE_EXTENSIONS)
+            if str(item or "").strip()
+        }
+        candidates = [base_path] if base_path.is_file() else base_path.rglob("*")
+        files: list[Path] = []
+        truncated = False
+        for path in sorted(candidates, key=lambda value: value.as_posix()):
+            if not path.is_file():
+                continue
+            rel = self._relative_path(workspace_root, path)
+            if self._excluded(rel):
+                continue
+            if normalized_extensions and path.suffix not in normalized_extensions:
+                continue
+            try:
+                stat = path.stat()
+                resolved = path.resolve(strict=True)
+            except OSError:
+                continue
+            if resolved != workspace_root and workspace_root not in resolved.parents:
+                continue
+            if stat.st_size > max_file_bytes:
+                continue
+            files.append(path)
+            if len(files) >= max_files:
+                truncated = True
+                break
+        return files, truncated
+
+    def _read_source_text(self, path: Path) -> str | None:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+
+    def _line_preview(self, line: str, limit: int = DEFAULT_CODE_ANALYSIS_MAX_SNIPPET_CHARS) -> tuple[str, bool]:
+        return self._truncate_text(line.strip(), limit)
+
+    def _analysis_artifact(
+        self,
+        *,
+        name: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "artifact_type": "code_analysis",
+            "name": name,
+            "payload": payload,
+            "metadata": {
+                "source": "workspace",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+
+    def _symbol_source_segment(self, text: str, symbol: dict[str, Any]) -> str:
+        lines = text.splitlines()
+        start = max(1, int(symbol.get("line") or 1))
+        end = max(start, int(symbol.get("end_line") or start))
+        return "\n".join(lines[start - 1 : min(len(lines), end)])
+
+    def _extract_python_symbols(self, workspace_root: Path, path: Path, text: str) -> list[dict[str, Any]]:
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return []
+        rel = self._relative_path(workspace_root, path)
+        symbols: list[dict[str, Any]] = []
+
+        def visit(node: ast.AST, parents: list[str]) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    kind = "class" if isinstance(child, ast.ClassDef) else "function"
+                    name = child.name
+                    qualified_name = ".".join([*parents, name]) if parents else name
+                    symbols.append(
+                        {
+                            "path": rel,
+                            "name": name,
+                            "qualified_name": qualified_name,
+                            "kind": kind,
+                            "line": int(getattr(child, "lineno", 1) or 1),
+                            "column": int(getattr(child, "col_offset", 0) or 0) + 1,
+                            "end_line": int(getattr(child, "end_lineno", getattr(child, "lineno", 1)) or 1),
+                        }
+                    )
+                    visit(child, [*parents, name])
+                else:
+                    visit(child, parents)
+
+        visit(tree, [])
+        return symbols
+
+    def _extract_regex_symbols(self, workspace_root: Path, path: Path, text: str) -> list[dict[str, Any]]:
+        rel = self._relative_path(workspace_root, path)
+        patterns: list[tuple[str, re.Pattern[str]]] = []
+        if path.suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue"}:
+            patterns = [
+                ("class", re.compile(r"\bclass\s+([A-Za-z_$][A-Za-z0-9_$]*)")),
+                ("function", re.compile(r"\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")),
+                ("function", re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>")),
+                ("function", re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?function\b")),
+            ]
+        elif path.suffix == ".go":
+            patterns = [
+                ("function", re.compile(r"\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")),
+                ("type", re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:struct|interface)\b")),
+            ]
+
+        symbols: list[dict[str, Any]] = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for kind, pattern in patterns:
+                match = pattern.search(line)
+                if not match:
+                    continue
+                name = match.group(1)
+                symbols.append(
+                    {
+                        "path": rel,
+                        "name": name,
+                        "qualified_name": name,
+                        "kind": kind,
+                        "line": line_number,
+                        "column": match.start(1) + 1,
+                        "end_line": line_number,
+                    }
+                )
+        return symbols
+
+    def _extract_symbols(self, workspace_root: Path, path: Path, text: str) -> list[dict[str, Any]]:
+        if path.suffix in {".py", ".pyi"}:
+            return self._extract_python_symbols(workspace_root, path, text)
+        return self._extract_regex_symbols(workspace_root, path, text)
+
+    def _extract_python_calls(self, text: str) -> list[dict[str, Any]]:
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return []
+        calls: list[dict[str, Any]] = []
+
+        def name_for(node: ast.AST) -> str | None:
+            if isinstance(node, ast.Name):
+                return node.id
+            if isinstance(node, ast.Attribute):
+                base = name_for(node.value)
+                return f"{base}.{node.attr}" if base else node.attr
+            return None
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = name_for(node.func)
+            if name:
+                calls.append(
+                    {
+                        "name": name,
+                        "short_name": name.rsplit(".", 1)[-1],
+                        "line": int(getattr(node, "lineno", 1) or 1),
+                    }
+                )
+        return calls
+
+    def _extract_regex_calls(self, text: str) -> list[dict[str, Any]]:
+        calls: list[dict[str, Any]] = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for match in _PYTHON_CALL_RE.finditer(line):
+                name = match.group(1)
+                if name in {"if", "for", "while", "switch", "catch", "return", "func", "function"}:
+                    continue
+                calls.append({"name": name, "short_name": name, "line": line_number})
+        return calls
+
+    def _extract_calls(self, path: Path, text: str) -> list[dict[str, Any]]:
+        if path.suffix in {".py", ".pyi"}:
+            return self._extract_python_calls(text)
+        return self._extract_regex_calls(text)
+
+    def _extract_python_dependencies(self, text: str) -> list[str]:
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return []
+        dependencies: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name:
+                        dependencies.add(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                module = "." * int(node.level or 0) + str(node.module or "")
+                dependencies.add(module or "." * int(node.level or 0))
+        return sorted(dependencies)
+
+    def _extract_regex_dependencies(self, path: Path, text: str) -> list[str]:
+        dependencies: set[str] = set()
+        if path.suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue"}:
+            for line in text.splitlines():
+                for pattern in (_JS_IMPORT_RE, _JS_SIDE_EFFECT_IMPORT_RE, _JS_REQUIRE_RE):
+                    match = pattern.search(line)
+                    if match:
+                        dependencies.add(match.group(1))
+        elif path.suffix == ".go":
+            in_import_block = False
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("import ("):
+                    in_import_block = True
+                    continue
+                if in_import_block and stripped == ")":
+                    in_import_block = False
+                    continue
+                if stripped.startswith("import "):
+                    stripped = stripped.removeprefix("import ").strip()
+                if in_import_block or stripped.startswith('"') or stripped.startswith("'"):
+                    match = _GO_IMPORT_RE.search(stripped)
+                    if match:
+                        dependencies.add(match.group(1))
+        return sorted(dependencies)
+
+    def _extract_dependencies(self, path: Path, text: str) -> list[str]:
+        if path.suffix in {".py", ".pyi"}:
+            return self._extract_python_dependencies(text)
+        return self._extract_regex_dependencies(path, text)
+
+    def _tokenize_for_search(self, value: str) -> list[str]:
+        tokens: list[str] = []
+        for piece in _IDENTIFIER_BOUNDARY_RE.split(value):
+            if not piece:
+                continue
+            for token in _CAMEL_SPLIT_RE.sub(" ", piece).split():
+                normalized = token.lower().strip()
+                if len(normalized) >= 2:
+                    tokens.append(normalized)
+        return tokens
+
+    def _semantic_score(self, query_tokens: set[str], text: str) -> tuple[int, list[str]]:
+        haystack_tokens = set(self._tokenize_for_search(text))
+        matched = sorted(query_tokens & haystack_tokens)
+        if not matched:
+            return 0, []
+        score = len(matched) * 10
+        lower_text = text.lower()
+        for token in matched:
+            score += min(lower_text.count(token), 5)
+        return score, matched
 
 
 class WorkspaceListFilesTool(WorkspaceTool):
@@ -604,6 +893,363 @@ class WorkspaceTreeTool(WorkspaceTool):
             "path": self._relative_path(workspace_root, base_path),
             "max_depth": max_depth,
             "entries": entries,
+            "truncated": truncated,
+        }
+
+
+class CodeSymbolsTool(WorkspaceTool):
+    spec = ToolSpec(
+        name="code_symbols",
+        description="Return bounded code symbols discovered in source files inside the configured workspace.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 5000},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "extensions": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        kind="workspace",
+        metadata=_tool_metadata(capability="code_analysis", access_level="read"),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        workspace_root = self._resolve_workspace_root(context)
+        base_path = self._resolve_path(context, arguments.get("path"))
+        max_files = _clamp_int(arguments.get("max_files"), default=DEFAULT_CODE_ANALYSIS_MAX_FILES, minimum=1, maximum=5000)
+        max_results = _clamp_int(arguments.get("max_results"), default=DEFAULT_CODE_ANALYSIS_MAX_RESULTS, minimum=1, maximum=1000)
+        extensions = arguments.get("extensions")
+        if isinstance(extensions, list):
+            extensions = [str(item) for item in extensions if str(item or "").strip()]
+        else:
+            extensions = None
+        files, files_truncated = self._iter_code_files(workspace_root, base_path, extensions=extensions, max_files=max_files)
+        symbols: list[dict[str, Any]] = []
+        for file_path in files:
+            text = self._read_source_text(file_path)
+            if text is None:
+                continue
+            symbols.extend(self._extract_symbols(workspace_root, file_path, text))
+            if len(symbols) >= max_results:
+                break
+        truncated = files_truncated or len(symbols) > max_results
+        return {
+            "workspace_root": str(workspace_root),
+            "path": self._relative_path(workspace_root, base_path),
+            "files_scanned": len(files),
+            "symbols": symbols[:max_results],
+            "total": min(len(symbols), max_results),
+            "truncated": truncated,
+        }
+
+
+class CodeReferencesTool(WorkspaceTool):
+    spec = ToolSpec(
+        name="code_references",
+        description="Return bounded code reference hits for a symbol name inside the configured workspace.",
+        input_schema={
+            "type": "object",
+            "required": ["symbol"],
+            "properties": {
+                "symbol": {"type": "string"},
+                "path": {"type": "string"},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 5000},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "max_hits_per_file": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+        },
+        kind="workspace",
+        metadata=_tool_metadata(capability="code_analysis", access_level="read"),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol = str(arguments.get("symbol") or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+        workspace_root = self._resolve_workspace_root(context)
+        base_path = self._resolve_path(context, arguments.get("path"))
+        max_files = _clamp_int(arguments.get("max_files"), default=DEFAULT_CODE_ANALYSIS_MAX_FILES, minimum=1, maximum=5000)
+        max_results = _clamp_int(arguments.get("max_results"), default=DEFAULT_CODE_ANALYSIS_MAX_RESULTS, minimum=1, maximum=1000)
+        max_hits_per_file = _clamp_int(
+            arguments.get("max_hits_per_file"),
+            default=DEFAULT_CODE_ANALYSIS_MAX_HITS_PER_FILE,
+            minimum=1,
+            maximum=20,
+        )
+        files, files_truncated = self._iter_code_files(workspace_root, base_path, max_files=max_files)
+        symbol_key = symbol.lower()
+        symbol_leaf = symbol.rsplit(".", 1)[-1]
+        reference_pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(symbol_leaf)}(?![A-Za-z0-9_])")
+        matches: list[dict[str, Any]] = []
+        for file_path in files:
+            text = self._read_source_text(file_path)
+            if text is None:
+                continue
+            file_hits = 0
+            definitions_by_line: dict[int, dict[str, Any]] = {}
+            for symbol_item in self._extract_symbols(workspace_root, file_path, text):
+                candidate_names = {symbol_item["name"].lower(), symbol_item["qualified_name"].lower()}
+                if symbol_key in candidate_names or symbol_key in symbol_item["qualified_name"].lower():
+                    definitions_by_line[int(symbol_item["line"])] = symbol_item
+
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if not reference_pattern.search(line):
+                    continue
+                preview, preview_truncated = self._line_preview(line)
+                definition = definitions_by_line.get(line_number)
+                if definition:
+                    match = {
+                        **definition,
+                        "reference_type": "definition",
+                        "preview": preview,
+                        "preview_truncated": preview_truncated,
+                    }
+                else:
+                    match = {
+                        "path": self._relative_path(workspace_root, file_path),
+                        "name": symbol_leaf,
+                        "qualified_name": symbol,
+                        "kind": "identifier",
+                        "reference_type": "reference",
+                        "line": line_number,
+                        "column": reference_pattern.search(line).start() + 1,
+                        "end_line": line_number,
+                        "preview": preview,
+                        "preview_truncated": preview_truncated,
+                    }
+                matches.append(
+                    match
+                )
+                file_hits += 1
+                if file_hits >= max_hits_per_file or len(matches) >= max_results:
+                    break
+            if len(matches) >= max_results:
+                break
+        truncated = files_truncated or len(matches) >= max_results
+        return {
+            "workspace_root": str(workspace_root),
+            "path": self._relative_path(workspace_root, base_path),
+            "symbol": symbol,
+            "files_scanned": len(files),
+            "matches": matches[:max_results],
+            "total": min(len(matches), max_results),
+            "truncated": truncated,
+        }
+
+
+class CodeCallGraphTool(WorkspaceTool):
+    spec = ToolSpec(
+        name="code_call_graph",
+        description="Return a bounded call graph summary for a symbol inside the configured workspace.",
+        input_schema={
+            "type": "object",
+            "required": ["symbol"],
+            "properties": {
+                "symbol": {"type": "string"},
+                "path": {"type": "string"},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 5000},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000},
+            },
+        },
+        kind="workspace",
+        metadata=_tool_metadata(capability="code_analysis", access_level="read"),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        symbol = str(arguments.get("symbol") or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+        workspace_root = self._resolve_workspace_root(context)
+        base_path = self._resolve_path(context, arguments.get("path"))
+        max_files = _clamp_int(arguments.get("max_files"), default=DEFAULT_CODE_ANALYSIS_MAX_FILES, minimum=1, maximum=5000)
+        max_results = _clamp_int(arguments.get("max_results"), default=DEFAULT_CODE_ANALYSIS_MAX_RESULTS, minimum=1, maximum=1000)
+        files, files_truncated = self._iter_code_files(workspace_root, base_path, max_files=max_files)
+        symbol_key = symbol.lower()
+        incoming: list[dict[str, Any]] = []
+        outgoing: list[dict[str, Any]] = []
+        for file_path in files:
+            text = self._read_source_text(file_path)
+            if text is None:
+                continue
+            rel = self._relative_path(workspace_root, file_path)
+            calls_by_symbol = []
+            all_calls = self._extract_calls(file_path, text)
+            for discovered in self._extract_symbols(workspace_root, file_path, text):
+                segment = self._symbol_source_segment(text, discovered)
+                symbol_calls = self._extract_calls(file_path, segment)
+                calls_by_symbol.append((discovered, symbol_calls))
+                if discovered["name"].lower() == symbol_key or discovered["qualified_name"].lower() == symbol_key:
+                    for call in symbol_calls:
+                        short_name = str(call["short_name"]).lower()
+                        if len(outgoing) < max_results and short_name != symbol_key:
+                            outgoing.append(
+                                {
+                                    "source": rel,
+                                    "caller": discovered["qualified_name"],
+                                    "callee": call["name"],
+                                    "line": int(discovered["line"]) + int(call["line"]) - 1,
+                                }
+                            )
+            for discovered, symbol_calls in calls_by_symbol:
+                if discovered["name"].lower() == symbol_key or discovered["qualified_name"].lower() == symbol_key:
+                    continue
+                for call in symbol_calls or all_calls:
+                    short_name = str(call["short_name"]).lower()
+                    if short_name != symbol_key or len(incoming) >= max_results:
+                        continue
+                    incoming.append(
+                        {
+                            "source": rel,
+                            "caller": discovered["qualified_name"],
+                            "callee": call["name"],
+                            "line": int(discovered["line"]) + int(call["line"]) - 1,
+                        }
+                    )
+                    break
+        truncated = files_truncated or len(incoming) >= max_results or len(outgoing) >= max_results
+        return {
+            "workspace_root": str(workspace_root),
+            "path": self._relative_path(workspace_root, base_path),
+            "symbol": symbol,
+            "incoming": incoming[:max_results],
+            "outgoing": outgoing[:max_results],
+            "truncated": truncated,
+        }
+
+
+class CodeDependencyGraphTool(WorkspaceTool):
+    spec = ToolSpec(
+        name="code_dependency_graph",
+        description="Return a bounded module dependency graph for source files inside the configured workspace.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 5000},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000},
+            },
+        },
+        kind="workspace",
+        metadata=_tool_metadata(capability="code_analysis", access_level="read"),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        workspace_root = self._resolve_workspace_root(context)
+        base_path = self._resolve_path(context, arguments.get("path"))
+        max_files = _clamp_int(arguments.get("max_files"), default=DEFAULT_CODE_ANALYSIS_MAX_FILES, minimum=1, maximum=5000)
+        max_results = _clamp_int(arguments.get("max_results"), default=DEFAULT_CODE_ANALYSIS_MAX_RESULTS, minimum=1, maximum=1000)
+        files, files_truncated = self._iter_code_files(workspace_root, base_path, max_files=max_files)
+        nodes = [
+            {
+                "path": self._relative_path(workspace_root, file_path),
+                "module": file_path.stem,
+                "suffix": file_path.suffix,
+            }
+            for file_path in files
+        ]
+        edges: list[dict[str, Any]] = []
+        node_by_path = {item["path"]: item for item in nodes}
+        for file_path in files:
+            text = self._read_source_text(file_path)
+            if text is None:
+                continue
+            source_rel = self._relative_path(workspace_root, file_path)
+            dependencies = self._extract_dependencies(file_path, text)
+            for dependency in dependencies:
+                if len(edges) >= max_results:
+                    break
+                edges.append(
+                    {
+                        "source": source_rel,
+                        "target": dependency,
+                    }
+                )
+            if len(edges) >= max_results:
+                break
+        return {
+            "workspace_root": str(workspace_root),
+            "path": self._relative_path(workspace_root, base_path),
+            "nodes": nodes[:max_results],
+            "edges": edges[:max_results],
+            "node_count": len(node_by_path),
+            "edge_count": len(edges),
+            "truncated": files_truncated or len(nodes) >= max_results or len(edges) >= max_results,
+        }
+
+
+class CodeSemanticSearchTool(WorkspaceTool):
+    spec = ToolSpec(
+        name="code_semantic_search",
+        description="Return a bounded semantic search over source files inside the configured workspace.",
+        input_schema={
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string"},
+                "path": {"type": "string"},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 5000},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 1000},
+            },
+        },
+        kind="workspace",
+        metadata=_tool_metadata(capability="code_analysis", access_level="read"),
+    )
+
+    async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        workspace_root = self._resolve_workspace_root(context)
+        base_path = self._resolve_path(context, arguments.get("path"))
+        max_files = _clamp_int(arguments.get("max_files"), default=DEFAULT_CODE_ANALYSIS_MAX_FILES, minimum=1, maximum=5000)
+        max_results = _clamp_int(arguments.get("max_results"), default=DEFAULT_CODE_ANALYSIS_MAX_RESULTS, minimum=1, maximum=1000)
+        files, files_truncated = self._iter_code_files(workspace_root, base_path, max_files=max_files)
+        query_tokens = set(self._tokenize_for_search(query))
+        matches: list[dict[str, Any]] = []
+        for file_path in files:
+            text = self._read_source_text(file_path)
+            if text is None:
+                continue
+            rel = self._relative_path(workspace_root, file_path)
+            score, matched_tokens = self._semantic_score(query_tokens, text)
+            if score <= 0:
+                continue
+            lines = text.splitlines()
+            best_line = ""
+            best_line_number = None
+            best_line_score = 0
+            for line_number, line in enumerate(lines, start=1):
+                line_score, line_tokens = self._semantic_score(query_tokens, line)
+                if line_score <= 0:
+                    continue
+                if best_line_number is None or line_score > best_line_score:
+                    best_line = line
+                    best_line_number = line_number
+                    best_line_score = line_score
+                    matched_tokens = line_tokens
+            preview_source = best_line or (lines[0] if lines else "")
+            preview, preview_truncated = self._line_preview(preview_source)
+            matches.append(
+                {
+                    "path": rel,
+                    "score": score,
+                    "matched_tokens": matched_tokens,
+                    "preview": preview,
+                    "preview_truncated": preview_truncated,
+                    "line": best_line_number,
+                }
+            )
+            if len(matches) >= max_results:
+                break
+        matches.sort(key=lambda item: (-int(item["score"]), item["path"]))
+        truncated = files_truncated or len(matches) >= max_results
+        return {
+            "workspace_root": str(workspace_root),
+            "path": self._relative_path(workspace_root, base_path),
+            "query": query,
+            "matches": matches[:max_results],
+            "total": min(len(matches), max_results),
             "truncated": truncated,
         }
 
@@ -1146,6 +1792,11 @@ WORKSPACE_TOOL_TYPES = {
     "workspace_search_text": WorkspaceSearchTextTool,
     "workspace_file_info": WorkspaceFileInfoTool,
     "workspace_tree": WorkspaceTreeTool,
+    "code_symbols": CodeSymbolsTool,
+    "code_references": CodeReferencesTool,
+    "code_call_graph": CodeCallGraphTool,
+    "code_dependency_graph": CodeDependencyGraphTool,
+    "code_semantic_search": CodeSemanticSearchTool,
     "workspace_apply_patch": WorkspaceApplyPatchTool,
     "workspace_create_file": WorkspaceCreateFileTool,
     "workspace_write_file": WorkspaceWriteFileTool,

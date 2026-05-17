@@ -107,6 +107,59 @@ async def test_workspace_list_search_and_read_are_bounded(tmp_path):
     assert any(entry["path"] == "src/app.py" for entry in tree["entries"])
 
 
+async def test_code_analysis_tools_cover_symbols_references_dependencies_and_semantic_search(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "pkg").mkdir()
+    (workspace / "pkg" / "module.py").write_text(
+        "import os\n\nclass Greeter:\n    def greet(self, name):\n        return render(name)\n\n\ndef render(name):\n    return format_name(name)\n",
+        encoding="utf-8",
+    )
+    (workspace / "pkg" / "helpers.py").write_text(
+        "from pkg.module import render\n\n\ndef format_name(name):\n    return render(name)\n",
+        encoding="utf-8",
+    )
+    provider = WorkspaceToolProvider(
+        enabled_tool_names=[
+            "code_symbols",
+            "code_references",
+            "code_call_graph",
+            "code_dependency_graph",
+            "code_semantic_search",
+        ],
+        roots=[workspace],
+    )
+
+    symbols_tool = await provider.get("code_symbols", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    references_tool = await provider.get("code_references", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    call_graph_tool = await provider.get("code_call_graph", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    dependency_tool = await provider.get("code_dependency_graph", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    semantic_tool = await provider.get("code_semantic_search", context=ToolLookupContext(tenant_id="tenant-1", workspace_root=str(workspace)))
+    assert symbols_tool and references_tool and call_graph_tool and dependency_tool and semantic_tool
+
+    symbols = await symbols_tool.execute(_context(workspace), {"path": "pkg"})
+    symbol_names = {item["qualified_name"] for item in symbols["symbols"]}
+    assert "Greeter" in symbol_names
+    assert "render" in symbol_names
+
+    references = await references_tool.execute(_context(workspace), {"symbol": "render", "path": "pkg"})
+    assert references["matches"]
+    assert any(match["path"] == "pkg/module.py" for match in references["matches"])
+    assert any(match["reference_type"] == "definition" for match in references["matches"])
+    assert any(match["reference_type"] == "reference" for match in references["matches"])
+
+    call_graph = await call_graph_tool.execute(_context(workspace), {"symbol": "render", "path": "pkg"})
+    assert any(edge["callee"] == "format_name" for edge in call_graph["outgoing"])
+
+    dependencies = await dependency_tool.execute(_context(workspace), {"path": "pkg"})
+    assert any(edge["target"] == "os" for edge in dependencies["edges"])
+    assert any(edge["target"] == "pkg.module" for edge in dependencies["edges"])
+
+    semantic = await semantic_tool.execute(_context(workspace), {"query": "format name helper", "path": "pkg"})
+    assert semantic["matches"]
+    assert semantic["matches"][0]["path"] in {"pkg/helpers.py", "pkg/module.py"}
+
+
 async def test_workspace_git_tools_are_read_only_and_bounded(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -224,6 +277,11 @@ async def test_default_workspace_tool_set_covers_internal_alpha_mvp(tmp_path, mo
         "workspace_search_text",
         "workspace_file_info",
         "workspace_tree",
+        "code_symbols",
+        "code_references",
+        "code_call_graph",
+        "code_dependency_graph",
+        "code_semantic_search",
         "git_status",
         "git_diff",
         "git_show",

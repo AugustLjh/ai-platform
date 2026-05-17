@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from ai_runtime.core.agent_runtime.events import MASK
 from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
 from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
 from ai_runtime.core.agent_runtime.policy import RuntimePolicy
@@ -639,6 +640,59 @@ async def test_orchestrator_persists_partial_artifacts_and_terminal_payload_when
     assert terminal_event["event_type"] == "run.failed"
     assert terminal_event["payload"]["error"] == "Synthesis failed"
     assert terminal_event["payload"]["artifacts"][0]["artifact_type"] == "citations"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_redacts_completed_run_surface_before_persistence_and_events():
+    run_row = _build_run().model_dump(mode="json")
+    definition_row = _build_definition().model_dump(mode="json")
+    run_repository = FakeRunRepository(run_row=run_row)
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=FakeAgentRepository(definition_row),
+        run_repository=run_repository,
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+
+    async def fake_execute_run(definition, run):
+        return {
+            "status": "completed",
+            "plan": {},
+            "context": {"env": {"OPENAI_API_KEY": "sk-1234567890abcdef"}},
+            "final_output": "token=super-secret-token-value",
+            "final_output_text": "Bearer abcdefghijklmnop",
+            "final_output_json": {"authorization": "Bearer secret-token"},
+            "artifacts": [
+                {
+                    "artifact_type": "answer",
+                    "name": "Answer",
+                    "payload": {"text": "api_key=sk-1234567890abcdef"},
+                }
+            ],
+        }
+
+    orchestrator._execute_run = fake_execute_run
+
+    result = await orchestrator.start_run("run-parent")
+
+    serialized_updates = str(run_repository.status_updates)
+    serialized_events = str(tracer.events)
+    serialized_artifacts = str(run_repository.replaced_artifacts)
+    assert result.status == "completed"
+    assert "sk-1234567890abcdef" not in serialized_updates
+    assert "super-secret-token-value" not in serialized_updates
+    assert "abcdefghijklmnop" not in serialized_events
+    assert "secret-token" not in serialized_events
+    assert "sk-1234567890abcdef" not in serialized_artifacts
+    assert MASK in serialized_updates
+    assert MASK in serialized_events
+    assert MASK in serialized_artifacts
 
 
 @pytest.mark.asyncio

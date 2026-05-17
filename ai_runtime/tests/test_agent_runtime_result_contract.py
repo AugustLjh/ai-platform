@@ -1,4 +1,5 @@
 from ai_runtime.core.agent_runtime.models import AgentArtifact
+from ai_runtime.core.agent_runtime.events import MASK
 from ai_runtime.core.agent_runtime.result_contract import (
     build_artifacts_from_tool_result,
     build_structured_run_result,
@@ -45,6 +46,27 @@ def test_build_structured_run_result_extracts_answer_and_artifacts():
     assert "review_findings" in artifact_types
     assert "citations" in artifact_types
     assert "code_files" in artifact_types
+
+
+def test_build_structured_run_result_redacts_sensitive_artifact_payloads():
+    result = build_structured_run_result(
+        {
+            "answer": "Token is token=super-secret-token-value",
+            "table": {
+                "rows": [
+                    {
+                        "name": "env",
+                        "api_key": "sk-1234567890abcdef",
+                    }
+                ],
+            },
+        }
+    )
+
+    serialized = str(result["artifacts"])
+    assert "super-secret-token-value" not in serialized
+    assert "sk-1234567890abcdef" not in serialized
+    assert MASK in serialized
 
 
 def test_hydrate_legacy_result_backfills_text_and_artifacts():
@@ -174,6 +196,29 @@ def test_build_artifacts_from_tool_result_promotes_structured_tool_payload_witho
     assert "citations" in artifact_types
     assert "table" in artifact_types
     assert artifacts[0]["metadata"]["tool_call_id"] == "tool-call-1"
+
+
+def test_build_artifacts_from_tool_result_redacts_sensitive_tool_outputs():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Bearer abcdefghijklmnop",
+                    "metadata": {"authorization": "Bearer secret"},
+                }
+            ]
+        },
+        tool_name="mcp_fetch",
+        tool_kind="mcp",
+        step_id="step-1",
+        tool_call_id="tool-call-1",
+    )
+
+    serialized = str(artifacts)
+    assert "abcdefghijklmnop" not in serialized
+    assert "Bearer secret" not in serialized
+    assert MASK in serialized
 
 
 def test_build_artifacts_from_tool_result_promotes_workspace_patch_artifact():

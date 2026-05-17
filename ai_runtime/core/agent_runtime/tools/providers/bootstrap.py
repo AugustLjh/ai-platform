@@ -9,13 +9,14 @@ from ai_runtime.core.agent_runtime.tools.providers.builtin import register_built
 from ai_runtime.core.agent_runtime.tools.providers.engineering import EngineeringToolProvider
 from ai_runtime.core.agent_runtime.tools.providers.knowledge import register_knowledge_tools
 from ai_runtime.core.agent_runtime.tools.providers.mcp import MCPToolProvider
+from ai_runtime.core.agent_runtime.tools.providers.observability import ObservabilityToolProvider
 from ai_runtime.core.agent_runtime.tools.providers.sandbox_exec import SandboxExecToolProvider
 from ai_runtime.core.agent_runtime.tools.providers.web import WebToolProvider
 from ai_runtime.core.agent_runtime.tools.providers.workspace import WorkspaceToolProvider
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOOL_PROVIDERS = ("builtin", "knowledge", "mcp", "project-context", "workspace", "sandbox-exec", "web")
+DEFAULT_TOOL_PROVIDERS = ("builtin", "knowledge", "mcp", "project-context", "workspace", "sandbox-exec", "web", "observability")
 
 
 def _parse_csv(value: str | None, default: Iterable[str]) -> list[str]:
@@ -31,7 +32,7 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def configure_tool_registry(registry, *, mcp_registry: MCPRegistry) -> None:
+def configure_tool_registry(registry, *, mcp_registry: MCPRegistry, db_pool=None) -> None:
     provider_names = _parse_csv(os.getenv("AGENT_TOOL_PROVIDERS"), DEFAULT_TOOL_PROVIDERS)
     enabled_providers = set(provider_names)
 
@@ -60,6 +61,8 @@ def configure_tool_registry(registry, *, mcp_registry: MCPRegistry) -> None:
         registry.register_provider(SandboxExecToolProvider.from_env(), name="sandbox-exec")
     if "web" in enabled_providers and _env_bool("AGENT_WEB_ENABLED", False):
         registry.register_provider(WebToolProvider.from_env(), name="web")
+    if "observability" in enabled_providers and _env_bool("AGENT_OBSERVABILITY_ENABLED", False):
+        registry.register_provider(ObservabilityToolProvider.from_env(db_pool=db_pool), name="observability")
 
     unknown_providers = sorted(
         name for name in enabled_providers
@@ -75,6 +78,7 @@ def configure_tool_registry(registry, *, mcp_registry: MCPRegistry) -> None:
             "sandbox_exec",
             "sandbox",
             "web",
+            "observability",
         }
     )
     if unknown_providers:

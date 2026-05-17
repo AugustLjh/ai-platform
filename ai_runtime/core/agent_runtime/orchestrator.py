@@ -10,6 +10,7 @@ from ai_runtime.core.agent_runtime.context_compressor import (
     ContextCompressor,
 )
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
+from ai_runtime.core.agent_runtime.events import sanitize_runtime_payload
 from ai_runtime.core.agent_runtime.intent import IntentPreprocessor
 from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
 from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig, ToolResultCache
@@ -1555,39 +1556,40 @@ class AgentOrchestrator:
             await self.tracer.emit_event(run.id, "run.started", status="running")
 
             result = await self._execute_run(definition, run)
+            sanitized_result = sanitize_runtime_payload(result)
             updated = await self.run_repository.update_run_status(
                 run.id,
-                result["status"],
-                plan=result.get("plan"),
-                context=result.get("context"),
-                final_output=result.get("final_output"),
-                final_output_text=result.get("final_output_text"),
-                final_output_json=result.get("final_output_json"),
-                error_message=result.get("error_message"),
+                sanitized_result["status"],
+                plan=sanitized_result.get("plan"),
+                context=sanitized_result.get("context"),
+                final_output=sanitized_result.get("final_output"),
+                final_output_text=sanitized_result.get("final_output_text"),
+                final_output_json=sanitized_result.get("final_output_json"),
+                error_message=sanitized_result.get("error_message"),
             )
-            if result.get("artifacts") is not None:
-                await self.run_repository.replace_artifacts(run.id, result.get("artifacts") or [])
+            if sanitized_result.get("artifacts") is not None:
+                await self.run_repository.replace_artifacts(run.id, sanitized_result.get("artifacts") or [])
             await self._flush_tracer()
-            if result["status"] == "completed":
+            if sanitized_result["status"] == "completed":
                 await self.tracer.emit_event(
                     run.id,
                     "run.completed",
-                    status=result["status"],
-                    final_output=result.get("final_output"),
-                    final_output_text=result.get("final_output_text"),
-                    final_output_json=result.get("final_output_json"),
-                    artifacts=result.get("artifacts") or [],
+                    status=sanitized_result["status"],
+                    final_output=sanitized_result.get("final_output"),
+                    final_output_text=sanitized_result.get("final_output_text"),
+                    final_output_json=sanitized_result.get("final_output_json"),
+                    artifacts=sanitized_result.get("artifacts") or [],
                 )
-            elif result["status"] == "waiting_user":
-                waiting_context_patch = self._build_waiting_user_context_patch(result.get("context"))
+            elif sanitized_result["status"] == "waiting_user":
+                waiting_context_patch = self._build_waiting_user_context_patch(sanitized_result.get("context"))
                 await self.tracer.emit_event(
                     run.id,
                     "run.waiting_user",
-                    status=result["status"],
-                    question=result.get("final_output"),
-                    final_output_text=result.get("final_output_text"),
-                    final_output_json=result.get("final_output_json"),
-                    artifacts=result.get("artifacts") or [],
+                    status=sanitized_result["status"],
+                    question=sanitized_result.get("final_output"),
+                    final_output_text=sanitized_result.get("final_output_text"),
+                    final_output_json=sanitized_result.get("final_output_json"),
+                    artifacts=sanitized_result.get("artifacts") or [],
                     context_patch=waiting_context_patch,
                 )
             return AgentRun.model_validate(updated)

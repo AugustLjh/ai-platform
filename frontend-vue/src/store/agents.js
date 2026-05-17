@@ -10,6 +10,7 @@ import { collectRunEventPages } from '@/utils/runEventHydration'
 import { normalizeMCPBindingUsage, normalizeMCPEvent, normalizeMCPGovernanceSummary, normalizeMCPRecovery } from '@/utils/mcpServers'
 import { collectRunTreeInvocations, normalizeRunTreeNode } from '@/utils/agentRunTree'
 import { normalizeRuntimeStatus } from '@/utils/runtimeStatus'
+import { redactRuntimePayload } from '@/utils/runtimeRedaction'
 
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
 const MCP_BULK_PREVIEW_STORAGE_KEY = 'mcp_bulk_preview_context'
@@ -92,9 +93,9 @@ const normalizeRun = (raw = {}) => {
     toolName: toolCall.tool_name || toolCall.toolName || '',
     toolKind: toolCall.tool_kind || toolCall.toolKind || 'builtin',
     status: toolCall.status || 'pending',
-    arguments: parseJSON(toolCall.arguments, {}),
-    result: parseJSON(toolCall.result, {}),
-    recovery: parseJSON(toolCall.result, {})?.recovery || {},
+    arguments: redactRuntimePayload(parseJSON(toolCall.arguments, {})),
+    result: redactRuntimePayload(parseJSON(toolCall.result, {})),
+    recovery: redactRuntimePayload(parseJSON(toolCall.result, {}))?.recovery || {},
     error: toolCall.error_message || toolCall.errorMessage || '',
     createdAt: toolCall.created_at || toolCall.createdAt || null,
     updatedAt: toolCall.updated_at || toolCall.updatedAt || null
