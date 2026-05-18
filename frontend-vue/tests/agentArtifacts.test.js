@@ -2,12 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  describeArtifact,
+  filterArtifacts,
   buildArtifactsFromToolResult,
   buildRunArtifactsFromToolCalls,
   buildArtifactsFromStructuredResult,
   getRunAnswerText,
   mergeArtifacts,
-  normalizeRunResult
+  normalizeRunResult,
+  normalizeArtifact,
+  summarizeArtifactFilters
 } from '../src/utils/agentArtifacts.js'
 
 test('buildArtifactsFromStructuredResult derives task_plan from steps-only payload', () => {
@@ -517,6 +521,83 @@ test('buildArtifactsFromStructuredResult promotes directory trees, document page
   assert.equal(artifacts.find((artifact) => artifact.artifactType === 'directory_tree')?.payload?.summary?.file_count, 2)
   assert.equal(artifacts.find((artifact) => artifact.artifactType === 'document_pages')?.payload?.pages?.[1]?.page_number, 2)
   assert.equal(artifacts.find((artifact) => artifact.artifactType === 'archive_bundle')?.payload?.entry_count, 2)
+})
+
+test('summarizeArtifactFilters aggregates artifact types, child runs, and review states', () => {
+  const artifacts = [
+    normalizeArtifact({
+      artifact_type: 'code_patch',
+      name: 'Patch',
+      payload: { files: [{ path: 'src/app.py', operation: 'modify', changed: true }], merge_policy: 'manual_review_required' },
+      metadata: { child_run_id: 'child-1' }
+    }),
+    normalizeArtifact({
+      artifact_type: 'review_findings',
+      name: 'Findings',
+      payload: { items: [{ title: 'Unsafe writeback', severity: 'high' }] },
+      metadata: {}
+    }),
+    normalizeArtifact({
+      artifact_type: 'verification_report',
+      name: 'Verify',
+      payload: { status: 'completed' },
+      metadata: {}
+    })
+  ]
+
+  const summary = summarizeArtifactFilters({ artifacts })
+
+  assert.equal(summary.total, 3)
+  assert.equal(summary.typeCounts.code_patch, 1)
+  assert.equal(summary.childRunCounts['child-1'], 1)
+  assert.equal(summary.childRunCounts.current_run, 2)
+  assert.equal(summary.reviewCounts.needs_review, 1)
+  assert.equal(summary.reviewCounts.blocked, 1)
+  assert.equal(summary.reviewCounts.unreviewed, 1)
+})
+
+test('filterArtifacts filters by artifact type, child run, and review status', () => {
+  const artifacts = [
+    normalizeArtifact({
+      artifact_type: 'code_patch',
+      name: 'Patch',
+      payload: { files: [{ path: 'src/a.py', operation: 'modify', changed: true }], merge_policy: 'manual_review_required' },
+      metadata: { child_run_id: 'child-1' }
+    }),
+    normalizeArtifact({
+      artifact_type: 'review_findings',
+      name: 'Findings',
+      payload: { items: [{ title: 'Unsafe writeback', severity: 'critical' }] },
+      metadata: { child_run_id: 'child-2' }
+    }),
+    normalizeArtifact({
+      artifact_type: 'verification_report',
+      name: 'Verify',
+      payload: { status: 'completed' },
+      metadata: {}
+    })
+  ]
+
+  assert.equal(filterArtifacts({ artifacts, artifactType: 'code_patch' }).length, 1)
+  assert.equal(filterArtifacts({ artifacts, childRunId: 'child-2' }).length, 1)
+  assert.equal(filterArtifacts({ artifacts, childRunId: 'current_run' }).length, 1)
+  assert.equal(filterArtifacts({ artifacts, reviewStatus: 'blocked' }).length, 1)
+  assert.equal(filterArtifacts({ artifacts, reviewStatus: 'needs_review' }).length, 1)
+})
+
+test('describeArtifact falls back to current run source labels', () => {
+  const artifact = normalizeArtifact({
+    artifact_type: 'verification_report',
+    name: 'Verify',
+    payload: { status: 'completed' },
+    metadata: {}
+  })
+
+  const description = describeArtifact(artifact, new Map())
+
+  assert.equal(description.typeLabel, '验证报告')
+  assert.equal(description.sourceLabel, '当前 run')
+  assert.equal(description.reviewStatus, 'unreviewed')
 })
 
 test('buildArtifactsFromToolResult merges structured content with code resources', () => {

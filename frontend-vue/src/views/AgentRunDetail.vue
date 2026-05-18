@@ -131,6 +131,8 @@
             :artifacts="surfaceArtifacts"
             :final-output-json="surfaceOutputJson"
             :surface-meta="executionSurface"
+            :run-tree-invocations="runTreeInvocations"
+            :resolved-invocations="resolvedSubagentInvocations"
           />
         </div>
       </div>
@@ -195,6 +197,8 @@
           :artifacts="artifacts"
           :final-output-json="run?.finalOutputJson"
           :surface-meta="executionSurface"
+          :run-tree-invocations="runTreeInvocations"
+          :resolved-invocations="resolvedSubagentInvocations"
         />
         <AgentPlanPanel :plan="plan" />
       </div>

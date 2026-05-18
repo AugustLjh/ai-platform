@@ -155,6 +155,8 @@
             :artifacts="surfaceArtifacts"
             :final-output-json="surfaceOutputJson"
             :surface-meta="executionSurface"
+            :run-tree-invocations="runTreeInvocations"
+            :resolved-invocations="resolvedSubagentInvocations"
           />
         </div>
       </div>
@@ -349,12 +351,25 @@
           :artifacts="artifacts"
           :final-output-json="currentRun?.finalOutputJson"
           :surface-meta="executionSurface"
+          :run-tree-invocations="runTreeInvocations"
+          :resolved-invocations="resolvedSubagentInvocations"
         />
         <AgentPlanPanel :plan="plan" />
       </div>
+      <AgentSubagentCollaborationSummary
+        v-if="runTreeInvocations.length > 0 || resolvedSubagentInvocations.length > 0"
+        :run-tree-invocations="runTreeInvocations"
+        :resolved-invocations="resolvedSubagentInvocations"
+        :artifacts="artifacts"
+        :events="runEvents"
+      />
       <AgentRunTree v-if="currentRunTree" :root="currentRunTree" />
       <AgentSubagentProtocolPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
-      <AgentSubagentInvocationPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
+      <AgentSubagentInvocationPanel
+        v-if="runTreeInvocations.length > 0 || resolvedSubagentInvocations.length > 0"
+        :items="runTreeInvocations"
+        :resolved-items="resolvedSubagentInvocations"
+      />
       <AgentTimeline :events="runEvents" />
       <AgentStepList :steps="steps" :tool-calls="toolCalls" />
     </section>
@@ -372,12 +387,14 @@ import AgentRunTree from '@/components/agent/AgentRunTree.vue'
 import AgentSubagentProtocolPanel from '@/components/agent/AgentSubagentProtocolPanel.vue'
 import AgentSubagentInvocationPanel from '@/components/agent/AgentSubagentInvocationPanel.vue'
 import AgentSubagentClarificationCard from '@/components/agent/AgentSubagentClarificationCard.vue'
+import AgentSubagentCollaborationSummary from '@/components/agent/AgentSubagentCollaborationSummary.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
 import { getRunAnswerText } from '@/utils/agentArtifacts'
 import { renderMarkdown } from '@/utils/markdown'
 import { useUploadBundles } from '@/composables/useUploadBundles'
 import { agentsAPI } from '@/api'
+import { collectResolvedSubagentInvocations } from '@/utils/agentRunTree'
 import { buildWorkspaceSourcePayload, getAgentWorkspaceBindingPolicy, formatWorkspaceSource } from '@/utils/workspaceBindings'
 
 const route = useRoute()
@@ -440,6 +457,7 @@ const artifacts = computed(() => agentsStore.artifacts)
 const executionSurface = computed(() => agentsStore.executionSurface)
 const currentRunTree = computed(() => agentsStore.currentRunTree)
 const runTreeInvocations = computed(() => agentsStore.currentRunInvocations)
+const resolvedSubagentInvocations = computed(() => collectResolvedSubagentInvocations(currentRun.value))
 const errorMessage = computed(() => agentsStore.error || '')
 
 const statusMap = {

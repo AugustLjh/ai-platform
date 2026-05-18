@@ -85,6 +85,25 @@ const mediaExtensions = {
   '.mkv': 'video'
 }
 
+const artifactTypeLabels = {
+  answer: '回答',
+  workspace_summary: 'Workspace',
+  review_findings: '审查发现',
+  citations: '引用',
+  code_patch: 'Patch',
+  verification_report: '验证报告',
+  code_files: '代码文件',
+  task_plan: '任务计划',
+  table: '表格',
+  paged_collection: '分页集合',
+  directory_tree: '目录树',
+  document_pages: '文档页',
+  document_excerpt: '文档摘录',
+  media_gallery: '媒体',
+  archive_bundle: '压缩包',
+  file_bundle: '文件包'
+}
+
 export const parseJSON = (value, fallback = null) => {
   if (value === null || value === undefined || value === '') {
     return fallback
@@ -612,6 +631,223 @@ export const normalizeArtifact = (raw = {}) => {
     clientKey: raw.client_key || raw.clientKey || raw.id || artifactSignature(artifact)
   }
 }
+
+const artifactReviewStatus = (artifact = {}) => {
+  const metadata = artifact.metadata && typeof artifact.metadata === 'object' && !Array.isArray(artifact.metadata)
+    ? artifact.metadata
+    : {}
+  const payload = artifact.payload && typeof artifact.payload === 'object' && !Array.isArray(artifact.payload)
+    ? artifact.payload
+    : {}
+  const findings = Array.isArray(payload.items) ? payload.items : []
+
+  const explicit = String(
+    metadata.review_status ||
+    metadata.reviewStatus ||
+    metadata.review_decision ||
+    metadata.reviewDecision ||
+    payload.review_status ||
+    payload.reviewStatus ||
+    ''
+  ).trim().toLowerCase()
+  if (explicit) return explicit
+
+  if (artifact.artifactType === 'review_findings') {
+    const blockingCount = findings.filter((item) => {
+      const severity = String(item?.severity || item?.level || '').trim().toLowerCase()
+      return ['high', 'critical', 'error', 'blocking'].includes(severity)
+    }).length
+    return blockingCount > 0 ? 'blocked' : 'reviewed'
+  }
+
+  const mergePolicy = String(payload.mergePolicy || payload.merge_policy || '').trim().toLowerCase()
+  if (mergePolicy.includes('manual_review')) return 'needs_review'
+
+  return 'unreviewed'
+}
+
+const artifactChildRunId = (artifact = {}, collaborationIndex = new Map()) => {
+  const metadata = artifact.metadata && typeof artifact.metadata === 'object' && !Array.isArray(artifact.metadata)
+    ? artifact.metadata
+    : {}
+  const direct = String(
+    metadata.child_run_id ||
+    metadata.childRunId ||
+    metadata.source_child_run_id ||
+    metadata.sourceChildRunId ||
+    ''
+  ).trim()
+  if (direct) return direct
+  const key = artifact.clientKey || artifact.id || ''
+  return collaborationIndex.get(key)?.childRunId || ''
+}
+
+const artifactSourceLabel = (artifact = {}, collaborationIndex = new Map()) => {
+  const metadata = artifact.metadata && typeof artifact.metadata === 'object' && !Array.isArray(artifact.metadata)
+    ? artifact.metadata
+    : {}
+  const childRunId = artifactChildRunId(artifact, collaborationIndex)
+  if (childRunId) return childRunId
+  const sourceTarget = String(metadata.source_target || metadata.sourceTarget || '').trim()
+  if (sourceTarget) return sourceTarget
+  const indexed = collaborationIndex.get(artifact.clientKey || artifact.id || '')
+  if (indexed?.target) return indexed.target
+  return '当前 run'
+}
+
+export const buildArtifactCollaborationIndex = ({
+  runTreeInvocations = [],
+  resolvedInvocations = [],
+  artifacts = []
+} = {}) => {
+  const index = new Map()
+  const remember = (rawArtifact, source = {}) => {
+    const artifact = normalizeArtifact(rawArtifact)
+    const key = artifact.clientKey || artifact.id || ''
+    if (!key) return
+    if (index.has(key)) return
+    index.set(key, {
+      childRunId: String(source.childRunId || '').trim(),
+      invocationId: String(source.invocationId || '').trim(),
+      target: String(source.target || '').trim(),
+      reviewBlocked: Boolean(source.reviewBlocked)
+    })
+  }
+
+  const invocations = Array.isArray(runTreeInvocations) ? runTreeInvocations : []
+  invocations.forEach((item) => {
+    const invocation = item?.invocation || {}
+    const resultPayload = invocation?.resultPayload || {}
+    const promotedArtifacts = (
+      resultPayload?.final_result?.artifacts ||
+      resultPayload?.finalResult?.artifacts ||
+      resultPayload?.promoted_artifacts ||
+      resultPayload?.promotedArtifacts ||
+      []
+    )
+    const reviewResult = item?.reviewResult || invocation?.review_result || invocation?.reviewResult || {}
+    const reviewBlocked = Boolean(
+      item?.reviewGateBlocked ||
+      reviewResult?.gateBlocked ||
+      Number(reviewResult?.blockingFindingCount || reviewResult?.blocking_finding_count || 0) > 0 ||
+      String(reviewResult?.decision || '').trim() === 'review_gate_blocked'
+    )
+    promotedArtifacts.forEach((artifact) => remember(artifact, {
+      childRunId: item?.childRun?.run?.id || item?.childRunId || '',
+      invocationId: invocation?.id || item?.invocationId || '',
+      target: item?.targetName || item?.invocation?.subagentName || '',
+      reviewBlocked
+    }))
+  })
+
+  const resolved = Array.isArray(resolvedInvocations) ? resolvedInvocations : []
+  resolved.forEach((item) => {
+    const reviewResult = item?.reviewResult || {}
+    const reviewBlocked = Boolean(
+      item?.reviewGateBlocked ||
+      reviewResult?.gateBlocked ||
+      Number(reviewResult?.blockingFindingCount || reviewResult?.blocking_finding_count || 0) > 0 ||
+      String(reviewResult?.decision || '').trim() === 'review_gate_blocked'
+    )
+    ;(item?.promotedArtifacts || item?.artifacts || []).forEach((artifact) => remember(artifact, {
+      childRunId: item?.childRunId || '',
+      invocationId: item?.invocationId || item?.id || '',
+      target: item?.target?.name || item?.target?.slug || item?.target || '',
+      reviewBlocked
+    }))
+  })
+
+  ;(Array.isArray(artifacts) ? artifacts : []).forEach((artifact) => remember(artifact, {}))
+  return index
+}
+
+export const summarizeArtifactFilters = ({
+  artifacts = [],
+  runTreeInvocations = [],
+  resolvedInvocations = []
+} = {}) => {
+  const normalizedArtifacts = (Array.isArray(artifacts) ? artifacts : []).map(normalizeArtifact)
+  const collaborationIndex = buildArtifactCollaborationIndex({
+    runTreeInvocations,
+    resolvedInvocations,
+    artifacts: normalizedArtifacts
+  })
+  const typeCounts = {}
+  const childRunCounts = {}
+  const reviewCounts = {
+    all: normalizedArtifacts.length,
+    unreviewed: 0,
+    needs_review: 0,
+    reviewed: 0,
+    blocked: 0
+  }
+
+  normalizedArtifacts.forEach((artifact) => {
+    const type = String(artifact.artifactType || '').trim() || 'unknown'
+    typeCounts[type] = (typeCounts[type] || 0) + 1
+
+    const childRunId = artifactChildRunId(artifact, collaborationIndex)
+    const sourceKey = childRunId || 'current_run'
+    childRunCounts[sourceKey] = (childRunCounts[sourceKey] || 0) + 1
+
+    const review = artifactReviewStatus(artifact)
+    if (!Object.prototype.hasOwnProperty.call(reviewCounts, review)) {
+      reviewCounts[review] = 0
+    }
+    reviewCounts[review] += 1
+  })
+
+  return {
+    total: normalizedArtifacts.length,
+    typeCounts,
+    childRunCounts,
+    reviewCounts,
+    collaborationIndex
+  }
+}
+
+export const filterArtifacts = ({
+  artifacts = [],
+  artifactType = 'all',
+  childRunId = 'all',
+  reviewStatus = 'all',
+  runTreeInvocations = [],
+  resolvedInvocations = []
+} = {}) => {
+  const normalizedArtifacts = (Array.isArray(artifacts) ? artifacts : []).map(normalizeArtifact)
+  const collaborationIndex = buildArtifactCollaborationIndex({
+    runTreeInvocations,
+    resolvedInvocations,
+    artifacts: normalizedArtifacts
+  })
+
+  return normalizedArtifacts.filter((artifact) => {
+    if (artifactType !== 'all' && artifact.artifactType !== artifactType) {
+      return false
+    }
+
+    const artifactRunId = artifactChildRunId(artifact, collaborationIndex)
+    if (childRunId === 'current_run' && artifactRunId) {
+      return false
+    }
+    if (childRunId !== 'all' && childRunId !== 'current_run' && artifactRunId !== childRunId) {
+      return false
+    }
+
+    if (reviewStatus !== 'all' && artifactReviewStatus(artifact) !== reviewStatus) {
+      return false
+    }
+
+    return true
+  })
+}
+
+export const describeArtifact = (artifact, collaborationIndex = new Map()) => ({
+  typeLabel: artifactTypeLabel(artifact?.artifactType),
+  childRunId: artifactChildRunId(artifact, collaborationIndex),
+  sourceLabel: artifactSourceLabel(artifact, collaborationIndex),
+  reviewStatus: artifactReviewStatus(artifact)
+})
 
 export const mergeArtifacts = (...groups) => {
   const merged = []
@@ -2495,26 +2731,7 @@ export const getRunAnswerText = (run = {}) => {
   return extractTextCandidate(run.finalOutputJson)
 }
 
-export const artifactTypeLabel = (type) => {
-  const labels = {
-    answer: '回答',
-    archive_bundle: '压缩包清单',
-    code_patch: '代码补丁',
-    code_files: '代码文件',
-    citations: '引用',
-    directory_tree: '目录树',
-    document_pages: '多页文档',
-    file_bundle: '附件文件',
-    media_gallery: '媒体资源',
-    paged_collection: '分页结果',
-    review_findings: '审查发现',
-    task_plan: '任务计划',
-    table: '表格',
-    verification_report: '验证报告',
-    document_excerpt: '文档摘录'
-  }
-  return labels[type] || type || '结构化结果'
-}
+export const artifactTypeLabel = (type) => artifactTypeLabels[String(type || '').trim()] || String(type || '').trim() || '结构化结果'
 
 export const summarizeArtifacts = (artifacts = []) => {
   return artifacts.map((artifact) => artifactTypeLabel(artifact.artifactType)).join(' · ')
