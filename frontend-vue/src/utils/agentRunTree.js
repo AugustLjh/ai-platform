@@ -887,6 +887,197 @@ export const buildInvocationProtocolEntry = (item = {}) => {
   }
 }
 
+const getRawArtifactType = (artifact) => String(
+  artifact?.artifactType || artifact?.artifact_type || 'unknown'
+).trim() || 'unknown'
+
+const getRawArtifactName = (artifact) => String(
+  artifact?.name || artifact?.title || artifact?.artifactType || artifact?.artifact_type || '未命名产物'
+).trim() || '未命名产物'
+
+const stableArtifactValue = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableArtifactValue(item)).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableArtifactValue(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+const artifactIdentity = (artifact) => stableArtifactValue({
+  type: getRawArtifactType(artifact),
+  name: getRawArtifactName(artifact),
+  uri: artifact?.uri || '',
+  path: artifact?.path || '',
+  payload: artifact?.payload || {}
+})
+
+const normalizeCollaborationArtifact = (artifact, source = {}) => ({
+  type: getRawArtifactType(artifact),
+  name: getRawArtifactName(artifact),
+  sourceTarget: source.target || '',
+  sourceChildRunId: source.childRunId || '',
+  sourceInvocationId: source.invocationId || '',
+  reviewBlocked: Boolean(source.reviewBlocked),
+  key: `${source.invocationId || source.childRunId || 'run'}:${artifactIdentity(artifact)}`
+})
+
+const artifactTypeLabel = (type) => ({
+  answer: '回答',
+  code_patch: 'Patch',
+  code_files: '代码文件',
+  citations: '引用',
+  file_bundle: '文件包',
+  media_gallery: '媒体',
+  paged_collection: '分页集合',
+  review_findings: '审查发现',
+  task_plan: '任务计划',
+  table: '表格',
+  document_excerpt: '文档摘录',
+  directory_tree: '目录树',
+  document_pages: '文档页',
+  archive_bundle: '压缩包',
+  verification_report: '验证报告',
+  workspace_summary: 'Workspace'
+}[type] || type || '未知')
+
+export const buildSubagentCollaborationSummary = ({
+  runTreeInvocations = [],
+  resolvedInvocations = [],
+  artifacts = [],
+  events = []
+} = {}) => {
+  const entries = [
+    ...runTreeInvocations.map((item) => {
+      const entry = buildInvocationProtocolEntry(item)
+      return {
+        ...entry,
+        parentRunId: item.parentRun?.id || '',
+        promotedArtifacts: item.invocation?.resultPayload?.final_result?.artifacts ||
+          item.invocation?.resultPayload?.finalResult?.artifacts ||
+          item.invocation?.resultPayload?.promoted_artifacts ||
+          item.invocation?.resultPayload?.promotedArtifacts ||
+          []
+      }
+    }),
+    ...resolvedInvocations.map((item) => {
+      const reviewResult = item.reviewResult || normalizeReviewResult({})
+      const reviewBlocked = Boolean(item.reviewGateBlocked || reviewResult.gateBlocked || reviewResult.blockingFindingCount > 0)
+      return {
+        id: item.invocationId || item.id || item.childRunId,
+        target: item.target?.name || item.target?.slug || '已收敛子任务',
+        status: item.stepStatus || item.status || 'completed',
+        statusLabel: statusLabel(item.stepStatus || item.status || 'completed'),
+        childRunId: item.childRunId || '',
+        taskMessage: item.summary || item.finalOutputText || '',
+        reviewResult,
+        reviewSummary: reviewResult.decision ? `${reviewModeLabel(reviewResult.mode)} ${reviewDecisionLabel(reviewResult.decision)}` : '',
+        governance: item.governancePolicy || normalizeGovernancePolicy({}),
+        governanceSummary: summarizeGovernancePolicy(item.governancePolicy || normalizeGovernancePolicy({})),
+        promotedArtifacts: item.promotedArtifacts || item.artifacts || [],
+        resultSummary: item.summary || item.finalOutputText || '',
+        attentionSummary: reviewBlocked ? 'Reviewer gate blocked this result.' : '',
+        needsAttention: reviewBlocked || ['waiting_user', 'failed', 'cancelled'].includes(item.status),
+        attentionTone: reviewBlocked || item.status === 'failed' ? 'danger' : item.status === 'waiting_user' ? 'warning' : 'neutral'
+      }
+    })
+  ]
+
+  const seenArtifacts = new Set()
+  const promotedArtifacts = []
+  for (const entry of entries) {
+    const blocked = Boolean(entry.reviewResult?.gateBlocked || entry.reviewResult?.blockingFindingCount > 0 || entry.reviewResult?.decision === 'review_gate_blocked')
+    for (const artifact of entry.promotedArtifacts || []) {
+      const normalized = normalizeCollaborationArtifact(artifact, {
+        target: entry.target,
+        childRunId: entry.childRunId,
+        invocationId: entry.id,
+        reviewBlocked: blocked
+      })
+      if (seenArtifacts.has(normalized.key)) continue
+      seenArtifacts.add(normalized.key)
+      promotedArtifacts.push(normalized)
+    }
+  }
+
+  const directArtifacts = []
+  for (const artifact of artifacts || []) {
+    const normalized = normalizeCollaborationArtifact(artifact, { target: '当前 run' })
+    if (seenArtifacts.has(normalized.key)) continue
+    seenArtifacts.add(normalized.key)
+    directArtifacts.push(normalized)
+  }
+
+  const artifactTypeCounts = [...promotedArtifacts, ...directArtifacts].reduce((acc, artifact) => {
+    const label = artifactTypeLabel(artifact.type)
+    acc[label] = (acc[label] || 0) + 1
+    return acc
+  }, {})
+
+  const reviewBlocks = entries
+    .filter((entry) => entry.reviewResult?.gateBlocked || entry.reviewResult?.blockingFindingCount > 0 || entry.reviewResult?.decision === 'review_gate_blocked')
+    .map((entry) => ({
+      id: entry.id,
+      target: entry.target,
+      childRunId: entry.childRunId,
+      decision: entry.reviewResult?.decision || '',
+      summary: entry.reviewResult?.summary || entry.reviewResult?.conclusion || entry.reviewSummary || entry.attentionSummary || '',
+      findingCount: entry.reviewResult?.findingCount || 0,
+      blockingFindingCount: entry.reviewResult?.blockingFindingCount || 0,
+      recoveryActions: entry.reviewResult?.recovery?.actions || entry.governance?.recovery?.actions || []
+    }))
+
+  const timeline = entries.map((entry) => ({
+    id: entry.id,
+    target: entry.target,
+    status: entry.status,
+    statusLabel: entry.statusLabel,
+    childRunId: entry.childRunId,
+    summary: entry.attentionSummary || entry.resultSummary || entry.taskMessage || entry.reviewSummary || entry.governanceSummary || '',
+    tone: entry.attentionTone || 'neutral',
+    startedAt: entry.startedAt || null,
+    completedAt: entry.completedAt || null,
+    artifactCount: (entry.promotedArtifacts || []).length,
+    reviewBlocked: Boolean(entry.reviewResult?.gateBlocked || entry.reviewResult?.blockingFindingCount > 0 || entry.reviewResult?.decision === 'review_gate_blocked')
+  }))
+
+  const eventTimeline = (events || [])
+    .filter((event) => String(event?.eventType || '').startsWith('subagent.'))
+    .slice(-8)
+    .map((event) => ({
+      id: event.id || `${event.sequence}-${event.eventType}`,
+      eventType: event.eventType,
+      sequence: event.sequence || 0,
+      summary: summarizeTimelineEvent(event),
+      createdAt: event.createdAt || null,
+      tone: String(event.eventType || '').includes('failed') || String(event.eventType || '').includes('review_blocked')
+        ? 'danger'
+        : String(event.eventType || '').includes('waiting_user')
+          ? 'warning'
+          : String(event.eventType || '').includes('completed')
+            ? 'success'
+            : 'neutral'
+    }))
+
+  return {
+    totalInvocations: entries.length,
+    activeCount: entries.filter((entry) => ['queued', 'running', 'waiting_user'].includes(entry.status)).length,
+    completedCount: entries.filter((entry) => entry.status === 'completed').length,
+    failedCount: entries.filter((entry) => ['failed', 'cancelled'].includes(entry.status)).length,
+    reviewBlockCount: reviewBlocks.length,
+    promotedArtifactCount: promotedArtifacts.length,
+    directArtifactCount: directArtifacts.length,
+    artifactTypeCounts,
+    timeline,
+    eventTimeline,
+    reviewBlocks,
+    promotedArtifacts,
+    directArtifacts,
+    hasData: entries.length > 0 || promotedArtifacts.length > 0 || directArtifacts.length > 0
+  }
+}
+
 export const buildRunTreeNodeSummary = (node = {}) => {
   const run = node.run || {}
   if (run.status === 'failed') {

@@ -112,6 +112,55 @@ export const agentsAPI = {
     return api.get('/api/v1/agents/runtime-status')
   },
 
+  getOpsStatus(role = 'user') {
+    return api.get('/api/v1/agents/ops-status', {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateOpsStatus(role = 'user') {
+    return api.post('/api/v1/agents/ops-status/evaluate', null, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  getOpsPrometheusMetrics(role = 'user') {
+    return api.get('/api/v1/agents/ops-status/metrics', {
+      headers: { 'X-User-Role': role },
+      responseType: 'text'
+    })
+  },
+
+  getOpsGrafanaDashboard(role = 'user') {
+    return api.get('/api/v1/agents/ops-status/grafana-dashboard', {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  acknowledgeRuntimeAlert(ruleName, role = 'user') {
+    return api.post(`/api/v1/agents/ops-status/alerts/${encodeURIComponent(ruleName)}/acknowledge`, null, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  resolveRuntimeAlert(ruleName, role = 'user') {
+    return api.post(`/api/v1/agents/ops-status/alerts/${encodeURIComponent(ruleName)}/resolve`, null, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateAuditRedactionRules(testCases = [], role = 'user') {
+    return api.post('/api/v1/agents/audit/redaction/evaluate', testCases, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateSubagentQualityRules(testCases = [], role = 'user') {
+    return api.post('/api/v1/agents/subagents/quality/evaluate', testCases, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
   listTools(agentDefinitionId = '') {
     const params = {}
     if (agentDefinitionId) {
@@ -143,6 +192,18 @@ export const agentsAPI = {
   getRunEvents(runId, afterSequence = 0, limit = 500) {
     return api.get(`/api/v1/agents/runs/${runId}/events`, {
       params: { after_sequence: afterSequence, limit }
+    })
+  },
+
+  getRunAuditView(runId, { viewerRole = 'user', includeEvents = true, includeToolCalls = true, eventLimit = 500, role = 'user' } = {}) {
+    return api.get(`/api/v1/agents/runs/${runId}/audit-view`, {
+      params: {
+        viewer_role: viewerRole,
+        include_events: includeEvents,
+        include_tool_calls: includeToolCalls,
+        event_limit: eventLimit
+      },
+      headers: { 'X-User-Role': role }
     })
   },
 

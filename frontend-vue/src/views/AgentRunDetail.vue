@@ -198,6 +198,13 @@
         />
         <AgentPlanPanel :plan="plan" />
       </div>
+      <AgentSubagentCollaborationSummary
+        v-if="runTreeInvocations.length > 0 || resolvedSubagentInvocations.length > 0"
+        :run-tree-invocations="runTreeInvocations"
+        :resolved-invocations="resolvedSubagentInvocations"
+        :artifacts="artifacts"
+        :events="runEvents"
+      />
       <AgentRunTree v-if="currentRunTree" :root="currentRunTree" />
       <AgentSubagentProtocolPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
       <AgentSubagentInvocationPanel
@@ -222,6 +229,7 @@ import AgentRunTree from '@/components/agent/AgentRunTree.vue'
 import AgentSubagentProtocolPanel from '@/components/agent/AgentSubagentProtocolPanel.vue'
 import AgentSubagentInvocationPanel from '@/components/agent/AgentSubagentInvocationPanel.vue'
 import AgentSubagentClarificationCard from '@/components/agent/AgentSubagentClarificationCard.vue'
+import AgentSubagentCollaborationSummary from '@/components/agent/AgentSubagentCollaborationSummary.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
 import { getRunAnswerText } from '@/utils/agentArtifacts'

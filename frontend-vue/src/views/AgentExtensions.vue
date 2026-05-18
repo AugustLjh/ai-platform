@@ -450,6 +450,143 @@
           </div>
         </div>
 
+        <div v-if="showAdminOpsPanel" class="card">
+          <div class="section-head">
+            <div>
+              <h2>管理员治理闭环</h2>
+              <p>外部告警、SLO、运维手册和脱敏规则评测只在 operator/admin 角色下展示。</p>
+            </div>
+            <div class="runtime-action-row">
+              <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="refreshOpsStatus">
+                {{ opsLoading ? '刷新中...' : '刷新治理' }}
+              </button>
+              <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="evaluateOpsStatus">
+                {{ opsLoading ? '评估中...' : '立即评估' }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="opsStatus" class="runtime-status-grid">
+            <article :class="['runtime-card', `tone-${opsAlertTone}`]">
+              <div class="runtime-card-head">
+                <strong>告警</strong>
+                <span>{{ opsAlertStatusLabel }}</span>
+              </div>
+              <p>活跃 {{ Number(opsStatus.alerts?.active_alert_count || opsStatus.alerts?.activeAlertCount || 0) }} 条，历史 {{ Number(opsStatus.alerts?.total_alert_count || opsStatus.alerts?.totalAlertCount || 0) }} 条。</p>
+              <small>规则 {{ Number(opsStatus.alerts?.rules_configured || opsStatus.alerts?.rulesConfigured || 0) }} 条</small>
+            </article>
+            <article :class="['runtime-card', `tone-${opsSloTone}`]">
+              <div class="runtime-card-head">
+                <strong>SLO</strong>
+                <span>{{ opsSloStatusLabel }}</span>
+              </div>
+              <p>定义 {{ Number(opsStatus.slo?.slo_count || opsStatus.slo?.sloCount || 0) }} 条，违约 {{ Number(opsStatus.slo?.breached_count || opsStatus.slo?.breachedCount || 0) }} 条。</p>
+              <small>{{ opsSloSummary }}</small>
+            </article>
+            <article class="runtime-card tone-ready">
+              <div class="runtime-card-head">
+                <strong>外部监控</strong>
+                <span>已开放</span>
+              </div>
+              <p>Prometheus {{ opsMonitoringPrometheusPath }}，Grafana dashboard {{ opsMonitoringGrafanaUid }}。</p>
+              <small>{{ opsMonitoringSummary }}</small>
+            </article>
+          </div>
+          <div v-else class="panel-empty">当前还没有加载管理员治理快照。</div>
+
+          <div v-if="opsStatus" class="runtime-monitoring-panel">
+            <div class="runtime-card-head">
+              <strong>Prometheus / Grafana 对接</strong>
+              <div class="runtime-action-row">
+                <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="previewPrometheusMetrics">
+                  {{ opsLoading ? '加载中...' : '预览指标' }}
+                </button>
+                <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="downloadGrafanaDashboard">
+                  下载 Dashboard
+                </button>
+              </div>
+            </div>
+            <p>{{ opsMonitoringSummary }}</p>
+            <pre v-if="opsPrometheusPreview" class="runtime-metrics-preview">{{ opsPrometheusPreview }}</pre>
+          </div>
+
+          <div v-if="activeRuntimeAlerts.length > 0" class="runtime-alert-table">
+            <span>活跃告警</span>
+            <article v-for="alert in activeRuntimeAlerts" :key="`${alert.rule_name || alert.ruleName}-${alert.generated_at || alert.generatedAt}`" class="runtime-alert-row">
+              <div>
+                <strong>{{ alert.rule_name || alert.ruleName }}</strong>
+                <p>{{ alert.subsystem }} · {{ alert.severity }} · {{ alert.message }}</p>
+              </div>
+              <div class="runtime-action-row">
+                <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading || alert.acknowledged" @click="acknowledgeAlert(alert)">
+                  {{ alert.acknowledged ? '已确认' : '确认' }}
+                </button>
+                <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="resolveAlert(alert)">
+                  解决
+                </button>
+              </div>
+            </article>
+          </div>
+
+          <div v-if="breachedSlos.length > 0" class="runtime-recovery-list">
+            <span>SLO 违约</span>
+            <ul>
+              <li v-for="slo in breachedSlos" :key="slo.name">
+                <strong>{{ slo.name }}</strong>
+                <span>{{ slo.subsystem }} · 当前 {{ Number(slo.current_percent || slo.currentPercent || 0).toFixed(2) }}% / 目标 {{ Number(slo.target_percent || slo.targetPercent || 0).toFixed(2) }}%</span>
+              </li>
+            </ul>
+          </div>
+
+          <div v-if="opsRunbooks.length > 0" class="runtime-runbook-list">
+            <span>运维手册</span>
+            <details v-for="entry in opsRunbooks" :key="`${entry.subsystem}-${entry.scenario}`" class="runtime-runbook-item">
+              <summary>{{ entry.subsystem }} · {{ entry.scenario }}</summary>
+              <p>{{ entry.escalation }}</p>
+              <div class="runtime-runbook-columns">
+                <div>
+                  <strong>症状</strong>
+                  <ul><li v-for="item in entry.symptoms" :key="item">{{ item }}</li></ul>
+                </div>
+                <div>
+                  <strong>恢复动作</strong>
+                  <ul><li v-for="item in entry.recovery_actions || entry.recoveryActions" :key="item">{{ item }}</li></ul>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div class="runtime-redaction-panel">
+            <div class="runtime-card-head">
+              <strong>脱敏规则评测</strong>
+              <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="runRedactionEvaluation">
+                {{ opsLoading ? '评测中...' : '运行评测' }}
+              </button>
+            </div>
+            <p v-if="redactionEvaluation">
+              {{ redactionEvaluation.status }} · 通过 {{ redactionEvaluation.passed }}/{{ redactionEvaluation.total }}，
+              误报 {{ redactionEvaluation.false_positive_count || redactionEvaluation.falsePositiveCount || 0 }}，
+              漏报 {{ redactionEvaluation.false_negative_count || redactionEvaluation.falseNegativeCount || 0 }}
+            </p>
+            <p v-else>使用内置样例评估 password、API key、Bearer、GitHub token 和普通字段的边界。</p>
+          </div>
+
+          <div class="runtime-quality-panel">
+            <div class="runtime-card-head">
+              <strong>Subagent 质量评测</strong>
+              <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="runSubagentQualityEvaluation">
+                {{ opsLoading ? '评测中...' : '运行评测' }}
+              </button>
+            </div>
+            <p v-if="subagentQualityEvaluation">
+              {{ subagentQualityEvaluation.status }} · 通过 {{ subagentQualityEvaluation.passed }}/{{ subagentQualityEvaluation.total }}，
+              警告 {{ subagentQualityEvaluation.warning }}，失败 {{ subagentQualityEvaluation.failed }}，
+              平均分 {{ Number(subagentQualityEvaluation.average_score || subagentQualityEvaluation.averageScore || 0).toFixed(2) }}
+            </p>
+            <p v-else>使用内置样例评估 reviewer 阻断发现召回和 tester 结构化验证报告完整度。</p>
+          </div>
+        </div>
+
         <div class="card">
           <div class="section-head">
             <div>
@@ -477,6 +614,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AgentPageHeader from '@/components/agent/AgentPageHeader.vue'
 import { mcpAPI } from '@/api'
 import { useAgentsStore } from '@/store/agents'
+import { useAuthStore } from '@/store/auth'
 import { useKnowledgeStore } from '@/store/knowledge'
 import { useToastStore } from '@/store/toast'
 import {
@@ -492,6 +630,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const agentsStore = useAgentsStore()
+const authStore = useAuthStore()
 const knowledgeStore = useKnowledgeStore()
 const toastStore = useToastStore()
 
@@ -503,6 +642,8 @@ const selectedKnowledgeBaseIds = ref([])
 const selectedSubagentIds = ref([])
 const runtimeStatusLoading = ref(false)
 const cleanupLoading = ref(false)
+const opsLoading = ref(false)
+const opsPrometheusPreview = ref('')
 
 const agent = computed(() => agentsStore.currentAgent)
 const skills = computed(() => agentsStore.skills)
@@ -513,6 +654,10 @@ const subagents = computed(() => agentsStore.subagents)
 const knowledgeBases = computed(() => knowledgeStore.knowledgeBases)
 const errorMessage = computed(() => agentsStore.error || knowledgeStore.error || '')
 const runtimeStatus = computed(() => agentsStore.runtimeStatus)
+const opsStatus = computed(() => agentsStore.opsStatus)
+const opsGrafanaDashboard = computed(() => agentsStore.opsGrafanaDashboard)
+const redactionEvaluation = computed(() => agentsStore.redactionEvaluation)
+const subagentQualityEvaluation = computed(() => agentsStore.subagentQualityEvaluation)
 const workspaceInspection = computed(() => agentsStore.workspaceInspection || runtimeStatus.value?.workspace?.inspection || null)
 const workspaceCleanupResult = computed(() => agentsStore.workspaceCleanupResult)
 const fixedSkillIds = computed(() => skills.value
@@ -691,6 +836,54 @@ const browserSessionAlerts = computed(() => {
   const sessions = runtimeStatus.value?.web?.browserSessions || {}
   return Array.isArray(sessions.alerts) ? sessions.alerts.slice(-5).reverse() : []
 })
+const currentRole = computed(() => String(authStore.user?.role || 'user').trim().toLowerCase())
+const showAdminOpsPanel = computed(() => ['operator', 'admin', 'system'].includes(currentRole.value))
+const activeRuntimeAlerts = computed(() => {
+  const alerts = opsStatus.value?.alerts?.active || []
+  return Array.isArray(alerts) ? alerts : []
+})
+const breachedSlos = computed(() => {
+  const items = opsStatus.value?.slo?.breached || []
+  return Array.isArray(items) ? items : []
+})
+const opsRunbooks = computed(() => {
+  const entries = opsStatus.value?.runbooks || []
+  return Array.isArray(entries) ? entries.slice(0, 6) : []
+})
+const opsAlertTone = computed(() => {
+  const status = opsStatus.value?.alerts?.status || 'healthy'
+  return status === 'healthy' ? 'ready' : 'warning'
+})
+const opsSloTone = computed(() => {
+  const status = opsStatus.value?.slo?.status || 'healthy'
+  return status === 'healthy' ? 'ready' : 'warning'
+})
+const opsAlertStatusLabel = computed(() => {
+  const status = opsStatus.value?.alerts?.status || 'healthy'
+  return status === 'healthy' ? '健康' : status === 'critical' ? '严重' : '告警'
+})
+const opsSloStatusLabel = computed(() => {
+  const status = opsStatus.value?.slo?.status || 'healthy'
+  return status === 'healthy' ? '健康' : '违约'
+})
+const opsSloSummary = computed(() => {
+  if (breachedSlos.value.length === 0) return '错误预算未触发违约'
+  return breachedSlos.value.slice(0, 2).map((item) => item.name).join(' · ')
+})
+const opsMonitoring = computed(() => {
+  const monitoring = opsStatus.value?.monitoring || {}
+  return monitoring && typeof monitoring === 'object' ? monitoring : {}
+})
+const opsMonitoringPrometheusPath = computed(() => {
+  return opsMonitoring.value?.prometheus?.path || '/api/v1/agents/ops-status/metrics'
+})
+const opsMonitoringGrafanaUid = computed(() => {
+  return opsMonitoring.value?.grafana?.dashboard_uid || opsMonitoring.value?.grafana?.dashboardUid || 'agent-runtime-ops'
+})
+const opsMonitoringSummary = computed(() => {
+  const datasource = opsMonitoring.value?.grafana?.datasource_uid || opsMonitoring.value?.grafana?.datasourceUid || '${DS_PROMETHEUS}'
+  return `Prometheus scrape path ${opsMonitoringPrometheusPath.value} · Grafana datasource ${datasource}`
+})
 
 const normalizeIds = (value = []) => [...new Set((Array.isArray(value) ? value : []).filter(Boolean))].sort()
 
@@ -736,7 +929,8 @@ const loadPage = async () => {
     agentsStore.fetchSubagents().catch(() => []),
     knowledgeStore.fetchKnowledgeBases(1, 100).catch(() => []),
     agentsStore.fetchTools(agentId).catch(() => []),
-    agentsStore.fetchRuntimeStatus().catch(() => [])
+    agentsStore.fetchRuntimeStatus().catch(() => []),
+    showAdminOpsPanel.value ? agentsStore.fetchOpsStatus(currentRole.value).catch(() => null) : Promise.resolve(null)
   ])
   syncSelections()
 }
@@ -826,6 +1020,189 @@ const runWorkspaceLockCleanup = async (dryRun = true) => {
     toastStore.showToast({ type: 'error', message: agentsStore.error || 'workspace 锁回收失败' })
   } finally {
     cleanupLoading.value = false
+  }
+}
+
+const refreshOpsStatus = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    await agentsStore.fetchOpsStatus(currentRole.value)
+    toastStore.showToast({ type: 'success', message: '管理员治理快照已刷新' })
+  } catch (error) {
+    console.error('Failed to refresh ops status:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '刷新管理员治理快照失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const evaluateOpsStatus = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    await agentsStore.evaluateOpsStatus(currentRole.value)
+    toastStore.showToast({ type: 'success', message: '运行时告警评估已完成' })
+  } catch (error) {
+    console.error('Failed to evaluate ops status:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '运行时告警评估失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const previewPrometheusMetrics = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    const metrics = await agentsStore.fetchOpsPrometheusMetrics(currentRole.value)
+    opsPrometheusPreview.value = String(metrics || '').split('\n').slice(0, 18).join('\n')
+    toastStore.showToast({ type: 'success', message: 'Prometheus 指标预览已加载' })
+  } catch (error) {
+    console.error('Failed to preview prometheus metrics:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '加载 Prometheus 指标失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const downloadGrafanaDashboard = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    const dashboard = await agentsStore.fetchOpsGrafanaDashboard(currentRole.value)
+    const payload = JSON.stringify(dashboard || opsGrafanaDashboard.value || {}, null, 2)
+    const blob = new Blob([payload], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${opsMonitoringGrafanaUid.value}.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    toastStore.showToast({ type: 'success', message: 'Grafana dashboard 已生成' })
+  } catch (error) {
+    console.error('Failed to download grafana dashboard:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '下载 Grafana dashboard 失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const acknowledgeAlert = async (alert) => {
+  const ruleName = alert?.rule_name || alert?.ruleName
+  if (!ruleName) return
+  opsLoading.value = true
+  try {
+    await agentsStore.acknowledgeRuntimeAlert(ruleName, currentRole.value)
+    toastStore.showToast({ type: 'success', message: '告警已确认' })
+  } catch (error) {
+    console.error('Failed to acknowledge alert:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '确认告警失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const resolveAlert = async (alert) => {
+  const ruleName = alert?.rule_name || alert?.ruleName
+  if (!ruleName) return
+  opsLoading.value = true
+  try {
+    await agentsStore.resolveRuntimeAlert(ruleName, currentRole.value)
+    toastStore.showToast({ type: 'success', message: '告警已解决' })
+  } catch (error) {
+    console.error('Failed to resolve alert:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '解决告警失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const runRedactionEvaluation = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    await agentsStore.evaluateAuditRedactionRules([
+      { key: 'password', value: 'hunter2', expected_redacted: true, rule_name: 'password_key' },
+      { key: 'api_key', value: 'sk-1234567890abcdef1234567890', expected_redacted: true, rule_name: 'api_key_key' },
+      { key: 'authorization', value: 'Bearer sk-1234567890abcdef', expected_redacted: true, rule_name: 'authorization_header' },
+      { key: 'token', value: 'ghp_abcdefghijklmnopqrstuvwxyz1234567890', expected_redacted: true, rule_name: 'github_token_value' },
+      { key: 'display_name', value: 'runtime audit view', expected_redacted: false, rule_name: 'normal_value' }
+    ], currentRole.value)
+    toastStore.showToast({ type: 'success', message: '脱敏规则评测已完成' })
+  } catch (error) {
+    console.error('Failed to evaluate redaction rules:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '脱敏规则评测失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const runSubagentQualityEvaluation = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    await agentsStore.evaluateSubagentQualityRules([
+      {
+        name: 'reviewer blocking finding recall',
+        kind: 'reviewer',
+        actual: {
+          decision: 'changes_requested',
+          approved: false,
+          blocking_finding_count: 1,
+          conclusion: 'Blocking security issue remains.',
+          findings: [
+            { title: 'Missing authorization check', severity: 'high', path: 'src/api.py', line: 10 }
+          ]
+        },
+        expected: {
+          decision: 'changes_requested',
+          approved: false,
+          min_blocking_findings: 1,
+          required_severities: ['high'],
+          findings: [
+            { title: 'Missing authorization check', path: 'src/api.py', line: 10 }
+          ],
+          requires_conclusion: true
+        }
+      },
+      {
+        name: 'tester verification structure',
+        kind: 'tester',
+        actual: {
+          payload: {
+            status: 'failed',
+            command: ['python', '-m', 'pytest'],
+            logs: { stdout: 'FAILED tests/test_app.py::test_app' },
+            structured_report: {
+              summary: { failed: 1 },
+              reports: [
+                {
+                  summary: { failed: 1 },
+                  failures: [{ title: 'tests/test_app.py::test_app' }]
+                }
+              ]
+            }
+          }
+        },
+        expected: {
+          status: 'failed',
+          min_failed_tests: 1,
+          required_failure_titles: ['tests/test_app.py::test_app'],
+          require_command: true,
+          require_logs: true,
+          require_structured_report: true
+        }
+      }
+    ], currentRole.value)
+    toastStore.showToast({ type: 'success', message: 'Subagent 质量评测已完成' })
+  } catch (error) {
+    console.error('Failed to evaluate subagent quality rules:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || 'Subagent 质量评测失败' })
+  } finally {
+    opsLoading.value = false
   }
 }
 
@@ -1755,7 +2132,12 @@ onMounted(async () => {
 .runtime-lifecycle-history,
 .runtime-alert-list,
 .runtime-browser-summary,
-.runtime-recovery-list {
+.runtime-recovery-list,
+.runtime-alert-table,
+.runtime-runbook-list,
+.runtime-monitoring-panel,
+.runtime-redaction-panel,
+.runtime-quality-panel {
   margin-top: 12px;
 }
 
@@ -1766,7 +2148,9 @@ onMounted(async () => {
 .runtime-lifecycle-history span,
 .runtime-alert-list span,
 .runtime-browser-summary span,
-.runtime-recovery-list span {
+.runtime-recovery-list span,
+.runtime-alert-table > span,
+.runtime-runbook-list > span {
   display: block;
   font-size: 12px;
   font-weight: 700;
@@ -1800,6 +2184,96 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.section-head .runtime-action-row {
+  margin-top: 0;
+  justify-content: flex-end;
+}
+
+.runtime-alert-row {
+  margin-top: 8px;
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  border-radius: 12px;
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.runtime-alert-row p,
+.runtime-monitoring-panel p,
+.runtime-redaction-panel p,
+.runtime-quality-panel p,
+.runtime-runbook-item p {
+  margin-top: 4px;
+  color: var(--gray-700);
+  font-size: 13px;
+}
+
+.runtime-runbook-item {
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.runtime-runbook-item summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--gray-900);
+}
+
+.runtime-runbook-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.runtime-runbook-columns ul {
+  margin-top: 6px;
+  padding-left: 18px;
+  color: var(--gray-700);
+  font-size: 13px;
+}
+
+.runtime-redaction-panel {
+  padding: 12px;
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  border-radius: 12px;
+  background: rgba(14, 165, 233, 0.05);
+}
+
+.runtime-quality-panel {
+  padding: 12px;
+  border: 1px solid rgba(168, 85, 247, 0.18);
+  border-radius: 12px;
+  background: rgba(168, 85, 247, 0.05);
+}
+
+.runtime-monitoring-panel {
+  padding: 12px;
+  border: 1px solid rgba(16, 185, 129, 0.18);
+  border-radius: 12px;
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.runtime-metrics-preview {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #0f172a;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px;
 }
 
 .runtime-cleanup-summary {
@@ -1987,6 +2461,15 @@ onMounted(async () => {
   }
 
   .warning-action-item {
+    flex-direction: column;
+  }
+
+  .runtime-alert-row,
+  .runtime-runbook-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-alert-row {
     flex-direction: column;
   }
 }

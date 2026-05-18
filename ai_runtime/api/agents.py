@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import Response, StreamingResponse
 
 from ai_runtime.core.agent_runtime import AgentRuntime
+from ai_runtime.core.agent_runtime.audit_view import evaluate_redaction_rules
 from ai_runtime.core.agent_runtime.execution_modes import normalize_execution_mode
 from ai_runtime.core.agent_runtime.models import (
     AgentRunEventListResponse,
@@ -19,6 +20,7 @@ from ai_runtime.core.agent_runtime.models import (
     RuntimeResumeRunRequest,
     RuntimeWorkspaceWritebackRequest,
 )
+from ai_runtime.core.agent_runtime.subagents.quality import evaluate_subagent_quality_suite
 from ai_runtime.core.database import get_db_manager
 from ai_runtime.core.dependencies import get_current_tenant_id, get_current_user_id
 
@@ -38,6 +40,20 @@ async def get_started_agent_runtime() -> AgentRuntime:
     runtime = get_agent_runtime()
     await runtime.start()
     return runtime
+
+
+async def get_current_viewer_role(
+    x_user_role: Optional[str] = Header(default=None),
+) -> str:
+    role = str(x_user_role or "user").strip().lower()
+    if role not in {"anonymous", "user", "operator", "admin", "system"}:
+        return "user"
+    return role
+
+
+def _require_admin_or_operator(role: str) -> None:
+    if role not in {"operator", "admin", "system"}:
+        raise HTTPException(status_code=403, detail="operator or admin role is required")
 
 
 @router.post("/runs", response_model=AgentRunSummaryResponse, status_code=201)
@@ -120,6 +136,113 @@ async def get_runtime_status(
     del tenant_id, user_id
     runtime = await get_started_agent_runtime()
     return runtime.runtime_status()
+
+
+@router.get("/ops-status")
+async def get_ops_status(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return runtime.ops_status()
+
+
+@router.post("/ops-status/evaluate")
+async def evaluate_ops_status(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return await runtime.evaluate_runtime_health()
+
+
+@router.get("/ops-status/metrics")
+async def get_ops_prometheus_metrics(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return Response(
+        content=runtime.ops_prometheus_metrics(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
+@router.get("/ops-status/grafana-dashboard")
+async def get_ops_grafana_dashboard(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return runtime.ops_grafana_dashboard()
+
+
+@router.post("/ops-status/alerts/{rule_name}/acknowledge")
+async def acknowledge_runtime_alert(
+    rule_name: str,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    acknowledged = runtime.alert_manager.acknowledge(rule_name)
+    if not acknowledged:
+        raise HTTPException(status_code=404, detail="active alert not found")
+    return runtime.alert_manager.snapshot()
+
+
+@router.post("/ops-status/alerts/{rule_name}/resolve")
+async def resolve_runtime_alert(
+    rule_name: str,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    resolved = runtime.alert_manager.resolve(rule_name)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="active alert not found")
+    return runtime.alert_manager.snapshot()
+
+
+@router.post("/audit/redaction/evaluate")
+async def evaluate_audit_redaction_rules(
+    test_cases: list[dict],
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    return evaluate_redaction_rules(test_cases)
+
+
+@router.post("/subagents/quality/evaluate")
+async def evaluate_subagent_quality_rules(
+    test_cases: list[dict],
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    return evaluate_subagent_quality_suite(test_cases)
 
 
 @router.get("/workspaces")
@@ -309,6 +432,34 @@ async def get_run_events(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/runs/{run_id}/audit-view")
+async def get_run_audit_view(
+    run_id: str,
+    viewer_role: str = Query(default="user"),
+    include_events: bool = Query(default=True),
+    include_tool_calls: bool = Query(default=True),
+    event_limit: int = Query(default=500, ge=1, le=1000),
+    tenant_id: str = Depends(get_current_tenant_id),
+    current_role: str = Depends(get_current_viewer_role),
+):
+    allowed_roles = {"anonymous", "user", "operator", "admin", "system"}
+    requested_role = viewer_role if viewer_role in allowed_roles else "user"
+    if current_role not in {"operator", "admin", "system"} and requested_role not in {"anonymous", "user"}:
+        raise HTTPException(status_code=403, detail="operator or admin role is required for elevated audit views")
+    runtime = await get_started_agent_runtime()
+    try:
+        return await runtime.build_run_audit_view(
+            run_id,
+            tenant_id,
+            viewer_role=requested_role,
+            include_events=include_events,
+            include_tool_calls=include_tool_calls,
+            event_limit=event_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/runs/{run_id}/cancel", response_model=AgentRunSummaryResponse)

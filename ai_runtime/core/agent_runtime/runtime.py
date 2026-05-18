@@ -8,6 +8,16 @@ from typing import Any, AsyncIterator, Optional
 
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
 from ai_runtime.core.agent_runtime.execution_modes import normalize_execution_mode
+from ai_runtime.core.agent_runtime.alerting import (
+    AlertManager,
+    SLOTracker,
+    build_alert_sinks_from_env,
+    build_grafana_dashboard,
+    export_ops_prometheus_metrics,
+    get_all_runbook_entries,
+    get_runbook_entries,
+    monitoring_export_status,
+)
 from ai_runtime.core.agent_runtime.events import sanitize_runtime_payload
 from ai_runtime.core.agent_runtime.llm_service import AgentLLMService
 from ai_runtime.core.agent_runtime.memory import RuntimeStateStore
@@ -90,6 +100,8 @@ class AgentRuntime:
         self._workspace_lifecycle_history: list[dict[str, Any]] = []
         self._browser_session_history: list[dict[str, Any]] = []
         self.observability_provider = ObservabilityToolProvider.from_env(db_pool=db_pool)
+        self.alert_manager = AlertManager(sinks=build_alert_sinks_from_env())
+        self.slo_tracker = SLOTracker()
 
         self.tracer = AgentTracer(
             self.run_repository,
@@ -124,6 +136,15 @@ class AgentRuntime:
         # Keep lifecycle telemetry in service logs rather than user-visible run streams.
         self._workspace_lifecycle_alerts.append(dict(payload))
         self._workspace_lifecycle_alerts = self._workspace_lifecycle_alerts[-20:]
+        alert_type = str(payload.get("type") or "").strip()
+        count = int(payload.get("count") or 0)
+        metrics = {
+            "expired_count": int(payload.get("expired_count") or (count if alert_type == "expired_workspaces" else 0)),
+            "quota_exceeded_count": int(payload.get("quota_exceeded_count") or (count if alert_type == "quota_exceeded_workspaces" else 0)),
+            "stale_lock_count": int(payload.get("stale_lock_count") or (count if alert_type == "stale_cleanup_locks" else 0)),
+            "total_size_bytes": int(payload.get("total_size_bytes") or payload.get("bytes") or 0),
+        }
+        await self.alert_manager.evaluate("workspace", metrics)
         return None
 
     async def _handle_workspace_lifecycle_inspection(self, payload: dict) -> None:
@@ -173,6 +194,8 @@ class AgentRuntime:
         self._workspace_lifecycle_last_run = run_summary
         self._workspace_lifecycle_history.append(deepcopy(run_summary))
         self._workspace_lifecycle_history = self._workspace_lifecycle_history[-12:]
+        if cleanup is not None:
+            self.slo_tracker.record("workspace_cleanup_success_rate", good=int(cleanup.get("failed_count") or 0) == 0)
         return None
 
     def _build_workspace_lifecycle_trend(self) -> dict[str, Any]:
@@ -451,6 +474,84 @@ class AgentRuntime:
         enriched["trend"] = self._build_browser_session_trend()
         return enriched
 
+    async def evaluate_runtime_health(self, status: dict[str, Any] | None = None) -> dict[str, Any]:
+        status = status or self.runtime_status()
+        providers = status.get("providers") if isinstance(status.get("providers"), dict) else {}
+        workspace = providers.get("workspace") if isinstance(providers.get("workspace"), dict) else {}
+        workspace_inspection = workspace.get("inspection") if isinstance(workspace.get("inspection"), dict) else {}
+        workspace_locks = (
+            workspace_inspection.get("lock_summary")
+            if isinstance(workspace_inspection.get("lock_summary"), dict)
+            else {}
+        )
+        sandbox = providers.get("sandbox") if isinstance(providers.get("sandbox"), dict) else {}
+        sandbox_isolation = sandbox.get("isolation") if isinstance(sandbox.get("isolation"), dict) else {}
+        web = providers.get("web") if isinstance(providers.get("web"), dict) else {}
+        browser_sessions = web.get("browser_sessions") if isinstance(web.get("browser_sessions"), dict) else {}
+        observability = providers.get("observability") if isinstance(providers.get("observability"), dict) else {}
+
+        fired = []
+        fired.extend(await self.alert_manager.evaluate("workspace", {
+            "expired_count": int(workspace_inspection.get("expired_count") or 0),
+            "quota_exceeded_count": int(workspace_inspection.get("quota_exceeded_count") or 0),
+            "stale_lock_count": int(workspace_locks.get("stale_lock_count") or 0),
+            "total_size_bytes": int(workspace_inspection.get("total_size_bytes") or 0),
+        }))
+        fired.extend(await self.alert_manager.evaluate("sandbox", {
+            "isolation_status": sandbox_isolation.get("status") or "unknown",
+            "active_session_count": int(sandbox.get("active_session_count") or 0),
+        }))
+        browser_session_count = int(browser_sessions.get("session_count") or 0)
+        browser_network_errors = int(browser_sessions.get("network_error_count") or 0)
+        fired.extend(await self.alert_manager.evaluate("browser", {
+            "active_session_count": int(browser_sessions.get("active_session_count") or browser_session_count),
+            "network_error_rate": (browser_network_errors / browser_session_count) if browser_session_count else 0,
+        }))
+        fired.extend(await self.alert_manager.evaluate("web", {
+            "timeout_rate": float(web.get("timeout_rate") or 0),
+        }))
+        fired.extend(await self.alert_manager.evaluate("observability", {
+            "db_configured": bool(observability.get("db_configured")),
+            "db_reachable": bool(observability.get("db_reachable", observability.get("db_configured"))),
+            "redis_configured": bool(observability.get("redis_configured")),
+            "redis_reachable": bool(observability.get("redis_reachable", observability.get("redis_configured"))),
+        }))
+        return {
+            "evaluated_at": datetime.now(timezone.utc).isoformat(),
+            "fired": [alert.snapshot() for alert in fired],
+            "alerts": self.alert_manager.snapshot(),
+            "slo": self.slo_tracker.snapshot(),
+            "runbooks": get_all_runbook_entries(),
+            "monitoring": monitoring_export_status(),
+        }
+
+    def ops_status(self) -> dict[str, Any]:
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "alerts": self.alert_manager.snapshot(),
+            "slo": self.slo_tracker.snapshot(),
+            "runbooks": get_all_runbook_entries(),
+            "monitoring": monitoring_export_status(),
+            "subsystems": {
+                subsystem: {
+                    "slo": self.slo_tracker.subsystem_snapshot(subsystem),
+                    "runbooks": get_runbook_entries(subsystem),
+                }
+                for subsystem in ("workspace", "sandbox", "web", "browser", "observability")
+            },
+        }
+
+    def ops_prometheus_metrics(self) -> str:
+        return export_ops_prometheus_metrics(
+            alert_manager=self.alert_manager,
+            slo_tracker=self.slo_tracker,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def ops_grafana_dashboard(self) -> dict[str, Any]:
+        datasource_uid = os.getenv("AGENT_GRAFANA_DATASOURCE_UID", "${DS_PROMETHEUS}").strip() or "${DS_PROMETHEUS}"
+        return build_grafana_dashboard(datasource_uid=datasource_uid)
+
     def runtime_status(self) -> dict[str, Any]:
         workspace_inspection = self.workspace_manager.inspect_workspaces()
         lifecycle_policy = self.workspace_lifecycle.policy
@@ -481,7 +582,7 @@ class AgentRuntime:
             if observability_provider is not None and hasattr(observability_provider, "status_summary")
             else self.observability_provider.status_summary(enabled=False)
         )
-        return {
+        status = {
             "status": "ready" if self._started else "idle",
             "started": self._started,
             "providers": {
@@ -575,6 +676,11 @@ class AgentRuntime:
                 ),
             },
         }
+        status["ops"] = {
+            "alerts": self.alert_manager.status_summary(),
+            "slo": self.slo_tracker.snapshot(),
+        }
+        return status
 
     async def start(self) -> None:
         if self._started:
@@ -932,6 +1038,47 @@ class AgentRuntime:
         rows = await self.run_repository.list_events(run_id, after_sequence=after_sequence, limit=limit)
         events = [AgentRunEvent.model_validate(row) for row in rows]
         return AgentRunEventListResponse(events=events, total=len(events))
+
+    async def build_run_audit_view(
+        self,
+        run_id: str,
+        tenant_id: Optional[str],
+        *,
+        viewer_role: str = "user",
+        include_events: bool = True,
+        include_tool_calls: bool = True,
+        event_limit: int = 500,
+    ) -> dict[str, Any]:
+        from ai_runtime.core.agent_runtime.audit_view import (
+            ViewerRole,
+            build_audit_view_for_events,
+            build_audit_view_for_run,
+            build_audit_view_for_tool_calls,
+        )
+
+        run = await self.get_run(run_id, tenant_id)
+        try:
+            role = ViewerRole(str(viewer_role or "user").lower())
+        except ValueError:
+            role = ViewerRole.USER
+        run_payload = run.run.model_dump(mode="json")
+        audit_run = build_audit_view_for_run(run_payload, viewer_role=role)
+        events: list[dict[str, Any]] = []
+        tool_calls: list[dict[str, Any]] = []
+        if include_events:
+            event_rows = await self.run_repository.list_events(run_id, after_sequence=0, limit=event_limit)
+            events = build_audit_view_for_events(event_rows, viewer_role=role)
+        if include_tool_calls:
+            call_rows = await self.tool_call_repository.list_tool_calls(run_id)
+            tool_calls = build_audit_view_for_tool_calls(call_rows, viewer_role=role)
+        return {
+            "run": audit_run,
+            "events": events,
+            "tool_calls": tool_calls,
+            "viewer_role": role.value,
+            "event_count": len(events),
+            "tool_call_count": len(tool_calls),
+        }
 
     async def stream_events(
         self,

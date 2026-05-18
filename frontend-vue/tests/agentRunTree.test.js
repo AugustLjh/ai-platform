@@ -5,6 +5,7 @@ import {
   buildGovernanceRecoverySummary,
   buildInvocationProtocolEntry,
   buildPendingSubagentClarificationEntry,
+  buildSubagentCollaborationSummary,
   collectResolvedSubagentInvocations,
   clarificationStateLabel,
   collectRunTreeInvocations,
@@ -752,4 +753,111 @@ test('buildPendingSubagentClarificationEntry and protocol entry preserve multiho
   assert.match(timelineSummary, /等待补充/)
   assert.match(timelineSummary, /治理 已用 660 tokens · 已用 \$0.23/)
   assert.match(timelineSummary, /Need final production rollout window\./)
+})
+
+test('buildSubagentCollaborationSummary aggregates timeline, artifacts, and reviewer blocks', () => {
+  const root = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'running', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-review',
+          status: 'completed',
+          child_run_id: 'child-review',
+          request_payload: {
+            task: { message: 'Review the worker patch.' },
+            policy_snapshot: { target: { name: 'Reviewer' } }
+          },
+          result_payload: {
+            status: 'completed',
+            final_result: {
+              artifacts: [
+                {
+                  artifact_type: 'review_findings',
+                  name: 'Review Findings',
+                  payload: {
+                    items: [
+                      { title: 'Unsafe writeback', severity: 'high', path: 'src/app.py' }
+                    ]
+                  }
+                }
+              ]
+            },
+            review_result: {
+              mode: 'reviewer',
+              required: true,
+              decision: 'review_gate_blocked',
+              gate_blocked: true,
+              finding_count: 1,
+              blocking_finding_count: 1,
+              summary: 'Unsafe writeback must be fixed.',
+              recovery: {
+                actions: ['Fix the blocking finding before continuing.']
+              }
+            }
+          }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'child-review', status: 'completed', input: { message: 'review' } },
+          invocations: []
+        }
+      }
+    ]
+  })
+
+  const resolved = collectResolvedSubagentInvocations({
+    context: {
+      resolved_subagent_invocations: [
+        {
+          child_run_id: 'child-worker',
+          invocation_id: 'invocation-worker',
+          target: { name: 'Worker', slug: 'worker' },
+          status: 'completed',
+          summary: 'Patch ready.',
+          promoted_artifacts: [
+            { artifact_type: 'code_patch', name: 'Worker Patch', payload: { diff: '+new' } }
+          ],
+          review_result: { decision: 'not_required', mode: 'none' }
+        }
+      ]
+    }
+  })
+
+  const summary = buildSubagentCollaborationSummary({
+    runTreeInvocations: collectRunTreeInvocations(root),
+    resolvedInvocations: resolved,
+    artifacts: [
+      { artifactType: 'verification_report', name: 'npm test', payload: { status: 'completed' } }
+    ],
+    events: [
+      {
+        id: 'event-1',
+        sequence: 1,
+        eventType: 'subagent.completed',
+        payload: {
+          child_status: 'completed',
+          child_run_id: 'child-worker',
+          handoff_envelope: {
+            task: { message: 'Implement patch' },
+            policy_snapshot: { target: { name: 'Worker' } }
+          }
+        },
+        createdAt: '2026-05-17T00:00:00+00:00'
+      }
+    ]
+  })
+
+  assert.equal(summary.totalInvocations, 2)
+  assert.equal(summary.completedCount, 2)
+  assert.equal(summary.reviewBlockCount, 1)
+  assert.equal(summary.promotedArtifactCount, 2)
+  assert.equal(summary.directArtifactCount, 1)
+  assert.equal(summary.artifactTypeCounts['审查发现'], 1)
+  assert.equal(summary.artifactTypeCounts.Patch, 1)
+  assert.equal(summary.artifactTypeCounts['验证报告'], 1)
+  assert.equal(summary.reviewBlocks[0].target, 'Reviewer')
+  assert.equal(summary.reviewBlocks[0].recoveryActions[0], 'Fix the blocking finding before continuing.')
+  assert.equal(summary.eventTimeline.length, 1)
 })

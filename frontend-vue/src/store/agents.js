@@ -333,6 +333,12 @@ export const useAgentsStore = defineStore('agents', {
     availableTools: [],
     availableToolsExecutionMode: null,
     runtimeStatus: null,
+    opsStatus: null,
+    opsPrometheusMetrics: '',
+    opsGrafanaDashboard: null,
+    redactionEvaluation: null,
+    subagentQualityEvaluation: null,
+    runAuditView: null,
     workspaceInspection: null,
     workspaceCleanupResult: null,
     skills: [],
@@ -982,6 +988,111 @@ export const useAgentsStore = defineStore('agents', {
         return this.runtimeStatus
       } catch (error) {
         this.setError(error, 'Failed to fetch runtime status')
+        throw error
+      }
+    },
+
+    async fetchOpsStatus(role = 'user') {
+      try {
+        const { data } = await agentsAPI.getOpsStatus(role)
+        this.opsStatus = data || null
+        return this.opsStatus
+      } catch (error) {
+        this.setError(error, 'Failed to fetch runtime ops status')
+        throw error
+      }
+    },
+
+    async evaluateOpsStatus(role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateOpsStatus(role)
+        this.opsStatus = data || null
+        return this.opsStatus
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate runtime ops status')
+        throw error
+      }
+    },
+
+    async fetchOpsPrometheusMetrics(role = 'user') {
+      try {
+        const { data } = await agentsAPI.getOpsPrometheusMetrics(role)
+        this.opsPrometheusMetrics = typeof data === 'string' ? data : String(data || '')
+        return this.opsPrometheusMetrics
+      } catch (error) {
+        this.setError(error, 'Failed to fetch runtime ops prometheus metrics')
+        throw error
+      }
+    },
+
+    async fetchOpsGrafanaDashboard(role = 'user') {
+      try {
+        const { data } = await agentsAPI.getOpsGrafanaDashboard(role)
+        this.opsGrafanaDashboard = data || null
+        return this.opsGrafanaDashboard
+      } catch (error) {
+        this.setError(error, 'Failed to fetch runtime ops grafana dashboard')
+        throw error
+      }
+    },
+
+    async acknowledgeRuntimeAlert(ruleName, role = 'user') {
+      try {
+        const { data } = await agentsAPI.acknowledgeRuntimeAlert(ruleName, role)
+        this.opsStatus = {
+          ...(this.opsStatus || {}),
+          alerts: data || null
+        }
+        return data
+      } catch (error) {
+        this.setError(error, 'Failed to acknowledge runtime alert')
+        throw error
+      }
+    },
+
+    async resolveRuntimeAlert(ruleName, role = 'user') {
+      try {
+        const { data } = await agentsAPI.resolveRuntimeAlert(ruleName, role)
+        this.opsStatus = {
+          ...(this.opsStatus || {}),
+          alerts: data || null
+        }
+        return data
+      } catch (error) {
+        this.setError(error, 'Failed to resolve runtime alert')
+        throw error
+      }
+    },
+
+    async evaluateAuditRedactionRules(testCases = [], role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateAuditRedactionRules(testCases, role)
+        this.redactionEvaluation = data || null
+        return this.redactionEvaluation
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate audit redaction rules')
+        throw error
+      }
+    },
+
+    async evaluateSubagentQualityRules(testCases = [], role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateSubagentQualityRules(testCases, role)
+        this.subagentQualityEvaluation = data || null
+        return this.subagentQualityEvaluation
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate subagent quality rules')
+        throw error
+      }
+    },
+
+    async fetchRunAuditView(runId, options = {}) {
+      try {
+        const { data } = await agentsAPI.getRunAuditView(runId, options)
+        this.runAuditView = data || null
+        return this.runAuditView
+      } catch (error) {
+        this.setError(error, 'Failed to fetch run audit view')
         throw error
       }
     },
