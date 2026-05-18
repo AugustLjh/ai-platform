@@ -127,6 +127,80 @@ export const normalizeMCPEvent = (raw = null) => {
   }
 }
 
+export const normalizeMCPSecurityScore = (raw = null) => {
+  if (!raw || typeof raw !== 'object') return null
+  return {
+    score: Number(raw.score || 0),
+    maxScore: Number(raw.max_score || raw.maxScore || 100),
+    status: raw.status || 'unknown',
+    riskLevel: raw.risk_level || raw.riskLevel || 'unknown',
+    summary: raw.summary || '',
+    evaluatedAt: raw.evaluated_at || raw.evaluatedAt || null,
+    breakdown: Array.isArray(raw.breakdown)
+      ? raw.breakdown.map((item) => ({
+          key: item.key || '',
+          label: item.label || '',
+          score: Number(item.score || 0),
+          maxScore: Number(item.max_score || item.maxScore || 0),
+          status: item.status || '',
+          summary: item.summary || ''
+        }))
+      : []
+  }
+}
+
+export const normalizeMCPAuditReport = (raw = null) => {
+  if (!raw || typeof raw !== 'object') return null
+  const overview = raw.overview && typeof raw.overview === 'object' ? raw.overview : {}
+  return {
+    tenantId: raw.tenant_id || raw.tenantId || '',
+    generatedAt: raw.generated_at || raw.generatedAt || null,
+    overview: {
+      totalServers: Number(overview.total_servers || overview.totalServers || 0),
+      averageScore: Number(overview.average_score || overview.averageScore || 0),
+      medianScore: Number(overview.median_score || overview.medianScore || 0),
+      lowRiskCount: Number(overview.low_risk_count || overview.lowRiskCount || 0),
+      mediumRiskCount: Number(overview.medium_risk_count || overview.mediumRiskCount || 0),
+      highRiskCount: Number(overview.high_risk_count || overview.highRiskCount || 0),
+      criticalRiskCount: Number(overview.critical_risk_count || overview.criticalRiskCount || 0),
+      blockedCount: Number(overview.blocked_count || overview.blockedCount || 0),
+      recoveringCount: Number(overview.recovering_count || overview.recoveringCount || 0),
+      staleCount: Number(overview.stale_count || overview.staleCount || 0),
+      untestedCount: Number(overview.untested_count || overview.untestedCount || 0)
+    },
+    topRiskServers: Array.isArray(raw.top_risk_servers || raw.topRiskServers)
+      ? (raw.top_risk_servers || raw.topRiskServers).map((server) => ({
+          serverId: server.server_id || server.serverId || '',
+          serverName: server.server_name || server.serverName || '',
+          transport: server.transport || '',
+          status: server.status || '',
+          score: Number(server.score || 0),
+          riskLevel: server.risk_level || server.riskLevel || '',
+          summary: server.summary || '',
+          failureMode: server.failure_mode || server.failureMode || '',
+          recoverable: Boolean(server.recoverable),
+          bindingCount: Number(server.binding_count || server.bindingCount || 0),
+          activeCount: Number(server.active_count || server.activeCount || 0),
+          eventCount: Number(server.event_count || server.eventCount || 0),
+          lastTestedAt: server.last_tested_at || server.lastTestedAt || null,
+          evaluatedAt: server.evaluated_at || server.evaluatedAt || null,
+          breakdown: Array.isArray(server.breakdown)
+            ? normalizeMCPSecurityScore({ breakdown: server.breakdown }).breakdown
+            : []
+        }))
+      : [],
+    scoreDistribution: raw.score_distribution || raw.scoreDistribution || {},
+    recentEvents: Array.isArray(raw.recent_events || raw.recentEvents)
+      ? (raw.recent_events || raw.recentEvents).map(normalizeMCPEvent).filter(Boolean)
+      : [],
+    failureModeCounts: raw.failure_mode_counts || raw.failureModeCounts || {},
+    actionTypeCounts: raw.action_type_counts || raw.actionTypeCounts || {},
+    recommendedActions: Array.isArray(raw.recommended_actions || raw.recommendedActions)
+      ? [...(raw.recommended_actions || raw.recommendedActions)].filter(Boolean)
+      : []
+  }
+}
+
 export const normalizeMCPGovernanceSummary = (raw = null) => {
   if (!raw || typeof raw !== 'object') return null
   const rawFilters = raw.event_filters || raw.eventFilters || {}

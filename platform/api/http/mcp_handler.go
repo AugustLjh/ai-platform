@@ -76,6 +76,25 @@ func (h *MCPHandler) HandleGovernance(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, result, http.StatusOK)
 }
 
+func (h *MCPHandler) HandleAuditReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	result, err := h.agentService.GetMCPAuditReport(user.TenantID, limit)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
 func (h *MCPHandler) HandleServerByID(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.GetUser(r.Context())
 	if !ok {

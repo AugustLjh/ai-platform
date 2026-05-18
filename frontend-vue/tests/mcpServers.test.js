@@ -6,12 +6,14 @@ import {
   buildAgentExtensionsRoute,
   buildMCPBindingWarnings,
   buildMCPManageRoute,
+  normalizeMCPAuditReport,
   normalizeMCPBulkFollowUpPlan,
   normalizeMCPBulkPreview,
   normalizeMCPBindingUsage,
   normalizeMCPEvent,
   normalizeMCPGovernanceSummary,
-  normalizeMCPRecovery
+  normalizeMCPRecovery,
+  normalizeMCPSecurityScore
 } from '../src/utils/mcpServers.js'
 
 test('normalizeMCPBindingUsage keeps agent samples and counts', () => {
@@ -80,6 +82,54 @@ test('normalizeMCPEvent normalizes audit event payloads', () => {
   assert.equal(event.actionType, 'refresh')
   assert.equal(event.failureMode, 'catalog_ready')
   assert.equal(event.details.catalog.tool_count, 3)
+})
+
+test('normalizeMCPSecurityScore keeps score breakdown and risk level', () => {
+  const score = normalizeMCPSecurityScore({
+    score: 42,
+    max_score: 100,
+    status: 'warning',
+    risk_level: 'high',
+    summary: '高风险 server 需要继续治理。',
+    evaluated_at: '2026-05-18T12:00:00Z',
+    breakdown: [
+      { key: 'connection', label: '连接验证', score: 0, max_score: 25, status: 'critical', summary: '最近连接失败。' }
+    ]
+  })
+
+  assert.equal(score.score, 42)
+  assert.equal(score.riskLevel, 'high')
+  assert.equal(score.breakdown[0].key, 'connection')
+})
+
+test('normalizeMCPAuditReport keeps server risk snapshots and recommendations', () => {
+  const report = normalizeMCPAuditReport({
+    tenant_id: 'tenant-1',
+    generated_at: '2026-05-18T12:00:00Z',
+    overview: {
+      total_servers: 2,
+      average_score: 61.5,
+      median_score: 62,
+      high_risk_count: 1,
+      critical_risk_count: 1
+    },
+    top_risk_servers: [
+      {
+        server_id: 'server-1',
+        server_name: 'Docs MCP',
+        score: 22,
+        risk_level: 'critical',
+        summary: '存在关键风险。',
+        breakdown: [{ key: 'connection', label: '连接验证', score: 0, max_score: 25, status: 'critical', summary: '失败。' }]
+      }
+    ],
+    recommended_actions: ['优先修复 critical server。']
+  })
+
+  assert.equal(report.overview.totalServers, 2)
+  assert.equal(report.overview.averageScore, 61.5)
+  assert.equal(report.topRiskServers[0].serverName, 'Docs MCP')
+  assert.equal(report.recommendedActions[0], '优先修复 critical server。')
 })
 
 test('normalizeMCPGovernanceSummary keeps counts and recent events', () => {
