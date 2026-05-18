@@ -45,6 +45,11 @@ from ai_runtime.core.agent_runtime.planner import AgentPlanner
 from ai_runtime.core.agent_runtime.result_contract import hydrate_legacy_result, merge_artifacts
 from ai_runtime.core.agent_runtime.subagents.governance import prune_runtime_governance_ledger_for_resume
 from ai_runtime.core.agent_runtime.summarizer import AgentSummarizer
+from ai_runtime.core.agent_runtime.tenant_governance import (
+    TenantGovernanceConfig,
+    build_tenant_governance_snapshot,
+    fetch_tenant_runtime_usage,
+)
 from ai_runtime.core.agent_runtime.repositories.agent_repository import AgentRepository
 from ai_runtime.core.agent_runtime.repositories.run_repository import RunRepository
 from ai_runtime.core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
@@ -102,6 +107,7 @@ class AgentRuntime:
         self.observability_provider = ObservabilityToolProvider.from_env(db_pool=db_pool)
         self.alert_manager = AlertManager(sinks=build_alert_sinks_from_env())
         self.slo_tracker = SLOTracker()
+        self.tenant_governance_config = TenantGovernanceConfig.from_env()
 
         self.tracer = AgentTracer(
             self.run_repository,
@@ -525,13 +531,43 @@ class AgentRuntime:
             "monitoring": monitoring_export_status(),
         }
 
-    def ops_status(self) -> dict[str, Any]:
+    async def tenant_governance_status(self, tenant_id: str) -> dict[str, Any]:
+        run_usage, tool_usage, subagent_usage = await fetch_tenant_runtime_usage(
+            self.run_repository.db_pool,
+            tenant_id=tenant_id,
+            window_hours=self.tenant_governance_config.window_hours,
+        )
+        workspace_inspection = self.workspace_manager.inspect_workspaces()
+        workspaces = [
+            item
+            for item in workspace_inspection.get("workspaces", [])
+            if str(item.get("tenant_id") or "") == tenant_id
+        ]
+        workspace_usage = {
+            "workspace_count": len(workspaces),
+            "expired_count": sum(1 for item in workspaces if item.get("expired")),
+            "quota_exceeded_count": sum(1 for item in workspaces if item.get("quota_exceeded")),
+            "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in workspaces),
+            "total_file_count": sum(int(item.get("file_count") or 0) for item in workspaces),
+        }
+        return build_tenant_governance_snapshot(
+            tenant_id=tenant_id,
+            config=self.tenant_governance_config,
+            run_usage=run_usage,
+            tool_usage=tool_usage,
+            subagent_usage=subagent_usage,
+            workspace_usage=workspace_usage,
+        )
+
+    async def ops_status(self, *, tenant_id: str | None = None) -> dict[str, Any]:
+        tenant_governance = await self.tenant_governance_status(tenant_id) if tenant_id else None
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "alerts": self.alert_manager.snapshot(),
             "slo": self.slo_tracker.snapshot(),
             "runbooks": get_all_runbook_entries(),
             "monitoring": monitoring_export_status(),
+            "tenant_governance": tenant_governance,
             "subsystems": {
                 subsystem: {
                     "slo": self.slo_tracker.subsystem_snapshot(subsystem),

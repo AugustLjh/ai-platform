@@ -66,6 +66,10 @@
       Runtime 治理状态：{{ runtimeStatusSummary }}
     </div>
 
+    <div v-if="tenantGovernanceSummary" class="info-banner">
+      租户治理：{{ tenantGovernanceSummary }}
+    </div>
+
     <div v-if="selectedMCPWarnings.length > 0" class="warning-banner">
       <strong>当前选中的 MCP 绑定需要关注：</strong>
       <ul class="tips-list compact warning-action-list">
@@ -510,6 +514,41 @@
             <pre v-if="opsPrometheusPreview" class="runtime-metrics-preview">{{ opsPrometheusPreview }}</pre>
           </div>
 
+          <div v-if="tenantGovernance" class="runtime-monitoring-panel">
+            <div class="runtime-card-head">
+              <strong>Tenant Quota / Usage</strong>
+              <div class="runtime-action-row">
+                <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="refreshTenantGovernance">
+                  {{ opsLoading ? '加载中...' : '刷新配额' }}
+                </button>
+              </div>
+            </div>
+            <p>{{ tenantGovernanceSummary }}</p>
+            <div class="runtime-status-grid compact-grid">
+              <article
+                v-for="metric in tenantGovernance.metrics"
+                :key="metric.key"
+                :class="['runtime-card', `tone-${tenantMetricTone(metric)}`]"
+              >
+                <div class="runtime-card-head">
+                  <strong>{{ metric.label }}</strong>
+                  <span>{{ tenantMetricStatusLabel(metric) }}</span>
+                </div>
+                <p>{{ tenantMetricValue(metric) }}</p>
+                <small>{{ tenantMetricSummary(metric) }}</small>
+              </article>
+            </div>
+            <div v-if="tenantGovernance.recoveryActions.length > 0" class="runtime-recovery-list">
+              <span>恢复动作</span>
+              <ul>
+                <li v-for="action in tenantGovernance.recoveryActions" :key="action.key">
+                  <strong>{{ action.label }}</strong>
+                  <span>{{ recoveryActionLabel(action) }}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+
           <div v-if="activeRuntimeAlerts.length > 0" class="runtime-alert-table">
             <span>活跃告警</span>
             <article v-for="alert in activeRuntimeAlerts" :key="`${alert.rule_name || alert.ruleName}-${alert.generated_at || alert.generatedAt}`" class="runtime-alert-row">
@@ -655,6 +694,7 @@ const knowledgeBases = computed(() => knowledgeStore.knowledgeBases)
 const errorMessage = computed(() => agentsStore.error || knowledgeStore.error || '')
 const runtimeStatus = computed(() => agentsStore.runtimeStatus)
 const opsStatus = computed(() => agentsStore.opsStatus)
+const tenantGovernance = computed(() => agentsStore.tenantGovernance)
 const opsGrafanaDashboard = computed(() => agentsStore.opsGrafanaDashboard)
 const redactionEvaluation = computed(() => agentsStore.redactionEvaluation)
 const subagentQualityEvaluation = computed(() => agentsStore.subagentQualityEvaluation)
@@ -884,6 +924,11 @@ const opsMonitoringSummary = computed(() => {
   const datasource = opsMonitoring.value?.grafana?.datasource_uid || opsMonitoring.value?.grafana?.datasourceUid || '${DS_PROMETHEUS}'
   return `Prometheus scrape path ${opsMonitoringPrometheusPath.value} · Grafana datasource ${datasource}`
 })
+const tenantGovernanceSummary = computed(() => {
+  const governance = tenantGovernance.value
+  if (!governance) return ''
+  return `${governance.status} · ${governance.summary}${governance.enforcementEnabled ? ' · 强制执行已启用' : ' · 仅告警模式'}`
+})
 
 const normalizeIds = (value = []) => [...new Set((Array.isArray(value) ? value : []).filter(Boolean))].sort()
 
@@ -930,7 +975,8 @@ const loadPage = async () => {
     knowledgeStore.fetchKnowledgeBases(1, 100).catch(() => []),
     agentsStore.fetchTools(agentId).catch(() => []),
     agentsStore.fetchRuntimeStatus().catch(() => []),
-    showAdminOpsPanel.value ? agentsStore.fetchOpsStatus(currentRole.value).catch(() => null) : Promise.resolve(null)
+    showAdminOpsPanel.value ? agentsStore.fetchOpsStatus(currentRole.value).catch(() => null) : Promise.resolve(null),
+    showAdminOpsPanel.value ? agentsStore.fetchTenantGovernance(currentRole.value).catch(() => null) : Promise.resolve(null)
   ])
   syncSelections()
 }
@@ -1027,7 +1073,10 @@ const refreshOpsStatus = async () => {
   if (!showAdminOpsPanel.value) return
   opsLoading.value = true
   try {
-    await agentsStore.fetchOpsStatus(currentRole.value)
+    await Promise.all([
+      agentsStore.fetchOpsStatus(currentRole.value),
+      agentsStore.fetchTenantGovernance(currentRole.value)
+    ])
     toastStore.showToast({ type: 'success', message: '管理员治理快照已刷新' })
   } catch (error) {
     console.error('Failed to refresh ops status:', error)
@@ -1042,10 +1091,25 @@ const evaluateOpsStatus = async () => {
   opsLoading.value = true
   try {
     await agentsStore.evaluateOpsStatus(currentRole.value)
+    await agentsStore.fetchTenantGovernance(currentRole.value).catch(() => null)
     toastStore.showToast({ type: 'success', message: '运行时告警评估已完成' })
   } catch (error) {
     console.error('Failed to evaluate ops status:', error)
     toastStore.showToast({ type: 'error', message: agentsStore.error || '运行时告警评估失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const refreshTenantGovernance = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    await agentsStore.fetchTenantGovernance(currentRole.value)
+    toastStore.showToast({ type: 'success', message: '租户配额快照已刷新' })
+  } catch (error) {
+    console.error('Failed to refresh tenant governance:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '刷新租户配额快照失败' })
   } finally {
     opsLoading.value = false
   }
@@ -1544,6 +1608,36 @@ const browserSessionAlertLabel = (alert = {}) => {
   }
   const label = typeMap[alert.type] || alert.message || alert.type || 'Browser 告警'
   return `${label}：${Number(alert.count || 0)} / ${Number(alert.threshold || 0)}`
+}
+
+const tenantMetricTone = (metric = {}) => {
+  if (metric.status === 'exceeded') return 'danger'
+  if (metric.status === 'warning') return 'warning'
+  return 'ready'
+}
+
+const tenantMetricStatusLabel = (metric = {}) => {
+  if (metric.status === 'unlimited') return '无限制'
+  if (metric.status === 'exceeded') return metric.enforced ? '阻断' : '超限'
+  if (metric.status === 'warning') return '接近上限'
+  return '正常'
+}
+
+const tenantMetricFormattedNumber = (value, unit = '') => {
+  if (unit === 'bytes') return formatBytes(Number(value || 0))
+  return Number(value || 0).toLocaleString()
+}
+
+const tenantMetricValue = (metric = {}) => {
+  const used = tenantMetricFormattedNumber(metric.used, metric.unit)
+  if (!metric.limit) return `${used} / unlimited`
+  return `${used} / ${tenantMetricFormattedNumber(metric.limit, metric.unit)}`
+}
+
+const tenantMetricSummary = (metric = {}) => {
+  if (!metric.limit) return '未配置硬上限，仅展示当前用量'
+  const remaining = metric.remaining == null ? '未知' : tenantMetricFormattedNumber(metric.remaining, metric.unit)
+  return `已用 ${Number(metric.utilizationPercent || 0).toFixed(1)}% · 剩余 ${remaining}${metric.enforced ? ' · enforced' : ''}`
 }
 
 const recoveryActionLabel = (action = {}) => {
@@ -2110,6 +2204,15 @@ onMounted(async () => {
 .runtime-card.tone-warning {
   border-color: rgba(245, 158, 11, 0.22);
   background: rgba(245, 158, 11, 0.06);
+}
+
+.runtime-card.tone-danger {
+  border-color: rgba(239, 68, 68, 0.24);
+  background: rgba(239, 68, 68, 0.07);
+}
+
+.compact-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .runtime-inspection-panel {

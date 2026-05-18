@@ -10,6 +10,7 @@ import { collectRunEventPages } from '@/utils/runEventHydration'
 import { normalizeMCPBindingUsage, normalizeMCPEvent, normalizeMCPGovernanceSummary, normalizeMCPRecovery } from '@/utils/mcpServers'
 import { collectRunTreeInvocations, normalizeRunTreeNode } from '@/utils/agentRunTree'
 import { normalizeRuntimeStatus } from '@/utils/runtimeStatus'
+import { normalizeTenantGovernance } from '@/utils/tenantGovernance'
 import { redactRuntimePayload } from '@/utils/runtimeRedaction'
 
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
@@ -334,6 +335,7 @@ export const useAgentsStore = defineStore('agents', {
     availableToolsExecutionMode: null,
     runtimeStatus: null,
     opsStatus: null,
+    tenantGovernance: null,
     opsPrometheusMetrics: '',
     opsGrafanaDashboard: null,
     redactionEvaluation: null,
@@ -999,6 +1001,17 @@ export const useAgentsStore = defineStore('agents', {
         return this.opsStatus
       } catch (error) {
         this.setError(error, 'Failed to fetch runtime ops status')
+        throw error
+      }
+    },
+
+    async fetchTenantGovernance(role = 'user') {
+      try {
+        const { data } = await agentsAPI.getTenantGovernanceStatus(role)
+        this.tenantGovernance = normalizeTenantGovernance(data || {})
+        return this.tenantGovernance
+      } catch (error) {
+        this.setError(error, 'Failed to fetch tenant governance status')
         throw error
       }
     },

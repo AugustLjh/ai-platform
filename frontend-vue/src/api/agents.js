@@ -118,6 +118,12 @@ export const agentsAPI = {
     })
   },
 
+  getTenantGovernanceStatus(role = 'user') {
+    return api.get('/api/v1/agents/tenant-governance', {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
   evaluateOpsStatus(role = 'user') {
     return api.post('/api/v1/agents/ops-status/evaluate', null, {
       headers: { 'X-User-Role': role }

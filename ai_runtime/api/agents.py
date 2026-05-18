@@ -144,10 +144,22 @@ async def get_ops_status(
     user_id: Optional[str] = Depends(get_current_user_id),
     viewer_role: str = Depends(get_current_viewer_role),
 ):
-    del tenant_id, user_id
+    del user_id
     _require_admin_or_operator(viewer_role)
     runtime = await get_started_agent_runtime()
-    return runtime.ops_status()
+    return await runtime.ops_status(tenant_id=tenant_id)
+
+
+@router.get("/tenant-governance")
+async def get_tenant_governance_status(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return await runtime.tenant_governance_status(tenant_id)
 
 
 @router.post("/ops-status/evaluate")
@@ -156,10 +168,12 @@ async def evaluate_ops_status(
     user_id: Optional[str] = Depends(get_current_user_id),
     viewer_role: str = Depends(get_current_viewer_role),
 ):
-    del tenant_id, user_id
+    del user_id
     _require_admin_or_operator(viewer_role)
     runtime = await get_started_agent_runtime()
-    return await runtime.evaluate_runtime_health()
+    result = await runtime.evaluate_runtime_health()
+    result["tenant_governance"] = await runtime.tenant_governance_status(tenant_id)
+    return result
 
 
 @router.get("/ops-status/metrics")
