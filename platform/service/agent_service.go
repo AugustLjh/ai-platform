@@ -245,6 +245,7 @@ type AgentWorkspaceCleanupResponse struct {
 }
 
 type AgentRuntimeStatusResponse map[string]any
+type AgentQualityEvaluationResponse map[string]any
 
 type MCPServerUpsertRequest struct {
 	Name      string          `json:"name"`
@@ -862,6 +863,18 @@ func (s *AgentService) CleanupWorkspaceLocks(
 
 func (s *AgentService) GetRuntimeStatus(ctx context.Context, tenantID, userID string) (map[string]any, error) {
 	return s.aiClient.GetRuntimeStatus(ctx, tenantID, userID)
+}
+
+func (s *AgentService) EvaluateAuditRedactionRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	return s.aiClient.EvaluateAuditRedactionRules(ctx, tenantID, userID, testCases)
+}
+
+func (s *AgentService) EvaluateSubagentQualityRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	return s.aiClient.EvaluateSubagentQualityRules(ctx, tenantID, userID, testCases)
+}
+
+func (s *AgentService) EvaluateWebSearchQualityRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	return s.aiClient.EvaluateWebSearchQualityRules(ctx, tenantID, userID, testCases)
 }
 
 func (s *AgentService) ListSkills(tenantID string) ([]*database.Skill, error) {

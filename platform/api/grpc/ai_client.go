@@ -353,6 +353,7 @@ type RuntimeWorkspaceCleanupResponse struct {
 }
 
 type RuntimeStatusResponse map[string]any
+type RuntimeQualityEvaluationResponse map[string]any
 
 func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan *ChatMessage, error) {
 	if c.httpClient == nil {
@@ -490,7 +491,7 @@ func (c *AIClient) CreateAgentRun(ctx context.Context, req *AgentRunCreateReques
 	}
 
 	var response runtimeAgentRunSummaryResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/runs", payload, req.TenantID, req.UserID, &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/runs", payload, req.TenantID, req.UserID, "", &response); err != nil {
 		return nil, err
 	}
 	return &response.Run, nil
@@ -498,7 +499,7 @@ func (c *AIClient) CreateAgentRun(ctx context.Context, req *AgentRunCreateReques
 
 func (c *AIClient) CancelAgentRun(ctx context.Context, runID, tenantID string) (*database.AgentRun, error) {
 	var response runtimeAgentRunSummaryResponse
-	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/agents/runs/%s/cancel", runID), nil, tenantID, "", &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/agents/runs/%s/cancel", runID), nil, tenantID, "", "", &response); err != nil {
 		return nil, err
 	}
 	return &response.Run, nil
@@ -512,6 +513,7 @@ func (c *AIClient) ResumeAgentRun(ctx context.Context, runID, tenantID string, i
 		fmt.Sprintf("/api/v1/agents/runs/%s/resume", runID),
 		runtimeAgentResumeRequest{InputPatch: inputPatch},
 		tenantID,
+		"",
 		"",
 		&response,
 	); err != nil {
@@ -529,6 +531,7 @@ func (c *AIClient) ListAgentRunInvocations(ctx context.Context, runID, tenantID 
 		nil,
 		tenantID,
 		"",
+		"",
 		&response,
 	); err != nil {
 		return nil, err
@@ -545,6 +548,7 @@ func (c *AIClient) GetAgentRunTree(ctx context.Context, runID, tenantID string, 
 		nil,
 		tenantID,
 		"",
+		"",
 		&response,
 	); err != nil {
 		return nil, err
@@ -558,7 +562,7 @@ func (c *AIClient) ListAgentTools(ctx context.Context, tenantID, agentDefinition
 		path += "?agent_definition_id=" + url.QueryEscape(agentDefinitionID)
 	}
 	var response runtimeAgentToolListResponse
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, tenantID, "", &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, tenantID, "", "", &response); err != nil {
 		return nil, err
 	}
 	return &response, nil
@@ -572,6 +576,7 @@ func (c *AIClient) TestMCPServer(ctx context.Context, tenantID, serverID string)
 		fmt.Sprintf("/api/v1/runtime/mcp/servers/%s/test", url.PathEscape(serverID)),
 		nil,
 		tenantID,
+		"",
 		"",
 		&response,
 	); err != nil {
@@ -589,6 +594,7 @@ func (c *AIClient) RefreshMCPServerTools(ctx context.Context, tenantID, serverID
 		nil,
 		tenantID,
 		"",
+		"",
 		&response,
 	); err != nil {
 		return nil, err
@@ -599,7 +605,7 @@ func (c *AIClient) RefreshMCPServerTools(ctx context.Context, tenantID, serverID
 func (c *AIClient) ListWorkspaceSources(ctx context.Context, tenantID, userID string, maxEntries, maxDepth int) (*RuntimeWorkspaceSourceResponse, error) {
 	path := fmt.Sprintf("/api/v1/agents/workspace-sources?max_entries=%d&max_depth=%d", maxEntries, maxDepth)
 	var response RuntimeWorkspaceSourceResponse
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, tenantID, userID, &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, tenantID, userID, "", &response); err != nil {
 		return nil, err
 	}
 	return &response, nil
@@ -607,7 +613,7 @@ func (c *AIClient) ListWorkspaceSources(ctx context.Context, tenantID, userID st
 
 func (c *AIClient) InspectWorkspaces(ctx context.Context, tenantID, userID string) (*RuntimeWorkspaceInspectionResponse, error) {
 	var response RuntimeWorkspaceInspectionResponse
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/workspaces", nil, tenantID, userID, &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/workspaces", nil, tenantID, userID, "", &response); err != nil {
 		return nil, err
 	}
 	return &response, nil
@@ -627,7 +633,7 @@ func (c *AIClient) CleanupWorkspaces(
 		confirmed,
 	)
 	var response RuntimeWorkspaceCleanupResponse
-	if err := c.doJSON(ctx, http.MethodPost, path, nil, tenantID, userID, &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, path, nil, tenantID, userID, "", &response); err != nil {
 		return nil, err
 	}
 	return &response, nil
@@ -647,7 +653,7 @@ func (c *AIClient) CleanupWorkspaceLocks(
 		confirmed,
 	)
 	var response RuntimeWorkspaceCleanupResponse
-	if err := c.doJSON(ctx, http.MethodPost, path, nil, tenantID, userID, &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, path, nil, tenantID, userID, "", &response); err != nil {
 		return nil, err
 	}
 	return &response, nil
@@ -655,7 +661,31 @@ func (c *AIClient) CleanupWorkspaceLocks(
 
 func (c *AIClient) GetRuntimeStatus(ctx context.Context, tenantID, userID string) (map[string]any, error) {
 	var response RuntimeStatusResponse
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/runtime-status", nil, tenantID, userID, &response); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/agents/runtime-status", nil, tenantID, userID, "", &response); err != nil {
+		return nil, err
+	}
+	return map[string]any(response), nil
+}
+
+func (c *AIClient) EvaluateAuditRedactionRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	var response RuntimeQualityEvaluationResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/audit/redaction/evaluate", testCases, tenantID, userID, "", &response); err != nil {
+		return nil, err
+	}
+	return map[string]any(response), nil
+}
+
+func (c *AIClient) EvaluateSubagentQualityRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	var response RuntimeQualityEvaluationResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/subagents/quality/evaluate", testCases, tenantID, userID, "", &response); err != nil {
+		return nil, err
+	}
+	return map[string]any(response), nil
+}
+
+func (c *AIClient) EvaluateWebSearchQualityRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	var response RuntimeQualityEvaluationResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/agents/web/search-quality/evaluate", testCases, tenantID, userID, "", &response); err != nil {
 		return nil, err
 	}
 	return map[string]any(response), nil
@@ -738,7 +768,7 @@ func (c *AIClient) doJSON(
 	ctx context.Context,
 	method, path string,
 	payload any,
-	tenantID, userID string,
+	tenantID, userID, role string,
 	out any,
 ) error {
 	if c.httpBaseURL == "" {
@@ -767,6 +797,9 @@ func (c *AIClient) doJSON(
 	}
 	if userID != "" {
 		req.Header.Set("X-User-ID", userID)
+	}
+	if role != "" {
+		req.Header.Set("X-User-Role", role)
 	}
 
 	resp, err := c.httpClient.Do(req)

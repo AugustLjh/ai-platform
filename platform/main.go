@@ -290,6 +290,30 @@ func main() {
 			guardMiddleware.Handler,
 		))
 
+	mux.Handle("/api/v1/agents/audit/redaction/evaluate",
+		chain(
+			http.HandlerFunc(agentHandler.HandleAuditRedactionEvaluation),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/subagents/quality/evaluate",
+		chain(
+			http.HandlerFunc(agentHandler.HandleSubagentQualityEvaluation),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/web/search-quality/evaluate",
+		chain(
+			http.HandlerFunc(agentHandler.HandleWebSearchQualityEvaluation),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
 	mux.Handle("/api/v1/agents/workspace-sources",
 		chain(
 			http.HandlerFunc(agentHandler.HandleWorkspaceSources),

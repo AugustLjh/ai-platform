@@ -645,6 +645,16 @@
             <div v-if="runtimeWebSearchQualitySummary" class="runtime-quality-baseline">
               <span>Runtime 快照</span>
               <small>{{ runtimeWebSearchQualitySummary }}</small>
+              <small v-if="runtimeWebSearchPolicySummary">{{ runtimeWebSearchPolicySummary }}</small>
+              <small v-if="runtimeWebSearchQualityCounters">{{ runtimeWebSearchQualityCounters }}</small>
+            </div>
+            <div v-if="webSearchQualityRejectionSummary" class="runtime-quality-baseline">
+              <span>累计拒绝原因</span>
+              <small>{{ webSearchQualityRejectionSummary }}</small>
+            </div>
+            <div v-if="webSearchQualityCaseSummaries.length > 0" class="runtime-quality-baseline">
+              <span>案例摘要</span>
+              <small>{{ webSearchQualityCaseSummaries }}</small>
             </div>
             <div v-if="webSearchQualityCases.length > 0" class="runtime-quality-case-list">
               <article
@@ -660,6 +670,21 @@
                 <small>
                   accepted {{ qualityCase.acceptedCount }} · rejected {{ qualityCase.rejectedCount }} · checks {{ qualityCase.passedCheckCount }}/{{ qualityCase.checkCount }}
                 </small>
+                <small v-if="webSearchCasePolicySummary(qualityCase)">
+                  {{ webSearchCasePolicySummary(qualityCase) }}
+                </small>
+                <div v-if="webSearchCaseRejectionSummary(qualityCase)" class="runtime-quality-reasons">
+                  <span>拒绝原因</span>
+                  <small>{{ webSearchCaseRejectionSummary(qualityCase) }}</small>
+                </div>
+                <div class="runtime-quality-case-details">
+                  <small v-if="webSearchCaseAcceptedPreview(qualityCase)">
+                    保留：{{ webSearchCaseAcceptedPreview(qualityCase) }}
+                  </small>
+                  <small v-if="webSearchCaseRejectedPreview(qualityCase)">
+                    拒绝：{{ webSearchCaseRejectedPreview(qualityCase) }}
+                  </small>
+                </div>
               </article>
             </div>
           </div>
@@ -705,7 +730,12 @@ import {
   statusTone
 } from '@/utils/mcpServers'
 import { buildBrowserSessionTrendPoints, formatBrowserSessionHistoryLabel } from '@/utils/browserSessions'
-import { normalizeWebSearchQualityEvaluation, summarizeWebSearchQualityEvaluation, webSearchQualityTone } from '@/utils/webSearchQuality'
+import {
+  formatWebSearchPolicySnapshot,
+  normalizeWebSearchQualityEvaluation,
+  summarizeWebSearchQualityEvaluation,
+  webSearchQualityTone
+} from '@/utils/webSearchQuality'
 
 const route = useRoute()
 const router = useRouter()
@@ -972,8 +1002,50 @@ const opsMonitoringSummary = computed(() => {
 })
 const runtimeWebSearchQuality = computed(() => runtimeStatus.value?.web?.searchQuality?.evaluation || null)
 const runtimeWebSearchQualitySummary = computed(() => summarizeWebSearchQualityEvaluation(runtimeWebSearchQuality.value))
+const runtimeWebSearchPolicySummary = computed(() => formatWebSearchPolicySnapshot(runtimeStatus.value?.web?.searchQuality || null))
+const runtimeWebSearchQualityCounters = computed(() => {
+  const evaluation = runtimeWebSearchQuality.value
+  if (!evaluation) return ''
+  const accepted = Number(evaluation.acceptedCount || evaluation.accepted_count || 0)
+  const rejected = Number(evaluation.rejectedCount || evaluation.rejected_count || 0)
+  const checks = Number(evaluation.passedCheckCount || evaluation.passed_check_count || 0) + Number(evaluation.failedCheckCount || evaluation.failed_check_count || 0)
+  return `accepted ${accepted} · rejected ${rejected} · checks ${checks}`
+})
 const webSearchQualitySummary = computed(() => summarizeWebSearchQualityEvaluation(webSearchQualityEvaluation.value))
 const webSearchQualityCases = computed(() => Array.isArray(webSearchQualityEvaluation.value?.results) ? webSearchQualityEvaluation.value.results : [])
+const webSearchQualityCaseSummaries = computed(() => {
+  const evaluation = webSearchQualityEvaluation.value
+  if (!evaluation) return ''
+  const summaries = Array.isArray(evaluation.caseSummaries) && evaluation.caseSummaries.length > 0
+    ? evaluation.caseSummaries
+    : webSearchQualityCases.value.map((item) => ({
+        name: item.name,
+        status: item.status,
+        summary: item.summary
+      }))
+  return summaries
+    .slice(0, 4)
+    .map((item) => `${item.name || '未命名案例'}: ${item.status || 'unknown'}${item.summary ? ` · ${item.summary}` : ''}`)
+    .join(' | ')
+})
+const webSearchQualityRejectionSummary = computed(() => {
+  const evaluation = webSearchQualityEvaluation.value
+  if (!evaluation) return ''
+  if (evaluation.rejectionReasonCounts && Object.keys(evaluation.rejectionReasonCounts).length > 0) {
+    return formatWebSearchRejectionCounts(evaluation.rejectionReasonCounts)
+  }
+  const summaryMap = new Map()
+  webSearchQualityCases.value.forEach((qualityCase) => {
+    const rejectionCounts = qualityCase?.rejectionReasonCounts || {}
+    Object.entries(rejectionCounts).forEach(([reason, count]) => {
+      summaryMap.set(reason, (summaryMap.get(reason) || 0) + Number(count || 0))
+    })
+  })
+  const parts = [...summaryMap.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([reason, count]) => `${reason} x${count}`)
+  return parts.join(' · ')
+})
 const tenantGovernanceSummary = computed(() => {
   const governance = tenantGovernance.value
   if (!governance) return ''
@@ -1664,6 +1736,26 @@ const recoveryActionLabel = (action = {}) => {
 }
 
 const webSearchQualityToneForCase = (qualityCase = {}) => webSearchQualityTone(qualityCase.status)
+const webSearchCasePolicySummary = (qualityCase = {}) => formatWebSearchPolicySnapshot(qualityCase.policySnapshot || null)
+const formatWebSearchRejectionCounts = (counts = {}) => {
+  const entries = Object.entries(counts || {})
+  if (entries.length === 0) return ''
+  return entries
+    .sort((left, right) => right[1] - left[1])
+    .map(([reason, count]) => `${reason} x${count}`)
+    .join(' · ')
+}
+const webSearchCaseRejectionSummary = (qualityCase = {}) => {
+  return formatWebSearchRejectionCounts(qualityCase?.rejectionReasonCounts || {})
+}
+const webSearchCaseAcceptedPreview = (qualityCase = {}) => {
+  const accepted = Array.isArray(qualityCase?.accepted) ? qualityCase.accepted : []
+  return accepted.slice(0, 2).map((item) => item?.title || item?.url || '').filter(Boolean).join(' · ')
+}
+const webSearchCaseRejectedPreview = (qualityCase = {}) => {
+  const rejected = Array.isArray(qualityCase?.rejected) ? qualityCase.rejected : []
+  return rejected.slice(0, 2).map((item) => item?.reason || '').filter(Boolean).join(' · ')
+}
 
 const workspaceLifecycleHistoryItemSummary = (item = {}) => {
   const inspection = item.inspection || {}
@@ -2307,6 +2399,19 @@ onMounted(async () => {
 .runtime-quality-case-list {
   display: grid;
   gap: 10px;
+}
+
+.runtime-quality-reasons,
+.runtime-quality-case-details {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.runtime-quality-reasons span {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gray-500);
 }
 
 .runtime-health-summary span,

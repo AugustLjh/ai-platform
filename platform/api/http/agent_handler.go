@@ -315,6 +315,75 @@ func (h *AgentHandler) HandleRuntimeStatus(w http.ResponseWriter, r *http.Reques
 	respondJSON(w, result, http.StatusOK)
 }
 
+func (h *AgentHandler) HandleAuditRedactionEvaluation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var testCases []map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&testCases); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	result, err := h.agentService.EvaluateAuditRedactionRules(r.Context(), user.TenantID, user.ID, testCases)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleSubagentQualityEvaluation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var testCases []map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&testCases); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	result, err := h.agentService.EvaluateSubagentQualityRules(r.Context(), user.TenantID, user.ID, testCases)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleWebSearchQualityEvaluation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var testCases []map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&testCases); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	result, err := h.agentService.EvaluateWebSearchQualityRules(r.Context(), user.TenantID, user.ID, testCases)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
 func (h *AgentHandler) HandleRuns(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
