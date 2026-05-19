@@ -161,8 +161,14 @@ export const agentsAPI = {
     })
   },
 
-  evaluateSubagentQualityRules(testCases = [], role = 'user') {
-    return api.post('/api/v1/agents/subagents/quality/evaluate', testCases, {
+  evaluateSubagentQualityRules(testCases = null, role = 'user') {
+    return api.post('/api/v1/agents/subagents/quality/evaluate', testCases || [], {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateWebSearchQualityRules(testCases = null, role = 'user') {
+    return api.post('/api/v1/agents/web/search-quality/evaluate', testCases || [], {
       headers: { 'X-User-Role': role }
     })
   },

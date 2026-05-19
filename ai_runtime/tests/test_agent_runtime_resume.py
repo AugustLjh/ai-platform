@@ -163,6 +163,13 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
                     "child_run_id": "child-run-1",
                     "question": "Which environment?",
                 },
+                "resolved_subagent_invocations": [
+                    {
+                        "child_run_id": "child-run-1",
+                        "invocation_id": "invocation-1",
+                        "summary": "stale child result from previous attempt",
+                    }
+                ],
                 "ask_user_guard": {"attempt": 1},
                 "last_plan": {"steps": ["old plan"]},
                 "last_result_contract": {"artifact_count": 2},
@@ -262,6 +269,7 @@ async def test_resume_run_resets_execution_surface_and_prunes_transient_context(
     assert reset_context["execution_count"] == 0
     assert "pending_question" not in reset_context
     assert "pending_subagent_clarification" not in reset_context
+    assert "resolved_subagent_invocations" not in reset_context
     assert "ask_user_guard" not in reset_context
     assert "last_plan" not in reset_context
     assert "last_result_contract" not in reset_context

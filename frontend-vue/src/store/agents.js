@@ -8,9 +8,14 @@ import {
 import { buildRunEventPatch, deriveRunState } from '@/utils/agentRunState'
 import { collectRunEventPages } from '@/utils/runEventHydration'
 import { normalizeMCPBindingUsage, normalizeMCPEvent, normalizeMCPGovernanceSummary, normalizeMCPRecovery } from '@/utils/mcpServers'
-import { collectRunTreeInvocations, normalizeRunTreeNode } from '@/utils/agentRunTree'
+import {
+  collectRunTreeInvocations,
+  filterRunTreeForLatestAttempt,
+  normalizeRunTreeNode
+} from '@/utils/agentRunTree'
 import { normalizeRuntimeStatus } from '@/utils/runtimeStatus'
 import { normalizeTenantGovernance } from '@/utils/tenantGovernance'
+import { normalizeWebSearchQualityEvaluation } from '@/utils/webSearchQuality'
 import { redactRuntimePayload } from '@/utils/runtimeRedaction'
 
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
@@ -340,6 +345,7 @@ export const useAgentsStore = defineStore('agents', {
     opsGrafanaDashboard: null,
     redactionEvaluation: null,
     subagentQualityEvaluation: null,
+    webSearchQualityEvaluation: null,
     runAuditView: null,
     workspaceInspection: null,
     workspaceCleanupResult: null,
@@ -400,6 +406,11 @@ export const useAgentsStore = defineStore('agents', {
       this.steps = derived.steps
       this.toolCalls = derived.toolCalls
       this.artifacts = derived.artifacts
+      if (this.currentRunTree) {
+        const filteredTree = filterRunTreeForLatestAttempt(this.currentRunTree, events)
+        this.currentRunTree = filteredTree
+        this.currentRunInvocations = collectRunTreeInvocations(filteredTree)
+      }
       if (run?.id) {
         this.applyRunPatch(run.id, {
           ...derived.runPatch,
@@ -467,7 +478,9 @@ export const useAgentsStore = defineStore('agents', {
     async fetchRunTree(runId, maxDepth = 4) {
       try {
         const { data } = await agentsAPI.getRunTree(runId, maxDepth)
-        const root = data?.root ? normalizeRunTreeNode(data.root) : null
+        const root = data?.root
+          ? filterRunTreeForLatestAttempt(normalizeRunTreeNode(data.root), this.runEvents)
+          : null
         this.currentRunTree = root
         this.currentRunInvocations = collectRunTreeInvocations(root)
         return root
@@ -1088,13 +1101,24 @@ export const useAgentsStore = defineStore('agents', {
       }
     },
 
-    async evaluateSubagentQualityRules(testCases = [], role = 'user') {
+    async evaluateSubagentQualityRules(testCases = null, role = 'user') {
       try {
         const { data } = await agentsAPI.evaluateSubagentQualityRules(testCases, role)
         this.subagentQualityEvaluation = data || null
         return this.subagentQualityEvaluation
       } catch (error) {
         this.setError(error, 'Failed to evaluate subagent quality rules')
+        throw error
+      }
+    },
+
+    async evaluateWebSearchQualityRules(testCases = null, role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateWebSearchQualityRules(testCases, role)
+        this.webSearchQualityEvaluation = normalizeWebSearchQualityEvaluation(data || null)
+        return this.webSearchQualityEvaluation
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate web search quality rules')
         throw error
       }
     },

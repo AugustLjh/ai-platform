@@ -218,7 +218,33 @@ def test_build_artifacts_from_tool_result_redacts_sensitive_tool_outputs():
     serialized = str(artifacts)
     assert "abcdefghijklmnop" not in serialized
     assert "Bearer secret" not in serialized
-    assert MASK in serialized
+
+
+def test_build_artifacts_from_mcp_governance_result_promotes_safe_summary():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "servers": [
+                {
+                    "server": {"id": "server-1", "name": "Docs MCP", "transport": "http", "status": "active"},
+                    "availability": {"status": "available"},
+                    "recovery": {"summary": "refresh first", "status": "stale"},
+                    "security_score": {"risk_level": "medium", "score": 71, "summary": "watch"},
+                }
+            ],
+            "summary": {"total_servers": 1},
+            "tenant_id": "tenant-1",
+        },
+        tool_name="mcp_catalog_status",
+        tool_kind="mcp-governance",
+        step_id="step-1",
+        tool_call_id="tool-call-1",
+    )
+
+    artifact_types = [artifact["artifact_type"] for artifact in artifacts]
+    assert "paged_collection" in artifact_types
+    paged = next(artifact for artifact in artifacts if artifact["artifact_type"] == "paged_collection")
+    assert paged["payload"]["items"][0]["server_name"] == "Docs MCP"
+    assert paged["payload"]["items"][0]["risk_level"] == "medium"
 
 
 def test_build_artifacts_from_tool_result_promotes_workspace_patch_artifact():

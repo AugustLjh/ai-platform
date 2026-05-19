@@ -10,6 +10,8 @@ import {
   clarificationStateLabel,
   collectRunTreeInvocations,
   collectRunTreeNodes,
+  filterRunTreeForLatestAttempt,
+  filterRunTreeInvocationsForLatestAttempt,
   getInvocationClarification,
   getInvocationGovernancePolicy,
   getInvocationProgress,
@@ -140,6 +142,59 @@ test('collectRunTreeNodes and collectRunTreeInvocations flatten nested structure
     collectRunTreeInvocations(root).map((item) => item.invocation.id),
     ['invocation-1', 'invocation-2']
   )
+})
+
+test('latest attempt filters hide stale run tree branches before run.resumed', () => {
+  const root = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'completed', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-old',
+          parent_run_id: 'run-parent',
+          child_run_id: 'run-old-child',
+          status: 'completed',
+          created_at: '2026-04-01T10:00:00.000Z',
+          request_payload: { task: { message: 'Old child task' } },
+          result_payload: { status: 'completed' }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'run-old-child', status: 'completed', input: { message: 'old child task' } },
+          invocations: []
+        }
+      },
+      {
+        invocation: {
+          id: 'invocation-new',
+          parent_run_id: 'run-parent',
+          child_run_id: 'run-new-child',
+          status: 'completed',
+          created_at: '2026-04-01T10:02:00.000Z',
+          request_payload: { task: { message: 'New child task' } },
+          result_payload: { status: 'completed' }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'run-new-child', status: 'completed', input: { message: 'new child task' } },
+          invocations: []
+        }
+      }
+    ]
+  })
+
+  const events = [
+    { id: 'event-1', eventType: 'run.completed', sequence: 10, createdAt: '2026-04-01T10:00:10.000Z' },
+    { id: 'event-2', eventType: 'run.resumed', sequence: 11, createdAt: '2026-04-01T10:01:00.000Z' }
+  ]
+
+  const filteredRoot = filterRunTreeForLatestAttempt(root, events)
+  const filteredInvocations = filterRunTreeInvocationsForLatestAttempt(collectRunTreeInvocations(root), events)
+
+  assert.equal(filteredRoot.invocations.length, 1)
+  assert.equal(filteredRoot.invocations[0].invocation.id, 'invocation-new')
+  assert.deepEqual(filteredInvocations.map((item) => item.invocation.id), ['invocation-new'])
 })
 
 test('collectResolvedSubagentInvocations normalizes async child results from run context', () => {
@@ -860,4 +915,106 @@ test('buildSubagentCollaborationSummary aggregates timeline, artifacts, and revi
   assert.equal(summary.reviewBlocks[0].target, 'Reviewer')
   assert.equal(summary.reviewBlocks[0].recoveryActions[0], 'Fix the blocking finding before continuing.')
   assert.equal(summary.eventTimeline.length, 1)
+})
+
+test('buildSubagentCollaborationSummary keeps only latest attempt data after resume', () => {
+  const root = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'running', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-old',
+          parent_run_id: 'run-parent',
+          child_run_id: 'child-old',
+          status: 'completed',
+          created_at: '2026-04-01T10:00:00.000Z',
+          request_payload: {
+            task: { message: 'Old attempt' },
+            policy_snapshot: { target: { name: 'Old Worker' } }
+          },
+          result_payload: {
+            status: 'completed',
+            final_result: {
+              artifacts: [
+                {
+                  artifact_type: 'code_patch',
+                  name: 'Old Patch',
+                  payload: { operation: 'modify', diff: '+old' }
+                }
+              ]
+            }
+          }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'child-old', status: 'completed', input: { message: 'old attempt' } },
+          invocations: []
+        }
+      },
+      {
+        invocation: {
+          id: 'invocation-new',
+          parent_run_id: 'run-parent',
+          child_run_id: 'child-new',
+          status: 'completed',
+          created_at: '2026-04-01T10:02:00.000Z',
+          request_payload: {
+            task: { message: 'New attempt' },
+            policy_snapshot: { target: { name: 'New Worker' } }
+          },
+          result_payload: {
+            status: 'completed',
+            final_result: {
+              artifacts: [
+                {
+                  artifact_type: 'verification_report',
+                  name: 'New Report',
+                  payload: { status: 'completed' }
+                }
+              ]
+            }
+          }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'child-new', status: 'completed', input: { message: 'new attempt' } },
+          invocations: []
+        }
+      }
+    ]
+  })
+
+  const summary = buildSubagentCollaborationSummary({
+    runTreeInvocations: collectRunTreeInvocations(root),
+    resolvedInvocations: [],
+    artifacts: [
+      { artifactType: 'verification_report', name: 'Current Report', payload: { status: 'completed' } }
+    ],
+    events: [
+      { id: 'event-1', eventType: 'run.completed', sequence: 10, createdAt: '2026-04-01T10:00:10.000Z' },
+      { id: 'event-2', eventType: 'run.resumed', sequence: 11, createdAt: '2026-04-01T10:01:00.000Z' },
+      {
+        id: 'event-3',
+        eventType: 'subagent.completed',
+        sequence: 12,
+        createdAt: '2026-04-01T10:02:30.000Z',
+        payload: {
+          child_status: 'completed',
+          child_run_id: 'child-new',
+          handoff_envelope: {
+            task: { message: 'New attempt' },
+            policy_snapshot: { target: { name: 'New Worker' } }
+          }
+        }
+      }
+    ]
+  })
+
+  assert.equal(summary.totalInvocations, 1)
+  assert.equal(summary.promotedArtifactCount, 1)
+  assert.equal(summary.directArtifactCount, 1)
+  assert.equal(summary.eventTimeline.length, 1)
+  assert.equal(summary.timeline[0].target, 'New Worker')
+  assert.equal(summary.promotedArtifacts[0].sourceChildRunId, 'child-new')
 })

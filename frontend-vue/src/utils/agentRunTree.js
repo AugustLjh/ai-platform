@@ -487,6 +487,76 @@ export const collectRunTreeInvocations = (root) => {
   return items
 }
 
+const eventTimestampMs = (event) => {
+  const value = event?.createdAt || event?.created_at || ''
+  const parsed = value ? new Date(value).getTime() : Number.NaN
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const invocationTimestampMs = (invocation) => {
+  const value = invocation?.createdAt || invocation?.created_at || invocation?.startedAt || invocation?.started_at || ''
+  const parsed = value ? new Date(value).getTime() : Number.NaN
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+export const getLatestRunResumeBoundary = (events = []) => {
+  const resumeEvents = (Array.isArray(events) ? events : [])
+    .filter((event) => event?.eventType === 'run.resumed' || event?.event_type === 'run.resumed')
+  if (resumeEvents.length === 0) {
+    return null
+  }
+
+  const latest = [...resumeEvents].sort((a, b) => {
+    const aSequence = Number(a.sequence || 0)
+    const bSequence = Number(b.sequence || 0)
+    if (aSequence !== bSequence) return bSequence - aSequence
+    return (eventTimestampMs(b) || 0) - (eventTimestampMs(a) || 0)
+  })[0]
+
+  return {
+    event: latest,
+    sequence: Number(latest.sequence || 0),
+    timestampMs: eventTimestampMs(latest)
+  }
+}
+
+const isInvocationInLatestAttempt = (invocation, boundary) => {
+  if (!boundary) return true
+  const timestamp = invocationTimestampMs(invocation)
+  if (timestamp === null || boundary.timestampMs === null) {
+    return false
+  }
+  return timestamp >= boundary.timestampMs
+}
+
+export const filterRunTreeForLatestAttempt = (root, events = []) => {
+  if (!root) return null
+  const boundary = getLatestRunResumeBoundary(events)
+  if (!boundary) return root
+
+  const filterNode = (node) => {
+    if (!node) return null
+    return {
+      ...node,
+      invocations: (node.invocations || [])
+        .filter((edge) => isInvocationInLatestAttempt(edge?.invocation, boundary))
+        .map((edge) => ({
+          ...edge,
+          childRun: edge?.childRun ? filterNode(edge.childRun) : null
+        }))
+    }
+  }
+
+  return filterNode(root)
+}
+
+export const filterRunTreeInvocationsForLatestAttempt = (items = [], events = []) => {
+  const boundary = getLatestRunResumeBoundary(events)
+  if (!boundary) return Array.isArray(items) ? items : []
+  return (Array.isArray(items) ? items : [])
+    .filter((item) => isInvocationInLatestAttempt(item?.invocation, boundary))
+}
+
 export const collectResolvedSubagentInvocations = (run) => {
   const context = run?.context && typeof run.context === 'object' ? run.context : {}
   const rawItems = Array.isArray(context.resolved_subagent_invocations || context.resolvedSubagentInvocations)
@@ -948,8 +1018,20 @@ export const buildSubagentCollaborationSummary = ({
   artifacts = [],
   events = []
 } = {}) => {
+  const boundary = getLatestRunResumeBoundary(events)
+  const activeRunTreeInvocations = filterRunTreeInvocationsForLatestAttempt(runTreeInvocations, events)
+  const activeEvents = boundary
+    ? (events || []).filter((event) => {
+        const timestamp = eventTimestampMs(event)
+        if (timestamp === null || boundary.timestampMs === null) {
+          return Number(event?.sequence || 0) >= boundary.sequence
+        }
+        return timestamp >= boundary.timestampMs
+      })
+    : events
+
   const entries = [
-    ...runTreeInvocations.map((item) => {
+    ...activeRunTreeInvocations.map((item) => {
       const entry = buildInvocationProtocolEntry(item)
       return {
         ...entry,
@@ -1042,7 +1124,7 @@ export const buildSubagentCollaborationSummary = ({
     reviewBlocked: Boolean(entry.reviewResult?.gateBlocked || entry.reviewResult?.blockingFindingCount > 0 || entry.reviewResult?.decision === 'review_gate_blocked')
   }))
 
-  const eventTimeline = (events || [])
+  const eventTimeline = (activeEvents || [])
     .filter((event) => String(event?.eventType || '').startsWith('subagent.'))
     .slice(-8)
     .map((event) => ({

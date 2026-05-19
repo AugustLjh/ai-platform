@@ -63,6 +63,7 @@ from ai_runtime.core.agent_runtime.tools.providers.sandbox_exec import SandboxEx
 from ai_runtime.core.agent_runtime.tools.providers.observability import ObservabilityToolProvider
 from ai_runtime.core.agent_runtime.tools.registry import ToolRegistry
 from ai_runtime.core.agent_runtime.tracing import AgentTracer
+from ai_runtime.core.agent_runtime.web_quality import evaluate_default_web_search_quality_suite
 from ai_runtime.core.agent_runtime.workspace_lifecycle import (
     WorkspaceLifecyclePolicy,
     WorkspaceLifecycleScheduler,
@@ -676,6 +677,8 @@ class AgentRuntime:
                         ],
                         "reject_disallowed_domains": os.getenv("AGENT_WEB_SEARCH_REJECT_DISALLOWED_DOMAINS", "true").lower() in {"1", "true", "yes", "on"},
                         "reject_duplicates": os.getenv("AGENT_WEB_SEARCH_REJECT_DUPLICATES", "true").lower() in {"1", "true", "yes", "on"},
+                        "evaluation": evaluate_default_web_search_quality_suite([]),
+                        "evaluation_protocol_version": "managed-web.search-quality-suite.v1",
                     },
                     "browser_sessions": web_session_summary,
                 },
@@ -787,6 +790,7 @@ class AgentRuntime:
         for key in (
             "pending_question",
             "pending_subagent_clarification",
+            "resolved_subagent_invocations",
             "ask_user_guard",
             "last_plan",
             "last_result_contract",
@@ -968,11 +972,10 @@ class AgentRuntime:
         )
 
     async def test_mcp_server(self, *, tenant_id: str, server_id: str) -> dict:
-        return (await self.mcp_registry.test_server(tenant_id=tenant_id, server_id=server_id)).model_dump(mode="json")
+        return await self.mcp_registry.test_server_summary(tenant_id=tenant_id, server_id=server_id)
 
-    async def refresh_mcp_server_tools(self, *, tenant_id: str, server_id: str) -> list[dict]:
-        items = await self.mcp_registry.refresh_server_tools(tenant_id=tenant_id, server_id=server_id)
-        return [item.model_dump(mode="json") for item in items]
+    async def refresh_mcp_server_tools(self, *, tenant_id: str, server_id: str) -> dict:
+        return await self.mcp_registry.refresh_server_tools_summary(tenant_id=tenant_id, server_id=server_id)
 
     async def create_run(self, request: RuntimeCreateRunRequest) -> AgentRunSummaryResponse:
         hydrated_input = self._hydrate_upload_context(

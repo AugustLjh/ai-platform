@@ -20,7 +20,8 @@ from ai_runtime.core.agent_runtime.models import (
     RuntimeResumeRunRequest,
     RuntimeWorkspaceWritebackRequest,
 )
-from ai_runtime.core.agent_runtime.subagents.quality import evaluate_subagent_quality_suite
+from ai_runtime.core.agent_runtime.subagents.quality import evaluate_default_subagent_quality_suite
+from ai_runtime.core.agent_runtime.web_quality import evaluate_default_web_search_quality_suite
 from ai_runtime.core.database import get_db_manager
 from ai_runtime.core.dependencies import get_current_tenant_id, get_current_user_id
 
@@ -256,7 +257,19 @@ async def evaluate_subagent_quality_rules(
 ):
     del tenant_id, user_id
     _require_admin_or_operator(viewer_role)
-    return evaluate_subagent_quality_suite(test_cases)
+    return evaluate_default_subagent_quality_suite(test_cases)
+
+
+@router.post("/web/search-quality/evaluate")
+async def evaluate_web_search_quality_rules(
+    test_cases: list[dict],
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    return evaluate_default_web_search_quality_suite(test_cases)
 
 
 @router.get("/workspaces")

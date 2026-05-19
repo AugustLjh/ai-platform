@@ -425,6 +425,15 @@
               <span>Browser 趋势</span>
               <p>{{ browserSessionTrendSummary }}</p>
             </div>
+            <div v-if="browserSessionTrendPoints.length > 0" class="runtime-browser-history">
+              <span>Browser 历史样本</span>
+              <ul>
+                <li v-for="point in browserSessionTrendPoints" :key="`${point.index}-${point.sampledAt || 'sample'}`">
+                  <strong>{{ formatDateTime(point.sampledAt) || '未知时间' }}</strong>
+                  <span>{{ browserSessionHistoryLabel(point) }}</span>
+                </li>
+              </ul>
+            </div>
             <div v-if="browserSessionAlerts.length > 0" class="runtime-alert-list">
               <span>Browser 告警</span>
               <ul>
@@ -624,6 +633,36 @@
             </p>
             <p v-else>使用内置样例评估 reviewer 阻断发现召回和 tester 结构化验证报告完整度。</p>
           </div>
+
+          <div class="runtime-quality-panel">
+            <div class="runtime-card-head">
+              <strong>Web 搜索质量评测</strong>
+              <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="runWebSearchQualityEvaluation">
+                {{ opsLoading ? '评测中...' : '运行评测' }}
+              </button>
+            </div>
+            <p>{{ webSearchQualitySummary || '使用内置样例评估 search result 的 URL、标题、snippet、域名和去重边界。' }}</p>
+            <div v-if="runtimeWebSearchQualitySummary" class="runtime-quality-baseline">
+              <span>Runtime 快照</span>
+              <small>{{ runtimeWebSearchQualitySummary }}</small>
+            </div>
+            <div v-if="webSearchQualityCases.length > 0" class="runtime-quality-case-list">
+              <article
+                v-for="qualityCase in webSearchQualityCases"
+                :key="qualityCase.name"
+                :class="['runtime-card', `tone-${webSearchQualityToneForCase(qualityCase)}`]"
+              >
+                <div class="runtime-card-head">
+                  <strong>{{ qualityCase.name }}</strong>
+                  <span>{{ qualityCase.status }}</span>
+                </div>
+                <p>{{ qualityCase.summary }}</p>
+                <small>
+                  accepted {{ qualityCase.acceptedCount }} · rejected {{ qualityCase.rejectedCount }} · checks {{ qualityCase.passedCheckCount }}/{{ qualityCase.checkCount }}
+                </small>
+              </article>
+            </div>
+          </div>
         </div>
 
         <div class="card">
@@ -665,6 +704,8 @@ import {
   statusLabel,
   statusTone
 } from '@/utils/mcpServers'
+import { buildBrowserSessionTrendPoints, formatBrowserSessionHistoryLabel } from '@/utils/browserSessions'
+import { normalizeWebSearchQualityEvaluation, summarizeWebSearchQualityEvaluation, webSearchQualityTone } from '@/utils/webSearchQuality'
 
 const route = useRoute()
 const router = useRouter()
@@ -698,6 +739,7 @@ const tenantGovernance = computed(() => agentsStore.tenantGovernance)
 const opsGrafanaDashboard = computed(() => agentsStore.opsGrafanaDashboard)
 const redactionEvaluation = computed(() => agentsStore.redactionEvaluation)
 const subagentQualityEvaluation = computed(() => agentsStore.subagentQualityEvaluation)
+const webSearchQualityEvaluation = computed(() => normalizeWebSearchQualityEvaluation(agentsStore.webSearchQualityEvaluation))
 const workspaceInspection = computed(() => agentsStore.workspaceInspection || runtimeStatus.value?.workspace?.inspection || null)
 const workspaceCleanupResult = computed(() => agentsStore.workspaceCleanupResult)
 const fixedSkillIds = computed(() => skills.value
@@ -876,6 +918,10 @@ const browserSessionAlerts = computed(() => {
   const sessions = runtimeStatus.value?.web?.browserSessions || {}
   return Array.isArray(sessions.alerts) ? sessions.alerts.slice(-5).reverse() : []
 })
+const browserSessionTrendPoints = computed(() => {
+  const sessions = runtimeStatus.value?.web?.browserSessions || {}
+  return buildBrowserSessionTrendPoints(Array.isArray(sessions.history) ? sessions.history : []).slice(-8).reverse()
+})
 const currentRole = computed(() => String(authStore.user?.role || 'user').trim().toLowerCase())
 const showAdminOpsPanel = computed(() => ['operator', 'admin', 'system'].includes(currentRole.value))
 const activeRuntimeAlerts = computed(() => {
@@ -924,6 +970,10 @@ const opsMonitoringSummary = computed(() => {
   const datasource = opsMonitoring.value?.grafana?.datasource_uid || opsMonitoring.value?.grafana?.datasourceUid || '${DS_PROMETHEUS}'
   return `Prometheus scrape path ${opsMonitoringPrometheusPath.value} · Grafana datasource ${datasource}`
 })
+const runtimeWebSearchQuality = computed(() => runtimeStatus.value?.web?.searchQuality?.evaluation || null)
+const runtimeWebSearchQualitySummary = computed(() => summarizeWebSearchQualityEvaluation(runtimeWebSearchQuality.value))
+const webSearchQualitySummary = computed(() => summarizeWebSearchQualityEvaluation(webSearchQualityEvaluation.value))
+const webSearchQualityCases = computed(() => Array.isArray(webSearchQualityEvaluation.value?.results) ? webSearchQualityEvaluation.value.results : [])
 const tenantGovernanceSummary = computed(() => {
   const governance = tenantGovernance.value
   if (!governance) return ''
@@ -1208,63 +1258,25 @@ const runSubagentQualityEvaluation = async () => {
   if (!showAdminOpsPanel.value) return
   opsLoading.value = true
   try {
-    await agentsStore.evaluateSubagentQualityRules([
-      {
-        name: 'reviewer blocking finding recall',
-        kind: 'reviewer',
-        actual: {
-          decision: 'changes_requested',
-          approved: false,
-          blocking_finding_count: 1,
-          conclusion: 'Blocking security issue remains.',
-          findings: [
-            { title: 'Missing authorization check', severity: 'high', path: 'src/api.py', line: 10 }
-          ]
-        },
-        expected: {
-          decision: 'changes_requested',
-          approved: false,
-          min_blocking_findings: 1,
-          required_severities: ['high'],
-          findings: [
-            { title: 'Missing authorization check', path: 'src/api.py', line: 10 }
-          ],
-          requires_conclusion: true
-        }
-      },
-      {
-        name: 'tester verification structure',
-        kind: 'tester',
-        actual: {
-          payload: {
-            status: 'failed',
-            command: ['python', '-m', 'pytest'],
-            logs: { stdout: 'FAILED tests/test_app.py::test_app' },
-            structured_report: {
-              summary: { failed: 1 },
-              reports: [
-                {
-                  summary: { failed: 1 },
-                  failures: [{ title: 'tests/test_app.py::test_app' }]
-                }
-              ]
-            }
-          }
-        },
-        expected: {
-          status: 'failed',
-          min_failed_tests: 1,
-          required_failure_titles: ['tests/test_app.py::test_app'],
-          require_command: true,
-          require_logs: true,
-          require_structured_report: true
-        }
-      }
-    ], currentRole.value)
+    await agentsStore.evaluateSubagentQualityRules(null, currentRole.value)
     toastStore.showToast({ type: 'success', message: 'Subagent 质量评测已完成' })
   } catch (error) {
     console.error('Failed to evaluate subagent quality rules:', error)
     toastStore.showToast({ type: 'error', message: agentsStore.error || 'Subagent 质量评测失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
+const runWebSearchQualityEvaluation = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    await agentsStore.evaluateWebSearchQualityRules(null, currentRole.value)
+    toastStore.showToast({ type: 'success', message: 'Web 搜索质量评测已完成' })
+  } catch (error) {
+    console.error('Failed to evaluate web search quality rules:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || 'Web 搜索质量评测失败' })
   } finally {
     opsLoading.value = false
   }
@@ -1610,6 +1622,8 @@ const browserSessionAlertLabel = (alert = {}) => {
   return `${label}：${Number(alert.count || 0)} / ${Number(alert.threshold || 0)}`
 }
 
+const browserSessionHistoryLabel = (sample = {}) => formatBrowserSessionHistoryLabel(sample, formatDateTime)
+
 const tenantMetricTone = (metric = {}) => {
   if (metric.status === 'exceeded') return 'danger'
   if (metric.status === 'warning') return 'warning'
@@ -1648,6 +1662,8 @@ const recoveryActionLabel = (action = {}) => {
   if (action.tenant_scoped) details.push('租户级')
   return details.join(' · ')
 }
+
+const webSearchQualityToneForCase = (qualityCase = {}) => webSearchQualityTone(qualityCase.status)
 
 const workspaceLifecycleHistoryItemSummary = (item = {}) => {
   const inspection = item.inspection || {}
@@ -1726,6 +1742,24 @@ const runtimeGovernanceCards = computed(() => {
     [
       status.browser?.runtimeReason || '',
       status.browser?.sessionTtlSeconds ? `session ttl ${status.browser.sessionTtlSeconds}s` : ''
+    ].filter(Boolean).join(' · ')
+  )
+  const observabilityAudit = status.observability?.auditReport || null
+  const observabilityIssueCount = Array.isArray(observabilityAudit?.checks)
+    ? observabilityAudit.checks.filter((check) => ['warning', 'failed', 'fail', 'not_configured'].includes(check.status)).length
+    : 0
+  add(
+    'observability',
+    'Observability',
+    Boolean(status.observability?.enabled && observabilityAudit?.status !== 'failed'),
+    status.observability?.enabled
+      ? `可用工具 ${status.observability?.availableTools?.length || 0} 个，审计状态 ${observabilityAudit?.status || 'unknown'}。`
+      : 'observability provider 未启用。',
+    [
+      status.observability?.dbConfigured ? 'db configured' : '',
+      status.observability?.metricsUrlConfigured ? `metrics budget lines=${status.observability?.maxMetricLines || 0}, samples=${status.observability?.maxMetricSamples || 0}` : '',
+      status.observability?.allowedMetricNames?.length ? `metrics allowlist ${status.observability.allowedMetricNames.join(', ')}` : 'metrics allowlist 未配置',
+      observabilityIssueCount ? `${observabilityIssueCount} audit issues` : ''
     ].filter(Boolean).join(' · ')
   )
   add(
@@ -2244,6 +2278,37 @@ onMounted(async () => {
   margin-top: 12px;
 }
 
+.runtime-quality-baseline,
+.runtime-quality-case-list {
+  margin-top: 12px;
+}
+
+.runtime-quality-baseline {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(14, 165, 233, 0.16);
+  background: rgba(14, 165, 233, 0.05);
+}
+
+.runtime-quality-baseline span,
+.runtime-quality-case-list span {
+  display: block;
+  color: var(--gray-500);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-quality-baseline small {
+  display: block;
+  margin-top: 4px;
+  color: var(--gray-700);
+}
+
+.runtime-quality-case-list {
+  display: grid;
+  gap: 10px;
+}
+
 .runtime-health-summary span,
 .runtime-lock-summary span,
 .runtime-lifecycle-last-run span,
@@ -2262,6 +2327,7 @@ onMounted(async () => {
 
 .runtime-lifecycle-history ul,
 .runtime-alert-list ul,
+.runtime-browser-history ul,
 .runtime-recovery-list ul {
   display: grid;
   gap: 6px;
@@ -2271,6 +2337,7 @@ onMounted(async () => {
 
 .runtime-lifecycle-history li,
 .runtime-alert-list li,
+.runtime-browser-history li,
 .runtime-recovery-list li {
   color: var(--gray-700);
   font-size: 13px;
@@ -2278,6 +2345,7 @@ onMounted(async () => {
 
 .runtime-lifecycle-history strong,
 .runtime-alert-list strong,
+.runtime-browser-history strong,
 .runtime-recovery-list strong {
   color: var(--gray-900);
 }
@@ -2401,6 +2469,26 @@ onMounted(async () => {
 }
 
 .runtime-alert-list ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--gray-700);
+  font-size: 13px;
+}
+
+.runtime-browser-history {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(14, 165, 233, 0.16);
+}
+
+.runtime-browser-history span {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0369a1;
+}
+
+.runtime-browser-history ul {
   margin: 6px 0 0;
   padding-left: 18px;
   color: var(--gray-700);

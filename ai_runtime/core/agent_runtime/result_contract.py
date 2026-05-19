@@ -1929,6 +1929,31 @@ def _normalize_mcp_content_items(value: Any) -> list[dict[str, Any]]:
     return items
 
 
+def _normalize_mcp_governance_rows(value: Any) -> list[dict[str, Any]]:
+    rows = value if isinstance(value, list) else []
+    normalized: list[dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        server = item.get("server") if isinstance(item.get("server"), dict) else {}
+        availability = item.get("availability") if isinstance(item.get("availability"), dict) else {}
+        recovery = item.get("recovery") if isinstance(item.get("recovery"), dict) else {}
+        security = item.get("security_score") if isinstance(item.get("security_score"), dict) else {}
+        normalized.append(
+            {
+                "server_id": server.get("id"),
+                "server_name": server.get("name"),
+                "transport": server.get("transport"),
+                "status": server.get("status"),
+                "availability": availability.get("status"),
+                "risk_level": security.get("risk_level"),
+                "score": security.get("score"),
+                "summary": recovery.get("summary") or security.get("summary") or availability.get("summary"),
+            }
+        )
+    return normalized
+
+
 def _tool_artifact_name(tool_name: str, artifact_name: str | None, fallback: str) -> str:
     tool_label = str(tool_name or "").strip() or "Tool Result"
     base_name = str(artifact_name or "").strip() or fallback
@@ -2439,6 +2464,74 @@ def build_artifacts_from_tool_result(
                     "promoted_to_run": True,
                     "query": payload.get("query"),
                     "truncated": payload.get("truncated"),
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name == "mcp_catalog_status" and isinstance(payload.get("servers"), list):
+        promoted.append(
+            {
+                "artifact_type": "paged_collection",
+                "name": _tool_artifact_name(tool_name, None, "MCP Governance Snapshot"),
+                "payload": {
+                    "title": "MCP Governance Snapshot",
+                    "items": _normalize_mcp_governance_rows(payload.get("servers")),
+                    "summary": payload.get("summary") if isinstance(payload.get("summary"), dict) else {},
+                    "metadata": {
+                        "generated_at": payload.get("generated_at"),
+                        "tenant_id": payload.get("tenant_id"),
+                    },
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
+                },
+                "step_id": step_id,
+            }
+        )
+    elif tool_name in {"mcp_refresh_catalog", "mcp_test_connection", "mcp_recovery_plan", "mcp_tool_result_normalize"}:
+        text = ""
+        if tool_name == "mcp_tool_result_normalize":
+            text = str(payload.get("text") or payload.get("summary") or "")
+        else:
+            parts = []
+            if isinstance(payload.get("server"), dict):
+                parts.append(str(payload["server"].get("name") or payload["server"].get("id") or ""))
+            if isinstance(payload.get("summary"), str):
+                parts.append(str(payload.get("summary") or ""))
+            if isinstance(payload.get("recovery"), dict):
+                parts.append(str(payload["recovery"].get("summary") or ""))
+            if isinstance(payload.get("catalog"), dict):
+                parts.append(str(payload["catalog"].get("summary") or ""))
+            if isinstance(payload.get("result"), dict):
+                parts.append(str(payload["result"].get("error") or ""))
+            text = "\n".join(part for part in parts if part)
+        promoted.append(
+            {
+                "artifact_type": "document_excerpt",
+                "name": _tool_artifact_name(tool_name, None, "MCP Governance Detail"),
+                "payload": {
+                    "items": [
+                        {
+                            "title": tool_name,
+                            "text": text or json.dumps(payload, ensure_ascii=False, indent=2),
+                            "source": "mcp_governance",
+                            "metadata": {
+                                "status": payload.get("status") or (payload.get("recovery") or {}).get("status"),
+                                "server_id": payload.get("server_id") or (payload.get("server") or {}).get("id"),
+                            },
+                        }
+                    ]
+                },
+                "metadata": {
+                    "source": source,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "tool_call_id": tool_call_id,
+                    "promoted_to_run": True,
                 },
                 "step_id": step_id,
             }
