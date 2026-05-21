@@ -8,7 +8,6 @@ from fastapi.responses import Response, StreamingResponse
 
 from ai_runtime.core.agent_runtime import AgentRuntime
 from ai_runtime.core.agent_runtime.audit_view import evaluate_redaction_rules
-from ai_runtime.core.agent_runtime.execution_modes import normalize_execution_mode
 from ai_runtime.core.agent_runtime.models import (
     AgentRunEventListResponse,
     AgentRunListResponse,
@@ -99,18 +98,16 @@ async def list_tools(
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
     runtime = await get_started_agent_runtime()
-    agent_definition = None
-    if agent_definition_id:
-        agent_definition = await runtime.agent_repository.get_definition(agent_definition_id, tenant_id)
-    execution_mode = normalize_execution_mode(
-        agent_definition.get("config") if isinstance(agent_definition, dict) else None
-    ).model_dump()
-    tools = await runtime.list_tools(
+    result = await runtime.list_tools(
         tenant_id=tenant_id,
         user_id=user_id,
         agent_definition_id=agent_definition_id,
     )
-    return {"tools": tools, "total": len(tools), "execution_mode": execution_mode}
+    return {
+        "tools": result["tools"],
+        "total": len(result["tools"]),
+        "execution_mode": result["execution_mode"],
+    }
 
 
 @router.get("/workspace-sources")
@@ -243,9 +240,28 @@ async def evaluate_audit_redaction_rules(
     user_id: Optional[str] = Depends(get_current_user_id),
     viewer_role: str = Depends(get_current_viewer_role),
 ):
-    del tenant_id, user_id
     _require_admin_or_operator(viewer_role)
-    return evaluate_redaction_rules(test_cases)
+    runtime = await get_started_agent_runtime()
+    result = evaluate_redaction_rules(test_cases)
+    history_entry = await runtime._persist_evaluation_record(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        evaluation_type="audit_redaction",
+        suite_name="runtime.audit.redaction",
+        result=result,
+    )
+    history = await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type="audit_redaction",
+        limit=10,
+    )
+    return {
+        **result,
+        "history_entry": history_entry,
+        "history": history["history"],
+        "history_summary": history.get("history_summary"),
+        "history_comparison": history.get("history_comparison"),
+    }
 
 
 @router.post("/subagents/quality/evaluate")
@@ -255,9 +271,28 @@ async def evaluate_subagent_quality_rules(
     user_id: Optional[str] = Depends(get_current_user_id),
     viewer_role: str = Depends(get_current_viewer_role),
 ):
-    del tenant_id, user_id
     _require_admin_or_operator(viewer_role)
-    return evaluate_default_subagent_quality_suite(test_cases)
+    runtime = await get_started_agent_runtime()
+    result = evaluate_default_subagent_quality_suite(test_cases)
+    history_entry = await runtime._persist_evaluation_record(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        evaluation_type="subagent_quality",
+        suite_name=str(result.get("suite_name") or "runtime.subagents.quality"),
+        result=result,
+    )
+    history = await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type="subagent_quality",
+        limit=10,
+    )
+    return {
+        **result,
+        "history_entry": history_entry,
+        "history": history["history"],
+        "history_summary": history.get("history_summary"),
+        "history_comparison": history.get("history_comparison"),
+    }
 
 
 @router.post("/web/search-quality/evaluate")
@@ -267,9 +302,77 @@ async def evaluate_web_search_quality_rules(
     user_id: Optional[str] = Depends(get_current_user_id),
     viewer_role: str = Depends(get_current_viewer_role),
 ):
-    del tenant_id, user_id
     _require_admin_or_operator(viewer_role)
-    return evaluate_default_web_search_quality_suite(test_cases)
+    runtime = await get_started_agent_runtime()
+    result = evaluate_default_web_search_quality_suite(test_cases)
+    history_entry = await runtime._persist_evaluation_record(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        evaluation_type="web_search_quality",
+        suite_name=str(result.get("suite_name") or "runtime.web.search_quality"),
+        result=result,
+    )
+    history = await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type="web_search_quality",
+        limit=10,
+    )
+    return {
+        **result,
+        "history_entry": history_entry,
+        "history": history["history"],
+        "history_summary": history.get("history_summary"),
+        "history_comparison": history.get("history_comparison"),
+    }
+
+
+@router.post("/production-readiness/evaluate")
+async def evaluate_production_readiness_rules(
+    evidence: dict | None = None,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    result = runtime.evaluate_production_readiness(evidence=evidence or {})
+    history_entry = await runtime._persist_evaluation_record(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        evaluation_type="production_readiness",
+        suite_name=str(result.get("suite_name") or "runtime.production_readiness"),
+        result=result,
+    )
+    history = await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type="production_readiness",
+        limit=10,
+    )
+    return {
+        **result,
+        "history_entry": history_entry,
+        "history": history["history"],
+        "history_summary": history.get("history_summary"),
+        "history_comparison": history.get("history_comparison"),
+    }
+
+
+@router.get("/evaluations")
+async def list_evaluations(
+    evaluation_type: Optional[str] = Query(default=None),
+    limit: int = Query(default=10, ge=1, le=50),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type=evaluation_type,
+        limit=limit,
+    )
 
 
 @router.get("/workspaces")

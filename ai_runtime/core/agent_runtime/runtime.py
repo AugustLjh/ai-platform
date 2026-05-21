@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
-from ai_runtime.core.agent_runtime.execution_modes import normalize_execution_mode
+from ai_runtime.core.agent_runtime.execution_modes import (
+    annotate_tool_spec_for_execution_mode,
+    build_execution_mode_surface,
+    filter_tool_specs_for_execution_mode,
+    normalize_execution_mode,
+)
 from ai_runtime.core.agent_runtime.alerting import (
     AlertManager,
     SLOTracker,
@@ -42,6 +47,7 @@ from ai_runtime.core.agent_runtime.models import (
 from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
 from ai_runtime.core.agent_runtime.skills.registry import SkillRegistry
 from ai_runtime.core.agent_runtime.planner import AgentPlanner
+from ai_runtime.core.agent_runtime.production_readiness import evaluate_production_readiness
 from ai_runtime.core.agent_runtime.result_contract import hydrate_legacy_result, merge_artifacts
 from ai_runtime.core.agent_runtime.subagents.governance import prune_runtime_governance_ledger_for_resume
 from ai_runtime.core.agent_runtime.summarizer import AgentSummarizer
@@ -51,6 +57,7 @@ from ai_runtime.core.agent_runtime.tenant_governance import (
     fetch_tenant_runtime_usage,
 )
 from ai_runtime.core.agent_runtime.repositories.agent_repository import AgentRepository
+from ai_runtime.core.agent_runtime.repositories.evaluation_repository import EvaluationRepository
 from ai_runtime.core.agent_runtime.repositories.run_repository import RunRepository
 from ai_runtime.core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
 from ai_runtime.core.agent_runtime.subagents.handoff import SubagentHandoff
@@ -75,6 +82,7 @@ from ai_runtime.core.uploads.bundle_store import get_attachment_bundle_store, no
 class AgentRuntime:
     def __init__(self, db_pool) -> None:
         self.agent_repository = AgentRepository(db_pool)
+        self.evaluation_repository = EvaluationRepository(db_pool)
         self.run_repository = RunRepository(db_pool)
         self.tool_call_repository = ToolCallRepository(db_pool)
         self.subagent_invocation_repository = SubagentInvocationRepository(db_pool)
@@ -105,6 +113,7 @@ class AgentRuntime:
         self._workspace_lifecycle_last_run: dict[str, Any] | None = None
         self._workspace_lifecycle_history: list[dict[str, Any]] = []
         self._browser_session_history: list[dict[str, Any]] = []
+        self._evaluation_history: dict[str, list[dict[str, Any]]] = {}
         self.observability_provider = ObservabilityToolProvider.from_env(db_pool=db_pool)
         self.alert_manager = AlertManager(sinks=build_alert_sinks_from_env())
         self.slo_tracker = SLOTracker()
@@ -589,6 +598,9 @@ class AgentRuntime:
         datasource_uid = os.getenv("AGENT_GRAFANA_DATASOURCE_UID", "${DS_PROMETHEUS}").strip() or "${DS_PROMETHEUS}"
         return build_grafana_dashboard(datasource_uid=datasource_uid)
 
+    def evaluate_production_readiness(self, evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+        return evaluate_production_readiness(self.runtime_status(), evidence=evidence or {})
+
     def runtime_status(self) -> dict[str, Any]:
         workspace_inspection = self.workspace_manager.inspect_workspaces()
         lifecycle_policy = self.workspace_lifecycle.policy
@@ -632,6 +644,7 @@ class AgentRuntime:
                     "max_bytes": self.workspace_manager.config.max_bytes,
                     "retention_hours": self.workspace_manager.config.retention_hours,
                     "inspection": workspace_inspection,
+                    "binding_policies": self.workspace_manager.list_available_sources(max_entries=1, max_depth=0).get("binding_policies", {}),
                 },
                 "sandbox": {
                     "enabled": "sandbox-exec" in provider_name_set,
@@ -720,6 +733,406 @@ class AgentRuntime:
             "slo": self.slo_tracker.snapshot(),
         }
         return status
+
+    async def _persist_evaluation_record(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str | None,
+        evaluation_type: str,
+        suite_name: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary = {
+            "status": result.get("status"),
+            "total": int(result.get("total") or 0),
+            "passed": int(result.get("passed") or 0),
+            "warning": int(result.get("warning") or 0),
+            "failed": int(result.get("failed") or 0),
+            "average_score": float(result.get("average_score") or result.get("averageScore") or 0),
+            "summary": result.get("summary") or "",
+        }
+        if result.get("readiness"):
+            summary["readiness"] = result.get("readiness")
+        if isinstance(result.get("blocking_checks"), list):
+            summary["blocking_check_count"] = len(result.get("blocking_checks") or [])
+        evidence_quality = (
+            result.get("evidence_summary", {}).get("quality")
+            if isinstance(result.get("evidence_summary"), dict)
+            else None
+        )
+        if isinstance(evidence_quality, dict):
+            summary["evidence_quality_score"] = float(evidence_quality.get("average_quality_score") or 0)
+            summary["evidence_quality_failed_count"] = int(evidence_quality.get("quality_failed_count") or 0)
+        record = {
+            "tenant_id": tenant_id,
+            "evaluation_type": evaluation_type,
+            "suite_name": suite_name,
+            "status": str(result.get("status") or "unknown"),
+            "actor_user_id": user_id,
+            "summary": summary,
+            "payload": result,
+            "metadata": {"source": "agent_runtime"},
+        }
+        try:
+            stored = await self.evaluation_repository.create_evaluation(record)
+        except Exception:
+            stored = {
+                "id": "",
+                "tenant_id": tenant_id,
+                "evaluation_type": evaluation_type,
+                "suite_name": suite_name,
+                "status": summary["status"],
+                "actor_user_id": user_id,
+                "summary": summary,
+                "payload": result,
+                "metadata": {"source": "agent_runtime", "storage": "memory_fallback"},
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        bucket = self._evaluation_history.setdefault(evaluation_type, [])
+        bucket.insert(0, stored)
+        self._evaluation_history[evaluation_type] = bucket[:10]
+        return stored
+
+    def _summarize_evaluation_record(self, record: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(record, dict):
+            return {}
+        summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        comparison = self._build_evaluation_comparison(summary=summary, payload=payload)
+        if not comparison:
+            return {}
+        return {
+            "evaluation_type": record.get("evaluation_type"),
+            "suite_name": record.get("suite_name"),
+            "status": record.get("status") or summary.get("status") or "unknown",
+            "created_at": record.get("created_at"),
+            "comparison": comparison,
+        }
+
+    def _build_evaluation_comparison(self, *, summary: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        def _number(value: Any) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _int(value: Any) -> int:
+            return int(_number(value))
+
+        current_score = _number(summary.get("average_score") or summary.get("averageScore") or payload.get("average_score") or payload.get("averageScore") or 0)
+        current_status = str(summary.get("status") or payload.get("status") or "unknown")
+        current_total = _int(summary.get("total") or payload.get("total") or 0)
+        current_passed = _int(summary.get("passed") or payload.get("passed") or 0)
+        current_warning = _int(summary.get("warning") or payload.get("warning") or 0)
+        current_failed = _int(summary.get("failed") or payload.get("failed") or 0)
+        comparison = {
+            "current_score": round(current_score, 4),
+            "current_status": current_status,
+            "current_total": current_total,
+            "current_passed": current_passed,
+            "current_warning": current_warning,
+            "current_failed": current_failed,
+            "pass_ratio": round((current_passed / current_total), 4) if current_total else 1.0,
+        }
+        optional_metrics = {
+            "total_results": _int(payload.get("total_results")),
+            "accepted_count": _int(payload.get("accepted_count")),
+            "rejected_count": _int(payload.get("rejected_count")),
+            "check_count": _int(payload.get("check_count")),
+            "passed_check_count": _int(payload.get("passed_check_count")),
+            "failed_check_count": _int(payload.get("failed_check_count")),
+            "false_positive_count": _int(payload.get("false_positive_count")),
+            "false_negative_count": _int(payload.get("false_negative_count")),
+            "blocking_check_count": _int(summary.get("blocking_check_count") or len(payload.get("blocking_checks") or [])),
+            "evidence_quality_failed_count": _int(summary.get("evidence_quality_failed_count")),
+        }
+        if optional_metrics["total_results"] > 0:
+            comparison["accepted_ratio"] = round(optional_metrics["accepted_count"] / optional_metrics["total_results"], 4)
+        if optional_metrics["check_count"] > 0:
+            comparison["check_pass_ratio"] = round(optional_metrics["passed_check_count"] / optional_metrics["check_count"], 4)
+        for key, value in optional_metrics.items():
+            if value > 0 or key in {"false_positive_count", "false_negative_count"}:
+                comparison[key] = value
+        readiness = str(summary.get("readiness") or payload.get("readiness") or "").strip()
+        if readiness:
+            comparison["readiness"] = readiness
+        evidence_quality_score = _number(summary.get("evidence_quality_score"))
+        payload_evidence_summary = payload.get("evidence_summary") if isinstance(payload.get("evidence_summary"), dict) else {}
+        if evidence_quality_score or isinstance(payload_evidence_summary.get("quality"), dict):
+            comparison["evidence_quality_score"] = round(evidence_quality_score, 4)
+
+        summary_text = str(summary.get("summary") or payload.get("summary") or "").strip()
+        if summary_text:
+            comparison["summary"] = summary_text
+        return comparison
+
+    def _describe_evaluation_comparison_delta(
+        self,
+        current: dict[str, Any],
+        previous: dict[str, Any],
+    ) -> str:
+        if not current:
+            return ""
+
+        score_delta = round(float(current.get("current_score") or 0) - float(previous.get("current_score") or 0), 4) if previous else 0.0
+        passed_delta = int(current.get("current_passed") or 0) - int(previous.get("current_passed") or 0) if previous else 0
+        failed_delta = int(current.get("current_failed") or 0) - int(previous.get("current_failed") or 0) if previous else 0
+        warning_delta = int(current.get("current_warning") or 0) - int(previous.get("current_warning") or 0) if previous else 0
+
+        parts: list[str] = []
+        if not previous:
+            parts.append("baseline captured")
+        else:
+            if score_delta > 0:
+                parts.append(f"score improved by +{score_delta:.2f}")
+            elif score_delta < 0:
+                parts.append(f"score regressed by {score_delta:.2f}")
+            else:
+                parts.append("score unchanged")
+
+            if failed_delta < 0:
+                parts.append(f"{abs(failed_delta)} fewer failed cases")
+            elif failed_delta > 0:
+                parts.append(f"{failed_delta} more failed cases")
+
+            if warning_delta < 0:
+                parts.append(f"{abs(warning_delta)} fewer warnings")
+            elif warning_delta > 0:
+                parts.append(f"{warning_delta} more warnings")
+
+            if passed_delta > 0:
+                parts.append(f"{passed_delta} more passed cases")
+            elif passed_delta < 0:
+                parts.append(f"{abs(passed_delta)} fewer passed cases")
+
+            accepted_ratio_delta = round(
+                float(current.get("accepted_ratio") or 0) - float(previous.get("accepted_ratio") or 0),
+                4,
+            ) if previous and ("accepted_ratio" in current or "accepted_ratio" in previous) else 0.0
+            if accepted_ratio_delta > 0:
+                parts.append(f"accepted ratio +{accepted_ratio_delta:.2f}")
+            elif accepted_ratio_delta < 0:
+                parts.append(f"accepted ratio {accepted_ratio_delta:.2f}")
+
+            false_negative_delta = int(current.get("false_negative_count") or 0) - int(previous.get("false_negative_count") or 0) if previous else 0
+            if false_negative_delta < 0:
+                parts.append(f"{abs(false_negative_delta)} fewer false negatives")
+            elif false_negative_delta > 0:
+                parts.append(f"{false_negative_delta} more false negatives")
+
+            blocker_delta = int(current.get("blocking_check_count") or 0) - int(previous.get("blocking_check_count") or 0) if previous else 0
+            if blocker_delta < 0:
+                parts.append(f"{abs(blocker_delta)} fewer readiness blockers")
+            elif blocker_delta > 0:
+                parts.append(f"{blocker_delta} more readiness blockers")
+
+            quality_delta = round(
+                float(current.get("evidence_quality_score") or 0) - float(previous.get("evidence_quality_score") or 0),
+                4,
+            ) if previous and ("evidence_quality_score" in current or "evidence_quality_score" in previous) else 0.0
+            if quality_delta > 0:
+                parts.append(f"evidence quality +{quality_delta:.2f}")
+            elif quality_delta < 0:
+                parts.append(f"evidence quality {quality_delta:.2f}")
+
+        return " · ".join(parts)
+
+    def _build_evaluation_delta(
+        self,
+        current: dict[str, Any],
+        previous: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not current:
+            return {}
+        if not previous:
+            return {
+                "score": 0.0,
+                "passed": 0,
+                "warning": 0,
+                "failed": 0,
+                "total": 0,
+                "pass_ratio": 0.0,
+                "accepted_ratio": 0.0,
+                "check_pass_ratio": 0.0,
+                "false_positive_count": 0,
+                "false_negative_count": 0,
+                "blocking_check_count": 0,
+                "evidence_quality_score": 0.0,
+                "evidence_quality_failed_count": 0,
+            }
+        return {
+            "score": round(float(current.get("current_score") or 0) - float(previous.get("current_score") or 0), 4),
+            "passed": int(current.get("current_passed") or 0) - int(previous.get("current_passed") or 0),
+            "warning": int(current.get("current_warning") or 0) - int(previous.get("current_warning") or 0),
+            "failed": int(current.get("current_failed") or 0) - int(previous.get("current_failed") or 0),
+            "total": int(current.get("current_total") or 0) - int(previous.get("current_total") or 0),
+            "pass_ratio": round(float(current.get("pass_ratio") or 0) - float(previous.get("pass_ratio") or 0), 4),
+            "accepted_ratio": round(
+                float(current.get("accepted_ratio") or 0) - float(previous.get("accepted_ratio") or 0),
+                4,
+            ) if ("accepted_ratio" in current or "accepted_ratio" in previous) else 0.0,
+            "check_pass_ratio": round(
+                float(current.get("check_pass_ratio") or 0) - float(previous.get("check_pass_ratio") or 0),
+                4,
+            ) if ("check_pass_ratio" in current or "check_pass_ratio" in previous) else 0.0,
+            "false_positive_count": int(current.get("false_positive_count") or 0) - int(previous.get("false_positive_count") or 0),
+            "false_negative_count": int(current.get("false_negative_count") or 0) - int(previous.get("false_negative_count") or 0),
+            "blocking_check_count": int(current.get("blocking_check_count") or 0) - int(previous.get("blocking_check_count") or 0),
+            "evidence_quality_score": round(
+                float(current.get("evidence_quality_score") or 0) - float(previous.get("evidence_quality_score") or 0),
+                4,
+            ) if ("evidence_quality_score" in current or "evidence_quality_score" in previous) else 0.0,
+            "evidence_quality_failed_count": int(current.get("evidence_quality_failed_count") or 0) - int(previous.get("evidence_quality_failed_count") or 0),
+        }
+
+    def _build_evaluation_trend(
+        self,
+        summaries: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        entries = [item for item in summaries if isinstance(item, dict) and isinstance(item.get("comparison"), dict)]
+        if not entries:
+            return {}
+
+        def _score(entry: dict[str, Any]) -> float:
+            return float(entry.get("comparison", {}).get("current_score") or 0)
+
+        def _pass_ratio(entry: dict[str, Any]) -> float:
+            return float(entry.get("comparison", {}).get("pass_ratio") or 0)
+
+        current = entries[0].get("comparison", {})
+        baseline = entries[-1].get("comparison", {})
+        best_entry = max(entries, key=lambda item: (_score(item), _pass_ratio(item)))
+        worst_entry = min(entries, key=lambda item: (_score(item), _pass_ratio(item)))
+
+        score_values = [_score(item) for item in entries]
+        pass_ratio_values = [_pass_ratio(item) for item in entries]
+        accepted_ratio_values = [
+            float(item.get("comparison", {}).get("accepted_ratio"))
+            for item in entries
+            if "accepted_ratio" in item.get("comparison", {})
+        ]
+        check_pass_ratio_values = [
+            float(item.get("comparison", {}).get("check_pass_ratio"))
+            for item in entries
+            if "check_pass_ratio" in item.get("comparison", {})
+        ]
+        evidence_quality_values = [
+            float(item.get("comparison", {}).get("evidence_quality_score"))
+            for item in entries
+            if "evidence_quality_score" in item.get("comparison", {})
+        ]
+        delta_from_baseline = self._build_evaluation_delta(current, baseline)
+        delta_from_best = self._build_evaluation_delta(current, best_entry.get("comparison", {}))
+
+        score_delta = float(delta_from_baseline.get("score") or 0)
+        pass_ratio_delta = float(delta_from_baseline.get("pass_ratio") or 0)
+        if score_delta > 0.02 or pass_ratio_delta > 0.02:
+            direction = "improving"
+        elif score_delta < -0.02 or pass_ratio_delta < -0.02:
+            direction = "regressing"
+        else:
+            direction = "flat"
+
+        status_counts = {
+            "passed": sum(1 for item in entries if item.get("status") == "passed"),
+            "warning": sum(1 for item in entries if item.get("status") == "warning"),
+            "failed": sum(1 for item in entries if item.get("status") == "failed"),
+        }
+
+        parts = [f"recent {len(entries)}-run trend {direction}", f"avg score {sum(score_values) / len(score_values):.2f}"]
+        parts.append(f"best {float(best_entry.get('comparison', {}).get('current_score') or 0):.2f}")
+        if len(entries) > 1 and score_delta != 0:
+            parts.append(f"vs oldest {score_delta:+.2f}")
+        if len(entries) > 1 and pass_ratio_delta != 0:
+            parts.append(f"pass ratio {pass_ratio_delta:+.2f} vs oldest")
+
+        trend = {
+            "window_size": len(entries),
+            "direction": direction,
+            "status_counts": status_counts,
+            "average_score": round(sum(score_values) / len(score_values), 4),
+            "average_pass_ratio": round(sum(pass_ratio_values) / len(pass_ratio_values), 4),
+            "best_score": round(float(best_entry.get("comparison", {}).get("current_score") or 0), 4),
+            "best_pass_ratio": round(float(best_entry.get("comparison", {}).get("pass_ratio") or 0), 4),
+            "best_created_at": best_entry.get("created_at"),
+            "worst_score": round(float(worst_entry.get("comparison", {}).get("current_score") or 0), 4),
+            "worst_pass_ratio": round(float(worst_entry.get("comparison", {}).get("pass_ratio") or 0), 4),
+            "worst_created_at": worst_entry.get("created_at"),
+            "delta_from_baseline": delta_from_baseline,
+            "delta_from_best": delta_from_best,
+            "latest_created_at": entries[0].get("created_at"),
+            "baseline_created_at": entries[-1].get("created_at"),
+            "summary": " · ".join(parts),
+        }
+        if accepted_ratio_values:
+            trend["average_accepted_ratio"] = round(sum(accepted_ratio_values) / len(accepted_ratio_values), 4)
+        if check_pass_ratio_values:
+            trend["average_check_pass_ratio"] = round(sum(check_pass_ratio_values) / len(check_pass_ratio_values), 4)
+        if evidence_quality_values:
+            trend["average_evidence_quality_score"] = round(sum(evidence_quality_values) / len(evidence_quality_values), 4)
+        return trend
+
+    async def list_evaluation_history(
+        self,
+        *,
+        tenant_id: str,
+        evaluation_type: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        try:
+            records = await self.evaluation_repository.list_evaluations(
+                tenant_id=tenant_id,
+                evaluation_type=evaluation_type,
+                limit=limit,
+            )
+        except Exception:
+            if evaluation_type:
+                records = list(self._evaluation_history.get(evaluation_type, []))[:limit]
+            else:
+                merged: list[dict[str, Any]] = []
+                for items in self._evaluation_history.values():
+                    merged.extend(items)
+                records = sorted(
+                    merged,
+                    key=lambda item: str(item.get("created_at") or ""),
+                    reverse=True,
+                )[:limit]
+        summaries = [self._summarize_evaluation_record(record) for record in records]
+        latest = records[0] if records else None
+        previous = records[1] if len(records) > 1 else None
+        latest_summary = summaries[0] if summaries else {}
+        previous_summary = summaries[1] if len(summaries) > 1 else {}
+        trend = self._build_evaluation_trend(summaries)
+        comparison = {}
+        if latest_summary:
+            comparison = {
+                "current": latest_summary.get("comparison", {}),
+                "previous": previous_summary.get("comparison", {}),
+                "delta": {},
+                "trend": trend,
+                "window": {
+                    "count": len(records),
+                    "latest_created_at": latest_summary.get("created_at"),
+                    "previous_created_at": previous_summary.get("created_at"),
+                    "oldest_created_at": summaries[-1].get("created_at") if summaries else None,
+                },
+            }
+            current = comparison["current"] or {}
+            prior = comparison["previous"] or {}
+            comparison["delta"] = self._build_evaluation_delta(current, prior)
+            comparison["summary"] = self._describe_evaluation_comparison_delta(current, prior)
+        return {
+            "status": "completed",
+            "evaluation_type": evaluation_type,
+            "count": len(records),
+            "history": records,
+            "history_summary": {
+                **latest_summary,
+                "trend": trend,
+            } if latest_summary else {},
+            "history_comparison": comparison,
+        }
 
     async def start(self) -> None:
         if self._started:
@@ -938,24 +1351,19 @@ class AgentRuntime:
         execution_mode = normalize_execution_mode(
             agent_definition.get("config") if isinstance(agent_definition, dict) else None
         )
-        tools = await self.registry.list_specs(
+        catalog_tools = await self.registry.list_specs(
             context=ToolLookupContext(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 agent_definition_id=agent_definition_id,
             )
         )
-        return [
-            {
-                **tool,
-                "metadata": {
-                    **(tool.get("metadata") or {}),
-                    "execution_mode": execution_mode.name,
-                    "execution_mode_policy": execution_mode.model_dump(),
-                },
-            }
-            for tool in tools
-        ]
+        annotated_catalog = [annotate_tool_spec_for_execution_mode(tool, execution_mode) for tool in catalog_tools]
+        tools = [tool for tool in annotated_catalog if tool["metadata"].get("execution_mode_allowed")]
+        return {
+            "tools": tools,
+            "execution_mode": build_execution_mode_surface(annotated_catalog, execution_mode),
+        }
 
     async def list_workspace_sources(
         self,

@@ -21,6 +21,26 @@ import { redactRuntimePayload } from '@/utils/runtimeRedaction'
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
 const MCP_BULK_PREVIEW_STORAGE_KEY = 'mcp_bulk_preview_context'
 
+const normalizeEvaluationHistoryEntry = (raw = {}) => ({
+  id: raw.id || '',
+  tenantId: raw.tenant_id || raw.tenantId || '',
+  evaluationType: raw.evaluation_type || raw.evaluationType || '',
+  suiteName: raw.suite_name || raw.suiteName || '',
+  status: raw.status || 'unknown',
+  actorUserId: raw.actor_user_id || raw.actorUserId || '',
+  summary: raw.summary && typeof raw.summary === 'object' ? { ...raw.summary } : {},
+  payload: raw.payload && typeof raw.payload === 'object' ? { ...raw.payload } : {},
+  metadata: raw.metadata && typeof raw.metadata === 'object' ? { ...raw.metadata } : {},
+  createdAt: raw.created_at || raw.createdAt || null,
+  updatedAt: raw.updated_at || raw.updatedAt || null
+})
+
+const normalizeEvaluationHistoryEnvelope = (raw = {}) => ({
+  history: Array.isArray(raw?.history) ? raw.history.map(normalizeEvaluationHistoryEntry) : [],
+  historySummary: raw?.history_summary && typeof raw.history_summary === 'object' ? { ...raw.history_summary } : null,
+  historyComparison: raw?.history_comparison && typeof raw.history_comparison === 'object' ? { ...raw.history_comparison } : null
+})
+
 export const redactMCPBulkPreviewForStorage = (preview = null) => {
   if (!preview || typeof preview !== 'object') return null
   return {
@@ -311,8 +331,21 @@ const normalizeExecutionMode = (raw = {}) => ({
   capabilities: Array.isArray(raw.capabilities) ? [...raw.capabilities] : [],
   riskLevel: raw.risk_level || raw.riskLevel || 'low',
   source: raw.source || 'default',
+  recommendedUsage: raw.recommended_usage || raw.recommendedUsage || '',
   allowedModes: Array.isArray(raw.allowed_modes || raw.allowedModes)
     ? [...(raw.allowed_modes || raw.allowedModes)]
+    : [],
+  catalogToolCount: Number(raw.catalog_tool_count || raw.catalogToolCount || 0),
+  allowedToolCount: Number(raw.allowed_tool_count || raw.allowedToolCount || 0),
+  blockedToolCount: Number(raw.blocked_tool_count || raw.blockedToolCount || 0),
+  capabilityDetails: Array.isArray(raw.capability_details || raw.capabilityDetails)
+    ? [...(raw.capability_details || raw.capabilityDetails)]
+    : [],
+  toolFamilies: Array.isArray(raw.tool_families || raw.toolFamilies)
+    ? [...(raw.tool_families || raw.toolFamilies)]
+    : [],
+  blockedToolsPreview: Array.isArray(raw.blocked_tools_preview || raw.blockedToolsPreview)
+    ? [...(raw.blocked_tools_preview || raw.blockedToolsPreview)]
     : []
 })
 
@@ -346,6 +379,19 @@ export const useAgentsStore = defineStore('agents', {
     redactionEvaluation: null,
     subagentQualityEvaluation: null,
     webSearchQualityEvaluation: null,
+    productionReadinessEvaluation: null,
+    evaluationHistory: {
+      audit_redaction: [],
+      subagent_quality: [],
+      web_search_quality: [],
+      production_readiness: []
+    },
+    evaluationHistoryMeta: {
+      audit_redaction: null,
+      subagent_quality: null,
+      web_search_quality: null,
+      production_readiness: null
+    },
     runAuditView: null,
     workspaceInspection: null,
     workspaceCleanupResult: null,
@@ -1093,7 +1139,13 @@ export const useAgentsStore = defineStore('agents', {
     async evaluateAuditRedactionRules(testCases = [], role = 'user') {
       try {
         const { data } = await agentsAPI.evaluateAuditRedactionRules(testCases, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
         this.redactionEvaluation = data || null
+        this.evaluationHistory.audit_redaction = envelope.history
+        this.evaluationHistoryMeta.audit_redaction = {
+          historySummary: envelope.historySummary,
+          historyComparison: envelope.historyComparison
+        }
         return this.redactionEvaluation
       } catch (error) {
         this.setError(error, 'Failed to evaluate audit redaction rules')
@@ -1104,7 +1156,13 @@ export const useAgentsStore = defineStore('agents', {
     async evaluateSubagentQualityRules(testCases = null, role = 'user') {
       try {
         const { data } = await agentsAPI.evaluateSubagentQualityRules(testCases, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
         this.subagentQualityEvaluation = data || null
+        this.evaluationHistory.subagent_quality = envelope.history
+        this.evaluationHistoryMeta.subagent_quality = {
+          historySummary: envelope.historySummary,
+          historyComparison: envelope.historyComparison
+        }
         return this.subagentQualityEvaluation
       } catch (error) {
         this.setError(error, 'Failed to evaluate subagent quality rules')
@@ -1115,10 +1173,52 @@ export const useAgentsStore = defineStore('agents', {
     async evaluateWebSearchQualityRules(testCases = null, role = 'user') {
       try {
         const { data } = await agentsAPI.evaluateWebSearchQualityRules(testCases, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
         this.webSearchQualityEvaluation = normalizeWebSearchQualityEvaluation(data || null)
+        this.evaluationHistory.web_search_quality = envelope.history
+        this.evaluationHistoryMeta.web_search_quality = {
+          historySummary: envelope.historySummary,
+          historyComparison: envelope.historyComparison
+        }
         return this.webSearchQualityEvaluation
       } catch (error) {
         this.setError(error, 'Failed to evaluate web search quality rules')
+        throw error
+      }
+    },
+
+    async evaluateProductionReadiness(evidence = {}, role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateProductionReadiness(evidence, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
+        this.productionReadinessEvaluation = data || null
+        this.evaluationHistory.production_readiness = envelope.history
+        this.evaluationHistoryMeta.production_readiness = {
+          historySummary: envelope.historySummary,
+          historyComparison: envelope.historyComparison
+        }
+        return this.productionReadinessEvaluation
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate production readiness')
+        throw error
+      }
+    },
+
+    async fetchEvaluationHistory(evaluationType = '', limit = 10, role = 'user') {
+      try {
+        const { data } = await agentsAPI.listEvaluationHistory(evaluationType, limit, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
+        const history = envelope.history
+        if (evaluationType) {
+          this.evaluationHistory[evaluationType] = history
+          this.evaluationHistoryMeta[evaluationType] = {
+            historySummary: envelope.historySummary,
+            historyComparison: envelope.historyComparison
+          }
+        }
+        return history
+      } catch (error) {
+        this.setError(error, 'Failed to fetch evaluation history')
         throw error
       }
     },

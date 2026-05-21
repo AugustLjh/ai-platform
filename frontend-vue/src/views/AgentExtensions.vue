@@ -302,6 +302,42 @@
             <span>执行模式</span>
             <strong>{{ executionModeLabel }}</strong>
             <p>{{ executionModeSummary }}</p>
+            <small v-if="executionModeRecommendedUsage">{{ executionModeRecommendedUsage }}</small>
+            <small v-if="executionModeCatalogSummary">{{ executionModeCatalogSummary }}</small>
+          </div>
+
+          <div v-if="executionModeCapabilityDetails.length > 0" class="execution-mode-explainer">
+            <div class="section-head compact">
+              <div>
+                <h3>能力边界解释</h3>
+                <p>按 capability family 展示当前 mode 是否允许、为什么允许，以及影响了哪些工具族。</p>
+              </div>
+            </div>
+            <div class="capability-grid">
+              <article v-for="capability in executionModeCapabilityDetails" :key="capability.key" :class="['capability-item', `status-${capability.enabled ? 'ready' : 'missing'}`]">
+                <div>
+                  <strong>{{ capability.label }}</strong>
+                  <p>{{ capability.summary }}</p>
+                  <small v-if="capability.allowedModes?.length">允许模式: {{ capability.allowedModes.join(' / ') }}</small>
+                  <small v-if="capability.blockReason">{{ capability.blockReason }}</small>
+                </div>
+                <span>{{ capability.enabled ? '允许' : '阻断' }}</span>
+              </article>
+            </div>
+          </div>
+
+          <div v-if="executionModeToolFamilies.length > 0" class="runtime-quality-baseline">
+            <span>工具族映射</span>
+            <small v-for="family in executionModeToolFamilies" :key="family.key">
+              {{ family.label }} · {{ family.allowedToolCount }}/{{ family.toolCount }} · {{ family.toolNamesPreview?.join(', ') }}
+            </small>
+          </div>
+
+          <div v-if="executionModeBlockedToolsPreview.length > 0" class="runtime-quality-baseline">
+            <span>被当前模式阻断的工具预览</span>
+            <small v-for="tool in executionModeBlockedToolsPreview" :key="`${tool.name}-${tool.capabilityFamily}`">
+              {{ tool.name }} · {{ tool.capabilityFamily }} · {{ tool.blockReason }}
+            </small>
           </div>
 
           <div class="capability-grid">
@@ -380,6 +416,19 @@
           <div v-if="workspaceInspectionSummary" class="runtime-inspection-panel">
             <strong>Workspace 生命周期</strong>
             <p>{{ workspaceInspectionSummary }}</p>
+            <div v-if="workspaceBindingPoliciesSummary" class="runtime-health-summary">
+              <span>绑定与回写边界</span>
+              <p>{{ workspaceBindingPoliciesSummary }}</p>
+            </div>
+            <div v-if="workspaceSourceRiskHints.length > 0" class="runtime-recovery-list">
+              <span>Workspace 来源风险提示</span>
+              <ul>
+                <li v-for="hint in workspaceSourceRiskHints" :key="hint.key">
+                  <strong>{{ hint.label }}</strong>
+                  <span>{{ hint.summary }}</span>
+                </li>
+              </ul>
+            </div>
             <div v-if="workspaceHealthSummary" class="runtime-health-summary">
               <span>健康摘要</span>
               <p>{{ workspaceHealthSummary }}</p>
@@ -617,6 +666,10 @@
               漏报 {{ redactionEvaluation.false_negative_count || redactionEvaluation.falseNegativeCount || 0 }}
             </p>
             <p v-else>使用内置样例评估 password、API key、Bearer、GitHub token 和普通字段的边界。</p>
+            <div v-if="redactionEvaluationHistorySummary" class="runtime-quality-baseline">
+              <span>历史对比</span>
+              <small>{{ redactionEvaluationHistorySummary }}</small>
+            </div>
           </div>
 
           <div class="runtime-quality-panel">
@@ -632,6 +685,10 @@
               平均分 {{ Number(subagentQualityEvaluation.average_score || subagentQualityEvaluation.averageScore || 0).toFixed(2) }}
             </p>
             <p v-else>使用内置样例评估 reviewer 阻断发现召回和 tester 结构化验证报告完整度。</p>
+            <div v-if="subagentEvaluationHistorySummary" class="runtime-quality-baseline">
+              <span>历史对比</span>
+              <small>{{ subagentEvaluationHistorySummary }}</small>
+            </div>
           </div>
 
           <div class="runtime-quality-panel">
@@ -651,6 +708,10 @@
             <div v-if="webSearchQualityRejectionSummary" class="runtime-quality-baseline">
               <span>累计拒绝原因</span>
               <small>{{ webSearchQualityRejectionSummary }}</small>
+            </div>
+            <div v-if="webSearchEvaluationHistorySummary" class="runtime-quality-baseline">
+              <span>历史对比</span>
+              <small>{{ webSearchEvaluationHistorySummary }}</small>
             </div>
             <div v-if="webSearchQualityCaseSummaries.length > 0" class="runtime-quality-baseline">
               <span>案例摘要</span>
@@ -686,6 +747,38 @@
                   </small>
                 </div>
               </article>
+            </div>
+          </div>
+
+          <div class="runtime-quality-panel">
+            <div class="runtime-card-head">
+              <strong>生产就绪证据 Gate</strong>
+              <button type="button" class="btn btn-secondary btn-inline" :disabled="opsLoading" @click="runProductionReadinessEvaluation">
+                {{ opsLoading ? '评测中...' : '运行 Gate' }}
+              </button>
+            </div>
+            <p>{{ productionReadinessSummary || '校验 sandbox、workspace、web/browser/pdf、observability 和 subagents 的压测与真实回放证据。' }}</p>
+            <div v-if="productionReadinessHistorySummary" class="runtime-quality-baseline">
+              <span>历史对比</span>
+              <small>{{ productionReadinessHistorySummary }}</small>
+            </div>
+            <div v-if="productionReadinessBlockingChecks.length > 0" class="runtime-recovery-list">
+              <span>阻断项</span>
+              <ul>
+                <li v-for="item in productionReadinessBlockingChecks.slice(0, 5)" :key="`${item.subsystem}-${item.key}`">
+                  <strong>{{ item.subsystem }} · {{ item.key }}</strong>
+                  <span>{{ item.summary }}</span>
+                </li>
+              </ul>
+            </div>
+            <div v-if="productionReadinessEvidenceIssues.length > 0" class="runtime-recovery-list">
+              <span>证据质量缺口</span>
+              <ul>
+                <li v-for="item in productionReadinessEvidenceIssues" :key="`${item.subsystem}-${item.key}`">
+                  <strong>{{ item.subsystem }} · {{ item.key }}</strong>
+                  <span>{{ Array.isArray(item.issues) ? item.issues.join(' · ') : '' }}</span>
+                </li>
+              </ul>
             </div>
           </div>
         </div>
@@ -736,6 +829,7 @@ import {
   summarizeWebSearchQualityEvaluation,
   webSearchQualityTone
 } from '@/utils/webSearchQuality'
+import { summarizeEvaluationHistory as summarizeEvaluationHistorySummary } from '@/utils/evaluationHistory'
 
 const route = useRoute()
 const router = useRouter()
@@ -770,6 +864,8 @@ const opsGrafanaDashboard = computed(() => agentsStore.opsGrafanaDashboard)
 const redactionEvaluation = computed(() => agentsStore.redactionEvaluation)
 const subagentQualityEvaluation = computed(() => agentsStore.subagentQualityEvaluation)
 const webSearchQualityEvaluation = computed(() => normalizeWebSearchQualityEvaluation(agentsStore.webSearchQualityEvaluation))
+const productionReadinessEvaluation = computed(() => agentsStore.productionReadinessEvaluation)
+const evaluationHistory = computed(() => agentsStore.evaluationHistory || {})
 const workspaceInspection = computed(() => agentsStore.workspaceInspection || runtimeStatus.value?.workspace?.inspection || null)
 const workspaceCleanupResult = computed(() => agentsStore.workspaceCleanupResult)
 const fixedSkillIds = computed(() => skills.value
@@ -838,6 +934,36 @@ const workspaceRecoveryActions = computed(() => {
       ? runtimeStatus.value.workspaceLifecycle.recoveryActions
       : []
   return actions
+})
+const workspaceBindingPoliciesSummary = computed(() => {
+  const policies = runtimeStatus.value?.workspace?.bindingPolicies || {}
+  const existing = policies.existing_source || policies.existingSource || null
+  const bundle = policies.upload_bundle || policies.uploadBundle || null
+  const parts = []
+  if (existing?.summary) parts.push(`已有目录: ${existing.summary}`)
+  if (bundle?.summary) parts.push(`上传副本: ${bundle.summary}`)
+  return parts.join(' · ')
+})
+const workspaceSourceRiskHints = computed(() => {
+  const policies = runtimeStatus.value?.workspace?.bindingPolicies || {}
+  const hints = []
+  const existing = policies.existing_source || policies.existingSource || null
+  const bundle = policies.upload_bundle || policies.uploadBundle || null
+  if (existing) {
+    hints.push({
+      key: 'existing-source',
+      label: '已有 source root',
+      summary: existing.summary || '可回写，但必须先 dry-run，再由用户显式 confirmed apply。'
+    })
+  }
+  if (bundle) {
+    hints.push({
+      key: 'upload-bundle',
+      label: '上传 bundle',
+      summary: bundle.summary || '只能生成隔离副本，不能回写到原仓库。'
+    })
+  }
+  return hints
 })
 const workspaceLifecycleLastRunSummary = computed(() => {
   const lifecycle = runtimeStatus.value?.workspaceLifecycle
@@ -1046,6 +1172,30 @@ const webSearchQualityRejectionSummary = computed(() => {
     .map(([reason, count]) => `${reason} x${count}`)
   return parts.join(' · ')
 })
+const evaluationHistoryMeta = computed(() => agentsStore.evaluationHistoryMeta || {})
+const redactionEvaluationHistorySummary = computed(() => summarizeEvaluationHistorySummary(evaluationHistory.value.audit_redaction, evaluationHistoryMeta.value.audit_redaction, formatDateTime))
+const subagentEvaluationHistorySummary = computed(() => summarizeEvaluationHistorySummary(evaluationHistory.value.subagent_quality, evaluationHistoryMeta.value.subagent_quality, formatDateTime))
+const webSearchEvaluationHistorySummary = computed(() => summarizeEvaluationHistorySummary(evaluationHistory.value.web_search_quality, evaluationHistoryMeta.value.web_search_quality, formatDateTime))
+const productionReadinessHistorySummary = computed(() => summarizeEvaluationHistorySummary(evaluationHistory.value.production_readiness, evaluationHistoryMeta.value.production_readiness, formatDateTime))
+const productionReadinessQuality = computed(() => {
+  const quality = productionReadinessEvaluation.value?.evidence_summary?.quality || productionReadinessEvaluation.value?.evidenceSummary?.quality || null
+  return quality && typeof quality === 'object' ? quality : null
+})
+const productionReadinessSummary = computed(() => {
+  const evaluation = productionReadinessEvaluation.value
+  if (!evaluation) return ''
+  const quality = productionReadinessQuality.value
+  const qualityPart = quality ? ` · 证据质量 ${Number(quality.average_quality_score || quality.averageQualityScore || 0).toFixed(2)}` : ''
+  return `${evaluation.readiness || evaluation.status || 'unknown'} · ${evaluation.summary || ''} · 通过 ${Number(evaluation.passed || 0)}/${Number(evaluation.total || 0)}${qualityPart}`
+})
+const productionReadinessBlockingChecks = computed(() => {
+  const checks = productionReadinessEvaluation.value?.blocking_checks || productionReadinessEvaluation.value?.blockingChecks || []
+  return Array.isArray(checks) ? checks : []
+})
+const productionReadinessEvidenceIssues = computed(() => {
+  const failing = productionReadinessQuality.value?.failing_quality || productionReadinessQuality.value?.failingQuality || []
+  return Array.isArray(failing) ? failing.slice(0, 5) : []
+})
 const tenantGovernanceSummary = computed(() => {
   const governance = tenantGovernance.value
   if (!governance) return ''
@@ -1098,7 +1248,11 @@ const loadPage = async () => {
     agentsStore.fetchTools(agentId).catch(() => []),
     agentsStore.fetchRuntimeStatus().catch(() => []),
     showAdminOpsPanel.value ? agentsStore.fetchOpsStatus(currentRole.value).catch(() => null) : Promise.resolve(null),
-    showAdminOpsPanel.value ? agentsStore.fetchTenantGovernance(currentRole.value).catch(() => null) : Promise.resolve(null)
+    showAdminOpsPanel.value ? agentsStore.fetchTenantGovernance(currentRole.value).catch(() => null) : Promise.resolve(null),
+    showAdminOpsPanel.value ? agentsStore.fetchEvaluationHistory('audit_redaction', 10, currentRole.value).catch(() => []) : Promise.resolve([]),
+    showAdminOpsPanel.value ? agentsStore.fetchEvaluationHistory('subagent_quality', 10, currentRole.value).catch(() => []) : Promise.resolve([]),
+    showAdminOpsPanel.value ? agentsStore.fetchEvaluationHistory('web_search_quality', 10, currentRole.value).catch(() => []) : Promise.resolve([]),
+    showAdminOpsPanel.value ? agentsStore.fetchEvaluationHistory('production_readiness', 10, currentRole.value).catch(() => []) : Promise.resolve([])
   ])
   syncSelections()
 }
@@ -1354,6 +1508,20 @@ const runWebSearchQualityEvaluation = async () => {
   }
 }
 
+const runProductionReadinessEvaluation = async () => {
+  if (!showAdminOpsPanel.value) return
+  opsLoading.value = true
+  try {
+    await agentsStore.evaluateProductionReadiness({}, currentRole.value)
+    toastStore.showToast({ type: 'success', message: '生产就绪证据 gate 已完成' })
+  } catch (error) {
+    console.error('Failed to evaluate production readiness:', error)
+    toastStore.showToast({ type: 'error', message: agentsStore.error || '生产就绪评测失败' })
+  } finally {
+    opsLoading.value = false
+  }
+}
+
 const handleMCPWarningAction = async (warning) => {
   if (!warning?.action || !warning?.serverId) return
   warningActionBusyKey.value = warning.id
@@ -1474,6 +1642,40 @@ const executionModeSummary = computed(() => {
   }
   return fallback[executionModeName.value] || '当前 agent 未声明执行模式，按只读上下文处理。'
 })
+const executionModeRecommendedUsage = computed(() => executionMode.value?.recommendedUsage || executionMode.value?.recommended_usage || '')
+const executionModeCatalogSummary = computed(() => {
+  const allowed = Number(executionMode.value?.allowedToolCount || executionMode.value?.allowed_tool_count || availableTools.value.length || 0)
+  const blocked = Number(executionMode.value?.blockedToolCount || executionMode.value?.blocked_tool_count || 0)
+  const total = Number(executionMode.value?.catalogToolCount || executionMode.value?.catalog_tool_count || (allowed + blocked))
+  if (!total) return ''
+  return `工具目录 ${total} 个，本模式放行 ${allowed} 个，阻断 ${blocked} 个`
+})
+const executionModeCapabilityDetails = computed(() => Array.isArray(executionMode.value?.capabilityDetails || executionMode.value?.capability_details)
+  ? (executionMode.value.capabilityDetails || executionMode.value.capability_details).map((item) => ({
+      key: item.key || '',
+      label: item.label || item.key || '',
+      summary: item.summary || '',
+      enabled: Boolean(item.enabled),
+      allowedModes: Array.isArray(item.allowed_modes || item.allowedModes) ? [...(item.allowed_modes || item.allowedModes)] : [],
+      blockReason: item.block_reason || item.blockReason || ''
+    }))
+  : [])
+const executionModeToolFamilies = computed(() => Array.isArray(executionMode.value?.toolFamilies || executionMode.value?.tool_families)
+  ? (executionMode.value.toolFamilies || executionMode.value.tool_families).slice(0, 8).map((item) => ({
+      key: item.key || '',
+      label: item.label || item.key || '',
+      toolCount: Number(item.tool_count || item.toolCount || 0),
+      allowedToolCount: Number(item.allowed_tool_count || item.allowedToolCount || 0),
+      toolNamesPreview: Array.isArray(item.tool_names_preview || item.toolNamesPreview) ? [...(item.tool_names_preview || item.toolNamesPreview)] : []
+    }))
+  : [])
+const executionModeBlockedToolsPreview = computed(() => Array.isArray(executionMode.value?.blockedToolsPreview || executionMode.value?.blocked_tools_preview)
+  ? (executionMode.value.blockedToolsPreview || executionMode.value.blocked_tools_preview).map((item) => ({
+      name: item.name || '',
+      capabilityFamily: item.capability_family || item.capabilityFamily || '',
+      blockReason: item.block_reason || item.blockReason || ''
+    }))
+  : [])
 
 const effectiveCapabilities = computed(() => {
   const projectContextCount = capabilityToolCount((tool) => tool.kind === 'project-context' || tool.kind === 'engineering' || tool.metadata?.provider === 'project-context')

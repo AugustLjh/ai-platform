@@ -173,6 +173,23 @@ export const agentsAPI = {
     })
   },
 
+  evaluateProductionReadiness(evidence = {}, role = 'user') {
+    return api.post('/api/v1/agents/production-readiness/evaluate', evidence || {}, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  listEvaluationHistory(evaluationType = '', limit = 10, role = 'user') {
+    const params = { limit }
+    if (evaluationType) {
+      params.evaluation_type = evaluationType
+    }
+    return api.get('/api/v1/agents/evaluations', {
+      params,
+      headers: { 'X-User-Role': role }
+    })
+  },
+
   listTools(agentDefinitionId = '') {
     const params = {}
     if (agentDefinitionId) {

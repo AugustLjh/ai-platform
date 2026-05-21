@@ -10,6 +10,7 @@ from ai_runtime.core.agent_runtime.context_compressor import (
     ContextCompressor,
 )
 from ai_runtime.core.agent_runtime.executor import AgentExecutor
+from ai_runtime.core.agent_runtime.execution_modes import filter_tool_specs_for_execution_mode, normalize_execution_mode
 from ai_runtime.core.agent_runtime.events import sanitize_runtime_payload
 from ai_runtime.core.agent_runtime.intent import IntentPreprocessor
 from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
@@ -2501,6 +2502,8 @@ class AgentOrchestrator:
                 managed_subagent=managed_subagent,
             )
         )
+        execution_mode = normalize_execution_mode(definition.config)
+        available_tools = filter_tool_specs_for_execution_mode(available_tools, execution_mode)
         if managed_subagent is not None and managed_subagent.tool_allowlist:
             allowed_tool_names = {tool_name for tool_name in managed_subagent.tool_allowlist if str(tool_name).strip()}
             available_tools = [tool for tool in available_tools if tool["name"] in allowed_tool_names]
