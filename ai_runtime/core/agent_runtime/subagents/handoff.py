@@ -5,7 +5,7 @@ from typing import Any, Awaitable, Callable
 
 from ai_runtime.core.agent_runtime.models import PlannerAction
 from ai_runtime.core.agent_runtime.repositories.subagent_invocation_repository import SubagentInvocationRepository
-from ai_runtime.core.agent_runtime.result_contract import hydrate_legacy_result
+from ai_runtime.contracts import hydrate_legacy_result
 from ai_runtime.core.agent_runtime.subagents.governance import (
     annotate_governance_policy,
     build_governance_policy,

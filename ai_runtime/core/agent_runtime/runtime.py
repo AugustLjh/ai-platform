@@ -48,7 +48,7 @@ from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
 from ai_runtime.core.agent_runtime.skills.registry import SkillRegistry
 from ai_runtime.core.agent_runtime.planner import AgentPlanner
 from ai_runtime.core.agent_runtime.production_readiness import evaluate_production_readiness
-from ai_runtime.core.agent_runtime.result_contract import hydrate_legacy_result, merge_artifacts
+from ai_runtime.contracts import hydrate_legacy_result, merge_artifacts
 from ai_runtime.core.agent_runtime.subagents.governance import prune_runtime_governance_ledger_for_resume
 from ai_runtime.core.agent_runtime.summarizer import AgentSummarizer
 from ai_runtime.core.agent_runtime.tenant_governance import (
@@ -80,7 +80,10 @@ from ai_runtime.core.uploads.bundle_store import get_attachment_bundle_store, no
 
 
 class AgentRuntime:
+    _instance: "AgentRuntime | None" = None
+
     def __init__(self, db_pool) -> None:
+        AgentRuntime._instance = self
         self.agent_repository = AgentRepository(db_pool)
         self.evaluation_repository = EvaluationRepository(db_pool)
         self.run_repository = RunRepository(db_pool)
@@ -1417,7 +1420,24 @@ class AgentRuntime:
         if existing and not existing.done():
             return
         self.state_store.reset_cancel(run_id)
-        task = asyncio.create_task(self.orchestrator.start_run(run_id))
+
+        import os
+
+        if os.getenv("AI_RUNTIME_AGENT_GRAPH", "").lower() in {"1", "true", "yes"}:
+            from ai_runtime.graphs.agent import build_agent_graph
+
+            if not hasattr(self, "_agent_graph"):
+                self._agent_graph = build_agent_graph()
+
+            async def _run_via_graph() -> None:
+                config = {"configurable": {"thread_id": f"agent:{run_id}"}}
+                state = {"run_id": run_id, "iteration": 0}
+                await self._agent_graph.ainvoke(state, config=config)
+
+            task = asyncio.create_task(_run_via_graph())
+        else:
+            task = asyncio.create_task(self.orchestrator.start_run(run_id))
+
         self.state_store.register_task(run_id, task)
 
     async def get_run(self, run_id: str, tenant_id: Optional[str]) -> AgentRunSummaryResponse:

@@ -14,7 +14,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12\x63hat_service.proto\x12\nai.chat.v1\"\xe8\x01\n\x0b\x43hatRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x11\n\ttenant_id\x18\x03 \x01(\t\x12\x0f\n\x07message\x18\x04 \x01(\t\x12\x37\n\x08metadata\x18\x05 \x03(\x0b\x32%.ai.chat.v1.ChatRequest.MetadataEntry\x12&\n\x06\x63onfig\x18\x06 \x01(\x0b\x32\x16.ai.chat.v1.ChatConfig\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"d\n\nChatConfig\x12\r\n\x05model\x18\x01 \x01(\t\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\x12\x12\n\nmax_tokens\x18\x03 \x01(\x05\x12\x0f\n\x07use_rag\x18\x04 \x01(\x08\x12\r\n\x05tools\x18\x06 \x03(\t\"\x96\x02\n\x0c\x43hatResponse\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x12\n\nmessage_id\x18\x02 \x01(\t\x12&\n\x04type\x18\x03 \x01(\x0e\x32\x18.ai.chat.v1.ResponseType\x12\x0f\n\x07\x63ontent\x18\x04 \x01(\t\x12+\n\x0btoken_usage\x18\x05 \x01(\x0b\x32\x16.ai.chat.v1.TokenUsage\x12\r\n\x05\x65rror\x18\x06 \x01(\t\x12\x38\n\x08metadata\x18\x07 \x03(\x0b\x32&.ai.chat.v1.ChatResponse.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"b\n\nTokenUsage\x12\x15\n\rprompt_tokens\x18\x01 \x01(\x05\x12\x19\n\x11\x63ompletion_tokens\x18\x02 \x01(\x05\x12\x14\n\x0ctotal_tokens\x18\x03 \x01(\x05\x12\x0c\n\x04\x63ost\x18\x04 \x01(\x02\"G\n\x12\x43hatHistoryRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\r\n\x05limit\x18\x02 \x01(\x05\x12\x0e\n\x06offset\x18\x03 \x01(\x05\"O\n\x13\x43hatHistoryResponse\x12)\n\x08messages\x18\x01 \x03(\x0b\x32\x17.ai.chat.v1.ChatMessage\x12\r\n\x05total\x18\x02 \x01(\x05\"x\n\x0b\x43hatMessage\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04role\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12\x11\n\ttimestamp\x18\x04 \x01(\x03\x12+\n\x0btoken_usage\x18\x05 \x01(\x0b\x32\x16.ai.chat.v1.TokenUsage*\xb6\x01\n\x0cResponseType\x12\x1d\n\x19RESPONSE_TYPE_UNSPECIFIED\x10\x00\x12\x19\n\x15RESPONSE_TYPE_CONTENT\x10\x01\x12\x1a\n\x16RESPONSE_TYPE_THINKING\x10\x02\x12\x1b\n\x17RESPONSE_TYPE_TOOL_CALL\x10\x03\x12\x1a\n\x16RESPONSE_TYPE_COMPLETE\x10\x04\x12\x17\n\x13RESPONSE_TYPE_ERROR\x10\x05\x32\xa3\x01\n\x0b\x43hatService\x12\x41\n\nStreamChat\x12\x17.ai.chat.v1.ChatRequest\x1a\x18.ai.chat.v1.ChatResponse0\x01\x12Q\n\x0eGetChatHistory\x12\x1e.ai.chat.v1.ChatHistoryRequest\x1a\x1f.ai.chat.v1.ChatHistoryResponseB*Z(github.com/ai-platform/proto/chat;chatpbb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12\x63hat_service.proto\x12\nai.chat.v1\"\x92\x02\n\x0b\x43hatRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x11\n\ttenant_id\x18\x03 \x01(\t\x12\x0f\n\x07message\x18\x04 \x01(\t\x12\x37\n\x08metadata\x18\x05 \x03(\x0b\x32%.ai.chat.v1.ChatRequest.MetadataEntry\x12&\n\x06\x63onfig\x18\x06 \x01(\x0b\x32\x16.ai.chat.v1.ChatConfig\x12(\n\x07\x63ontent\x18\x07 \x03(\x0b\x32\x17.ai.chat.v1.ContentPart\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\xa6\x01\n\x0b\x43ontentPart\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0c\n\x04text\x18\x02 \x01(\t\x12\x0b\n\x03url\x18\x03 \x01(\t\x12\x0e\n\x06\x62\x61se64\x18\x04 \x01(\t\x12\x11\n\tmime_type\x18\x05 \x01(\t\x12\x0f\n\x07\x66ile_id\x18\x06 \x01(\t\x12\x14\n\x0ctool_call_id\x18\x07 \x01(\t\x12\x11\n\tdata_json\x18\x08 \x01(\t\x12\x11\n\tfile_name\x18\t \x01(\t\"u\n\nChatConfig\x12\r\n\x05model\x18\x01 \x01(\t\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\x12\x12\n\nmax_tokens\x18\x03 \x01(\x05\x12\x0f\n\x07use_rag\x18\x04 \x01(\x08\x12\r\n\x05tools\x18\x06 \x03(\tJ\x04\x08\x05\x10\x06R\tuse_agent\"\x96\x02\n\x0c\x43hatResponse\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x12\n\nmessage_id\x18\x02 \x01(\t\x12&\n\x04type\x18\x03 \x01(\x0e\x32\x18.ai.chat.v1.ResponseType\x12\x0f\n\x07\x63ontent\x18\x04 \x01(\t\x12+\n\x0btoken_usage\x18\x05 \x01(\x0b\x32\x16.ai.chat.v1.TokenUsage\x12\r\n\x05\x65rror\x18\x06 \x01(\t\x12\x38\n\x08metadata\x18\x07 \x03(\x0b\x32&.ai.chat.v1.ChatResponse.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"b\n\nTokenUsage\x12\x15\n\rprompt_tokens\x18\x01 \x01(\x05\x12\x19\n\x11\x63ompletion_tokens\x18\x02 \x01(\x05\x12\x14\n\x0ctotal_tokens\x18\x03 \x01(\x05\x12\x0c\n\x04\x63ost\x18\x04 \x01(\x02\"G\n\x12\x43hatHistoryRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\r\n\x05limit\x18\x02 \x01(\x05\x12\x0e\n\x06offset\x18\x03 \x01(\x05\"O\n\x13\x43hatHistoryResponse\x12)\n\x08messages\x18\x01 \x03(\x0b\x32\x17.ai.chat.v1.ChatMessage\x12\r\n\x05total\x18\x02 \x01(\x05\"\xa8\x01\n\x0b\x43hatMessage\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04role\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12\x11\n\ttimestamp\x18\x04 \x01(\x03\x12+\n\x0btoken_usage\x18\x05 \x01(\x0b\x32\x16.ai.chat.v1.TokenUsage\x12.\n\rcontent_parts\x18\x06 \x03(\x0b\x32\x17.ai.chat.v1.ContentPart*\xf5\x01\n\x0cResponseType\x12\x1d\n\x19RESPONSE_TYPE_UNSPECIFIED\x10\x00\x12\x19\n\x15RESPONSE_TYPE_CONTENT\x10\x01\x12\x1a\n\x16RESPONSE_TYPE_THINKING\x10\x02\x12\x1b\n\x17RESPONSE_TYPE_TOOL_CALL\x10\x03\x12\x1a\n\x16RESPONSE_TYPE_COMPLETE\x10\x04\x12\x17\n\x13RESPONSE_TYPE_ERROR\x10\x05\x12\x1b\n\x17RESPONSE_TYPE_RETRIEVAL\x10\x06\x12 \n\x1cRESPONSE_TYPE_ROUTE_DECISION\x10\x07\x32\xa3\x01\n\x0b\x43hatService\x12\x41\n\nStreamChat\x12\x17.ai.chat.v1.ChatRequest\x1a\x18.ai.chat.v1.ChatResponse0\x01\x12Q\n\x0eGetChatHistory\x12\x1e.ai.chat.v1.ChatHistoryRequest\x1a\x1f.ai.chat.v1.ChatHistoryResponseB*Z(github.com/ai-platform/proto/chat;chatpbb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -26,26 +26,28 @@ if _descriptor._USE_C_DESCRIPTORS == False:
   _globals['_CHATREQUEST_METADATAENTRY']._serialized_options = b'8\001'
   _globals['_CHATRESPONSE_METADATAENTRY']._options = None
   _globals['_CHATRESPONSE_METADATAENTRY']._serialized_options = b'8\001'
-  _globals['_RESPONSETYPE']._serialized_start=1029
-  _globals['_RESPONSETYPE']._serialized_end=1211
+  _globals['_RESPONSETYPE']._serialized_start=1306
+  _globals['_RESPONSETYPE']._serialized_end=1551
   _globals['_CHATREQUEST']._serialized_start=35
-  _globals['_CHATREQUEST']._serialized_end=267
-  _globals['_CHATREQUEST_METADATAENTRY']._serialized_start=220
-  _globals['_CHATREQUEST_METADATAENTRY']._serialized_end=267
-  _globals['_CHATCONFIG']._serialized_start=269
-  _globals['_CHATCONFIG']._serialized_end=369
-  _globals['_CHATRESPONSE']._serialized_start=372
-  _globals['_CHATRESPONSE']._serialized_end=650
-  _globals['_CHATRESPONSE_METADATAENTRY']._serialized_start=220
-  _globals['_CHATRESPONSE_METADATAENTRY']._serialized_end=267
-  _globals['_TOKENUSAGE']._serialized_start=652
-  _globals['_TOKENUSAGE']._serialized_end=750
-  _globals['_CHATHISTORYREQUEST']._serialized_start=752
-  _globals['_CHATHISTORYREQUEST']._serialized_end=823
-  _globals['_CHATHISTORYRESPONSE']._serialized_start=825
-  _globals['_CHATHISTORYRESPONSE']._serialized_end=904
-  _globals['_CHATMESSAGE']._serialized_start=906
-  _globals['_CHATMESSAGE']._serialized_end=1026
-  _globals['_CHATSERVICE']._serialized_start=1214
-  _globals['_CHATSERVICE']._serialized_end=1377
+  _globals['_CHATREQUEST']._serialized_end=309
+  _globals['_CHATREQUEST_METADATAENTRY']._serialized_start=262
+  _globals['_CHATREQUEST_METADATAENTRY']._serialized_end=309
+  _globals['_CONTENTPART']._serialized_start=312
+  _globals['_CONTENTPART']._serialized_end=478
+  _globals['_CHATCONFIG']._serialized_start=480
+  _globals['_CHATCONFIG']._serialized_end=597
+  _globals['_CHATRESPONSE']._serialized_start=600
+  _globals['_CHATRESPONSE']._serialized_end=878
+  _globals['_CHATRESPONSE_METADATAENTRY']._serialized_start=262
+  _globals['_CHATRESPONSE_METADATAENTRY']._serialized_end=309
+  _globals['_TOKENUSAGE']._serialized_start=880
+  _globals['_TOKENUSAGE']._serialized_end=978
+  _globals['_CHATHISTORYREQUEST']._serialized_start=980
+  _globals['_CHATHISTORYREQUEST']._serialized_end=1051
+  _globals['_CHATHISTORYRESPONSE']._serialized_start=1053
+  _globals['_CHATHISTORYRESPONSE']._serialized_end=1132
+  _globals['_CHATMESSAGE']._serialized_start=1135
+  _globals['_CHATMESSAGE']._serialized_end=1303
+  _globals['_CHATSERVICE']._serialized_start=1554
+  _globals['_CHATSERVICE']._serialized_end=1717
 # @@protoc_insertion_point(module_scope)

@@ -17,7 +17,7 @@ from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, Plan
 from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig, ToolResultCache
 from ai_runtime.core.agent_runtime.planner import AgentPlanner
 from ai_runtime.core.agent_runtime.policy import RuntimePolicy
-from ai_runtime.core.agent_runtime.result_contract import (
+from ai_runtime.contracts import (
     build_artifacts_from_tool_result,
     build_structured_run_result,
     hydrate_legacy_result,
