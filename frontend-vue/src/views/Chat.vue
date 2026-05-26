@@ -250,6 +250,8 @@
             type="file"
             multiple
             class="upload-input"
+            :accept="attachmentAccept"
+            :disabled="!canAttach"
             @change="handleFileChange"
           />
           <input
@@ -259,6 +261,8 @@
             webkitdirectory
             directory
             class="upload-input"
+            :accept="attachmentAccept"
+            :disabled="!canAttach"
             @change="handleFolderChange"
           />
 
@@ -298,11 +302,12 @@
             <div class="input-shell">
               <div class="composer-tools">
                 <button
+                  v-if="canAttach"
                   type="button"
                   class="composer-tool-btn"
                   :disabled="uploading"
                   aria-label="上传文件"
-                  title="上传文件"
+                  :title="attachmentButtonTitle"
                   @click="openFilePicker"
                 >
                   <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -313,11 +318,12 @@
                   </svg>
                 </button>
                 <button
+                  v-if="canAttach"
                   type="button"
                   class="composer-tool-btn"
                   :disabled="uploading"
                   aria-label="上传文件夹"
-                  title="上传文件夹"
+                  :title="attachmentButtonTitle"
                   @click="openFolderPicker"
                 >
                   <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -358,8 +364,12 @@
             </div>
           </form>
 
-          <div v-if="hasUploads" class="composer-tool-meta">已附加 {{ totalFiles }} 个文件</div>
+          <div v-if="hasUploads && !canAttach" class="composer-tool-meta warning">
+            当前模型不支持附件，切换模型或移除附件后再发送
+          </div>
+          <div v-else-if="hasUploads" class="composer-tool-meta">已附加 {{ totalFiles }} 个文件</div>
           <div v-else-if="uploading" class="composer-tool-meta">正在解析文件...</div>
+          <div v-else class="composer-tool-meta subtle">{{ attachmentSupportSummary }}</div>
         </div>
       </div>
     </div>
@@ -375,6 +385,12 @@ import { useModelsStore } from '@/store/models'
 import { useKnowledgeStore } from '@/store/knowledge'
 import MessageMarkdownBlocks from '@/components/MessageMarkdownBlocks.vue'
 import { useUploadBundles } from '@/composables/useUploadBundles'
+import {
+  buildAttachmentAccept,
+  canModelAcceptAttachments,
+  getAttachmentModalities,
+  getAttachmentSupportSummary
+} from '@/utils/modelCapabilities'
 
 const router = useRouter()
 const route = useRoute()
@@ -422,6 +438,11 @@ const selectedModel = computed(() => modelsStore.selectedModel)
 const modelsLoading = computed(() => modelsStore.loading)
 const modelsError = computed(() => modelsStore.error)
 const canChat = computed(() => enabledModels.value.length > 0 && !!selectedModel.value)
+const attachmentModalities = computed(() => getAttachmentModalities(selectedModel.value))
+const canAttach = computed(() => canModelAcceptAttachments(selectedModel.value))
+const attachmentAccept = computed(() => buildAttachmentAccept(attachmentModalities.value))
+const attachmentSupportSummary = computed(() => getAttachmentSupportSummary(selectedModel.value))
+const attachmentButtonTitle = computed(() => attachmentSupportSummary.value)
 
 const knowledgeBases = computed(() => knowledgeStore.knowledgeBases)
 const knowledgeLoading = computed(() => knowledgeStore.loading)
@@ -496,6 +517,10 @@ const handleSendMessage = async () => {
     error.value = '请先配置聊天模型'
     return
   }
+  if (bundleIds.value.length > 0 && !canAttach.value) {
+    error.value = '当前模型不支持附件，请切换模型或移除附件后再发送'
+    return
+  }
 
   const userMessage = inputMessage.value.trim()
   inputMessage.value = ''
@@ -512,9 +537,13 @@ const handleSendMessage = async () => {
     const optimisticUploadedFiles = bundleIds.value.length > 0
       ? bundles.value.flatMap((bundle) => (bundle.files || []).map((file) => ({
           id: file.id,
+          file_id: file.file_id || file.id,
           name: file.name,
           path: file.path,
-          bundle_id: bundle.bundle_id
+          bundle_id: bundle.bundle_id,
+          content_type: file.content_type,
+          mime_type: file.mime_type,
+          preview_text: file.preview_text
         })))
       : []
     await chatStore.sendMessage(userMessage, {
@@ -1705,6 +1734,14 @@ const formatUploadBundle = (bundle) => {
   color: #64748b;
   font-size: 12px;
   padding-left: 58px;
+}
+
+.composer-tool-meta.warning {
+  color: #b45309;
+}
+
+.composer-tool-meta.subtle {
+  color: #94a3b8;
 }
 
 .composer-upload-list {

@@ -38,6 +38,11 @@
               <span v-else-if="model.provider === 'deepseek'">🔵</span>
               <span v-else-if="model.provider === 'local'">💻</span>
               <span v-else-if="model.provider === 'jina'">🟣</span>
+              <span v-else-if="model.provider === 'qwen'">🟠</span>
+              <span v-else-if="model.provider === 'wenxin'">🔴</span>
+              <span v-else-if="model.provider === 'glm'">🟡</span>
+              <span v-else-if="model.provider === 'kimi'">⚫</span>
+              <span v-else-if="model.provider === 'doubao'">🟤</span>
               <span v-else>🤖</span>
             </div>
             <div class="model-info">
@@ -69,12 +74,28 @@
               <span class="value">{{ model.has_api_key ? '已配置 ✓' : '未配置' }}</span>
             </div>
             <div class="detail-item">
+              <span class="label">Endpoint:</span>
+              <span class="value truncate">{{ model.config.endpoint_protocol || defaultEndpointProtocol(model.provider) }}</span>
+            </div>
+            <div class="detail-item">
               <span class="label">Temperature:</span>
               <span class="value">{{ model.config.temperature || 0.7 }}</span>
             </div>
             <div class="detail-item">
               <span class="label">Max Tokens:</span>
               <span class="value">{{ model.config.max_tokens || 2000 }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="label">输入模态:</span>
+              <span class="value">{{ formatModalities(model.config.input_modalities) }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="label">输出模态:</span>
+              <span class="value">{{ formatModalities(model.config.output_modalities) }}</span>
+            </div>
+            <div class="detail-item">
+              <span class="label">能力摘要:</span>
+              <span class="value">{{ formatCapabilitySummary(model.config) }}</span>
             </div>
           </div>
 
@@ -154,8 +175,13 @@
             <select v-model="formData.provider" required :disabled="showEditModal">
               <option value="openai">OpenAI</option>
               <option value="deepseek">DeepSeek</option>
-              <option value="local">本地模型</option>
               <option value="jina">Jina</option>
+              <option value="qwen">通义千问</option>
+              <option value="wenxin">文心一言</option>
+              <option value="glm">智谱 GLM</option>
+              <option value="kimi">Kimi</option>
+              <option value="doubao">豆包</option>
+              <option value="local">本地模型</option>
               <option value="mock">Mock (测试)</option>
             </select>
           </div>
@@ -216,6 +242,56 @@
             </div>
           </div>
 
+          <div class="form-row" v-if="formData.model_type === 'llm'">
+            <div class="form-group">
+              <label>Task Type</label>
+              <input value="chat.completion" type="text" disabled />
+              <small>智能体主链路固定为聊天补全任务。</small>
+            </div>
+            <div class="form-group">
+              <label>Endpoint Protocol</label>
+              <select v-model="formData.config.endpoint_protocol">
+                <option v-for="option in endpointProtocolOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>输入模态</label>
+              <div class="modality-options">
+                <label
+                  v-for="option in inputModalityOptions"
+                  :key="option.value"
+                  :class="['modality-option', { disabled: !isInputModalityAllowed(option.value) }]"
+                >
+                  <input
+                    v-model="formData.config.input_modalities"
+                    type="checkbox"
+                    :value="option.value"
+                    :disabled="option.value === 'text' || !isInputModalityAllowed(option.value)"
+                  />
+                  <span>{{ option.label }}</span>
+                </label>
+              </div>
+              <small>{{ endpointInputHint }}</small>
+            </div>
+            <div class="form-group">
+              <label>输出模态</label>
+              <input value="text" type="text" disabled />
+              <small>当前阶段智能体聊天输出固定为文本。</small>
+            </div>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label>
+              <input v-model="formData.config.supports_tools" type="checkbox" />
+              <span>支持工具调用</span>
+            </label>
+          </div>
+
           <div class="form-group checkbox-group">
             <label>
               <input v-model="formData.enabled" type="checkbox" />
@@ -271,8 +347,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useModelsStore } from '@/store/models'
+import {
+  ENDPOINT_PROTOCOL_OPTIONS,
+  MODEL_INPUT_MODALITY_OPTIONS,
+  defaultEndpointProtocolForProvider,
+  getEndpointSupportedInputModalities
+} from '@/utils/modelCapabilities'
 
 const modelsStore = useModelsStore()
 
@@ -283,6 +365,29 @@ const submitting = ref(false)
 const currentModel = ref(null)
 const modelToDelete = ref(null)
 
+const inputModalityOptions = MODEL_INPUT_MODALITY_OPTIONS
+const endpointProtocolOptions = ENDPOINT_PROTOCOL_OPTIONS
+const defaultEndpointProtocol = defaultEndpointProtocolForProvider
+
+const currentEndpointProtocol = () => (
+  formData.value.config.endpoint_protocol || defaultEndpointProtocol(formData.value.provider)
+)
+
+const allowedInputModalities = () => getEndpointSupportedInputModalities(currentEndpointProtocol()) || ['text']
+
+const endpointInputHint = computed(() => `当前协议 adapter 支持输入: ${allowedInputModalities().join(', ')}`)
+
+const isInputModalityAllowed = (modality) => allowedInputModalities().includes(modality)
+
+const normalizeFormInputModalities = () => {
+  const allowed = allowedInputModalities()
+  const selected = parseModalities(formData.value.config.input_modalities, 'text')
+  formData.value.config.input_modalities = selected.filter((item) => allowed.includes(item))
+  if (!formData.value.config.input_modalities.includes('text')) {
+    formData.value.config.input_modalities.unshift('text')
+  }
+}
+
 const formData = ref({
   name: '',
   display_name: '',
@@ -292,8 +397,13 @@ const formData = ref({
   api_base: '',
   api_key: '',
   config: {
+    task_type: 'chat.completion',
+    endpoint_protocol: 'openai.chat_completions',
     temperature: 0.7,
-    max_tokens: 2000
+    max_tokens: 2000,
+    input_modalities: ['text'],
+    output_modalities: ['text'],
+    supports_tools: false
   },
   enabled: true,
   is_default: false
@@ -317,6 +427,11 @@ const getProviderName = (provider) => {
     deepseek: 'DeepSeek',
     local: '本地模型',
     jina: 'Jina',
+    qwen: '通义千问',
+    wenxin: '文心一言',
+    glm: '智谱 GLM',
+    kimi: 'Kimi',
+    doubao: '豆包',
     mock: 'Mock (测试)'
   }
   return names[provider] || provider
@@ -327,6 +442,42 @@ const getModelTypeLabel = (type) => {
   if (label === 'embedding') return 'Embedding'
   if (label === 'rerank') return 'Rerank'
   return 'LLM'
+}
+
+const parseModalities = (value, fallback = 'text') => {
+  const items = Array.isArray(value) ? value : String(value || fallback).split(',')
+  const normalized = items
+    .map((item) => item.trim())
+    .filter(Boolean)
+  return normalized.includes('text') ? normalized : ['text', ...normalized]
+}
+
+watch(
+  () => formData.value.config.endpoint_protocol,
+  () => {
+    normalizeFormInputModalities()
+  }
+)
+
+watch(
+  () => formData.value.provider,
+  (provider) => {
+    if (!showEditModal.value) {
+      formData.value.config.endpoint_protocol = defaultEndpointProtocol(provider)
+      normalizeFormInputModalities()
+    }
+  }
+)
+
+const formatModalities = (value) => {
+  const list = Array.isArray(value) ? value : parseModalities(value)
+  return list.length > 0 ? list.join(', ') : 'text'
+}
+
+const formatCapabilitySummary = (config = {}) => {
+  const input = formatModalities(config.input_modalities)
+  const output = 'text'
+  return `输入 ${input} / 输出 ${output}`
 }
 
 const editModel = (model) => {
@@ -340,12 +491,18 @@ const editModel = (model) => {
     api_base: model.api_base || '',
     api_key: '',
     config: {
+      task_type: 'chat.completion',
+      endpoint_protocol: model.config.endpoint_protocol || defaultEndpointProtocol(model.provider),
       temperature: model.config.temperature || 0.7,
-      max_tokens: model.config.max_tokens || 2000
+      max_tokens: model.config.max_tokens || 2000,
+      input_modalities: parseModalities(model.config.input_modalities, 'text'),
+      output_modalities: ['text'],
+      supports_tools: Boolean(model.config.supports_tools)
     },
     enabled: model.enabled,
     is_default: model.is_default
   }
+  normalizeFormInputModalities()
   showEditModal.value = true
 }
 
@@ -376,11 +533,24 @@ const handleSubmit = async () => {
   try {
     submitting.value = true
 
+    normalizeFormInputModalities()
+    const inputModalities = parseModalities(formData.value.config.input_modalities, 'text')
+    const outputModalities = ['text']
     const data = {
       ...formData.value,
       config: {
         temperature: formData.value.config.temperature,
-        max_tokens: formData.value.config.max_tokens
+        max_tokens: formData.value.config.max_tokens,
+        task_type: 'chat.completion',
+        endpoint_protocol: formData.value.config.endpoint_protocol || defaultEndpointProtocol(formData.value.provider),
+        input_modalities: inputModalities,
+        output_modalities: outputModalities,
+        supports_vision: inputModalities.includes('image'),
+        supports_video_input: inputModalities.includes('video'),
+        supports_file_input: inputModalities.includes('file'),
+        supports_audio_input: inputModalities.includes('audio'),
+        supports_audio_output: false,
+        supports_tools: Boolean(formData.value.config.supports_tools)
       }
     }
 
@@ -431,12 +601,18 @@ const closeModal = () => {
     api_base: '',
     api_key: '',
     config: {
+      task_type: 'chat.completion',
+      endpoint_protocol: defaultEndpointProtocol('openai'),
       temperature: 0.7,
-      max_tokens: 2000
+      max_tokens: 2000,
+      input_modalities: ['text'],
+      output_modalities: ['text'],
+      supports_tools: false
     },
     enabled: true,
     is_default: false
   }
+  normalizeFormInputModalities()
 }
 </script>
 

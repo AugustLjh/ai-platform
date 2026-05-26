@@ -811,6 +811,9 @@ class WorkspaceManager:
             attachment_id = str(item.get("id") or "").strip()
             if not attachment_id:
                 continue
+            if str(item.get("media_kind") or "").strip().lower() == "image":
+                skipped.append({"path": str(item.get("path") or item.get("name") or attachment_id), "reason": "binary_media"})
+                continue
             content = store.read_bundle_file(
                 tenant_id=tenant_id,
                 user_id=user_id,

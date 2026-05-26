@@ -1,3 +1,6 @@
+# Claude Code worktrees (local agent isolation, never commit)
+.claude/worktrees/
+
 # Python
 __pycache__/
 *.py[cod]

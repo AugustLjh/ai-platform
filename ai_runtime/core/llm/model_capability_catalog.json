@@ -1,0 +1,88 @@
+{
+  "providers": {
+    "qwen": {
+      "defaults": {
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+        "supports_tools": true
+      },
+      "models": [
+        {
+          "match": ".*omni.*",
+          "capabilities": {
+            "input_modalities": ["text", "audio", "image", "video", "file"],
+            "output_modalities": ["text"],
+            "supports_vision": true,
+            "supports_audio_input": true,
+            "supports_audio_output": true,
+            "supports_video_input": true,
+            "supports_file_input": true
+          }
+        },
+        {
+          "match": ".*audio.*",
+          "capabilities": {
+            "input_modalities": ["text", "audio", "image", "video", "file"],
+            "output_modalities": ["text"],
+            "supports_vision": true,
+            "supports_audio_input": true,
+            "supports_video_input": true,
+            "supports_file_input": true
+          }
+        },
+        {
+          "match": ".*(vl|vision).*",
+          "capabilities": {
+            "input_modalities": ["text", "image", "video", "file"],
+            "supports_vision": true,
+            "supports_video_input": true,
+            "supports_file_input": true
+          }
+        },
+        {
+          "match": "qwen[-_ ]?3(\\.\\d+)?.*",
+          "capabilities": {
+            "input_modalities": ["text", "audio", "image", "video", "file"],
+            "output_modalities": ["text"],
+            "supports_vision": true,
+            "supports_audio_input": true,
+            "supports_video_input": true,
+            "supports_file_input": true
+          }
+        }
+      ]
+    },
+    "wenxin": {
+      "defaults": {
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+        "supports_tools": true
+      }
+    },
+    "glm": {
+      "defaults": {
+        "input_modalities": ["text", "image", "file"],
+        "output_modalities": ["text"],
+        "supports_tools": true,
+        "supports_vision": true,
+        "supports_file_input": true
+      }
+    },
+    "kimi": {
+      "defaults": {
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+        "supports_tools": true
+      }
+    },
+    "doubao": {
+      "defaults": {
+        "input_modalities": ["text", "image", "file"],
+        "output_modalities": ["text"],
+        "supports_tools": true,
+        "supports_vision": true,
+        "supports_file_input": true
+      }
+    }
+  }
+}

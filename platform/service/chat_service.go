@@ -43,9 +43,28 @@ const (
 	maxPromptHistoryItems  = 40
 )
 
+type ContentPart = grpc.ContentPart
+
 type runtimeHistoryMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role         string        `json:"role"`
+	Content      string        `json:"content"`
+	ContentParts []ContentPart `json:"content_parts,omitempty"`
+}
+
+func deriveTextContent(message string, parts []ContentPart) string {
+	if strings.TrimSpace(message) != "" {
+		return message
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	for _, part := range parts {
+		if strings.EqualFold(strings.TrimSpace(part.Type), "text") && strings.TrimSpace(part.Text) != "" {
+			builder.WriteString(part.Text)
+		}
+	}
+	return builder.String()
 }
 
 // StreamChat handles streaming chat requests
@@ -70,7 +89,7 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 			log.Printf("[ChatService] Failed to ensure session: %v", err)
 		} else {
 			dbSession = session
-			s.maybeUpdateTitle(dbSession, req.Message)
+			s.maybeUpdateTitle(dbSession, deriveTextContent(req.Message, req.Content))
 		}
 	}
 
@@ -84,13 +103,13 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 	))
 
 	if s.sessionStore != nil {
-		if err := s.persistMessage(req.SessionID, "user", req.Message, modelName, req.Metadata); err != nil {
+		if err := s.persistMessage(req.SessionID, "user", deriveTextContent(req.Message, req.Content), req.Content, modelName, req.Metadata); err != nil {
 			log.Printf("[ChatService] Failed to persist user message: %v", err)
 		}
 	}
 
 	// Add user message to session
-	session.AddMessage("user", req.Message)
+	session.AddMessage("user", req.Message, req.Content)
 
 	// Create gRPC request
 	grpcReq := &grpc.ChatRequest{
@@ -98,6 +117,7 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 		UserID:    req.UserID,
 		TenantID:  req.TenantID,
 		Message:   req.Message,
+		Content:   req.Content,
 		Metadata:  runtimeMetadata,
 		Config: &grpc.ChatConfig{
 			Model:           req.Config.Model,
@@ -142,9 +162,9 @@ func (s *ChatService) StreamChat(ctx context.Context, req *ChatRequest) (<-chan 
 
 			// Save to session on completion
 			if msg.Type == 4 { // COMPLETE
-				session.AddMessage("assistant", fullResponse)
+				session.AddMessage("assistant", fullResponse, nil)
 				if s.sessionStore != nil {
-					if err := s.persistMessage(req.SessionID, "assistant", fullResponse, modelName, msg.Metadata); err != nil {
+					if err := s.persistMessage(req.SessionID, "assistant", fullResponse, nil, modelName, msg.Metadata); err != nil {
 						log.Printf("[ChatService] Failed to persist assistant message: %v", err)
 					}
 				}
@@ -163,8 +183,8 @@ func (s *ChatService) validateRequest(req *ChatRequest) error {
 	if req.UserID == "" {
 		return fmt.Errorf("user_id is required")
 	}
-	if req.Message == "" {
-		return fmt.Errorf("message is required")
+	if strings.TrimSpace(req.Message) == "" && len(req.Content) == 0 {
+		return fmt.Errorf("message or content is required")
 	}
 	return nil
 }
@@ -198,7 +218,7 @@ func (s *ChatService) ensureDBSession(req *ChatRequest) (*database.Session, erro
 	return session, nil
 }
 
-func (s *ChatService) persistMessage(sessionID, role, content, model string, metadata map[string]string) error {
+func (s *ChatService) persistMessage(sessionID, role, content string, parts []ContentPart, model string, metadata map[string]string) error {
 	if s.sessionStore == nil {
 		return nil
 	}
@@ -213,16 +233,48 @@ func (s *ChatService) persistMessage(sessionID, role, content, model string, met
 	}
 
 	message := &database.Message{
-		ID:         uuid.NewString(),
-		SessionID:  sessionID,
-		Role:       role,
-		Content:    content,
-		TokenCount: tokenCount,
-		Model:      model,
-		Metadata:   metadata,
+		ID:           uuid.NewString(),
+		SessionID:    sessionID,
+		Role:         role,
+		Content:      content,
+		ContentParts: convertContentParts(parts),
+		TokenCount:   tokenCount,
+		Model:        model,
+		Metadata:     metadata,
 	}
 
 	return s.sessionStore.AddMessage(message)
+}
+
+func convertContentParts(parts []ContentPart) []map[string]any {
+	if len(parts) == 0 {
+		return []map[string]any{}
+	}
+	result := make([]map[string]any, 0, len(parts))
+	for _, part := range parts {
+		result = append(result, map[string]any{
+			"type":         part.Type,
+			"text":         part.Text,
+			"url":          part.URL,
+			"base64":       part.Base64,
+			"mime_type":    part.MimeType,
+			"file_id":      part.FileID,
+			"tool_call_id": part.ToolCallID,
+			"data_json":    part.DataJSON,
+			"file_name":    part.FileName,
+		})
+	}
+	return result
+}
+
+func chatStringValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return fmt.Sprint(value)
 }
 
 func (s *ChatService) maybeUpdateTitle(session *database.Session, message string) {
@@ -257,10 +309,25 @@ func (s *ChatService) loadPromptHistory(req *ChatRequest, session *Session) []Me
 		if err == nil {
 			history := make([]Message, 0, len(messages))
 			for _, message := range messages {
+				contentParts := make([]ContentPart, 0, len(message.ContentParts))
+				for _, part := range message.ContentParts {
+					contentParts = append(contentParts, ContentPart{
+						Type:       chatStringValue(part["type"]),
+						Text:       chatStringValue(part["text"]),
+						URL:        chatStringValue(part["url"]),
+						Base64:     chatStringValue(part["base64"]),
+						MimeType:   chatStringValue(part["mime_type"]),
+						FileID:     chatStringValue(part["file_id"]),
+						ToolCallID: chatStringValue(part["tool_call_id"]),
+						DataJSON:   chatStringValue(part["data_json"]),
+						FileName:   chatStringValue(part["file_name"]),
+					})
+				}
 				history = append(history, Message{
-					Role:      message.Role,
-					Content:   message.Content,
-					Timestamp: message.CreatedAt,
+					Role:         message.Role,
+					Content:      message.Content,
+					ContentParts: contentParts,
+					Timestamp:    message.CreatedAt,
 				})
 			}
 			return history
@@ -296,9 +363,14 @@ func (s *ChatService) attachPromptHistoryMetadata(metadata map[string]string, hi
 		if strings.TrimSpace(message.Role) == "" {
 			continue
 		}
+		contentParts := []ContentPart{}
+		if len(message.ContentParts) > 0 {
+			contentParts = append(contentParts, message.ContentParts...)
+		}
 		payload = append(payload, runtimeHistoryMessage{
-			Role:    message.Role,
-			Content: message.Content,
+			Role:         message.Role,
+			Content:      message.Content,
+			ContentParts: contentParts,
 		})
 	}
 
@@ -519,6 +591,7 @@ type ChatRequest struct {
 	UserID    string
 	TenantID  string
 	Message   string
+	Content   []grpc.ContentPart
 	Metadata  map[string]string
 	Config    *ChatConfig
 }

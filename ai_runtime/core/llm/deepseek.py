@@ -1,16 +1,24 @@
-from typing import AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, Optional, Sequence
 from .base import BaseLLM, LLMResponse
+from .messages import ModelCapabilityProfile, UnifiedMessage, normalize_messages
 
 
 class DeepseekLLM(BaseLLM):
     def __init__(self, model: str = "deepseek-chat", api_key: Optional[str] = None, **kwargs):
         api_base = kwargs.pop("api_base", "https://api.deepseek.com/v1")
+        kwargs.setdefault("endpoint_protocol", "deepseek.chat_completions")
         super().__init__(model, **kwargs)
         self.api_key = api_key
         # DeepSeek API base URL
         self.api_base = api_base
+        self.capabilities = ModelCapabilityProfile(
+            input_modalities=["text"],
+            output_modalities=["text"],
+            endpoint_protocol=kwargs.get("endpoint_protocol"),
+            supports_tools=bool(kwargs.get("supports_tools", False)),
+        )
 
-    async def stream_chat(self, messages: List[Dict[str, str]], **kwargs) -> AsyncIterator[LLMResponse]:
+    async def stream_chat(self, messages: Sequence[UnifiedMessage | Dict[str, Any]], **kwargs) -> AsyncIterator[LLMResponse]:
         """
         Stream chat with DeepSeek
 
@@ -22,6 +30,9 @@ class DeepseekLLM(BaseLLM):
             LLMResponse chunks
         """
         try:
+            normalized = normalize_messages(messages)
+            if any(part.type != "text" for message in normalized for part in message.content):
+                raise RuntimeError("DeepSeek text-only model cannot accept multimodal input")
             # Import httpx for async HTTP requests
             import httpx
 
@@ -34,7 +45,7 @@ class DeepseekLLM(BaseLLM):
             # Merge config with kwargs
             params = {
                 "model": self.model,
-                "messages": messages,
+                "messages": [{"role": message.role, "content": "".join(part.text or "" for part in message.content)} for message in normalized],
                 "stream": True,
                 **self.config,
                 **kwargs

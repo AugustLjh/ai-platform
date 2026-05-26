@@ -68,4 +68,5 @@ class AgentLLMService:
             "resolved_model_provider": candidate.get("provider"),
             "resolved_provider_model_id": candidate.get("model_id"),
             "model_source": candidate.get("source"),
+            "endpoint_protocol": (candidate.get("config") or {}).get("endpoint_protocol"),
         }

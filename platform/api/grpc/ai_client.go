@@ -20,6 +20,27 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+func toProtoContentParts(parts []ContentPart) []*pb.ContentPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	result := make([]*pb.ContentPart, 0, len(parts))
+	for _, part := range parts {
+		result = append(result, &pb.ContentPart{
+			Type:       part.Type,
+			Text:       part.Text,
+			Url:        part.URL,
+			Base64:     part.Base64,
+			MimeType:   part.MimeType,
+			FileId:     part.FileID,
+			ToolCallId: part.ToolCallID,
+			DataJson:   part.DataJSON,
+			FileName:   part.FileName,
+		})
+	}
+	return result
+}
+
 // ChatMessage represents a chat message
 type ChatMessage struct {
 	SessionID string
@@ -36,8 +57,21 @@ type ChatRequest struct {
 	UserID    string
 	TenantID  string
 	Message   string
+	Content   []ContentPart
 	Metadata  map[string]string
 	Config    *ChatConfig
+}
+
+type ContentPart struct {
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Base64     string `json:"base64,omitempty"`
+	MimeType   string `json:"mime_type,omitempty"`
+	FileID     string `json:"file_id,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	DataJSON   string `json:"data_json,omitempty"`
+	FileName   string `json:"file_name,omitempty"`
 }
 
 // ChatConfig holds chat configuration
@@ -123,6 +157,7 @@ func (c *AIClient) StreamChat(ctx context.Context, req *ChatRequest) (<-chan *Ch
 		TenantId:  req.TenantID,
 		Message:   req.Message,
 		Metadata:  req.Metadata,
+		Content:   toProtoContentParts(req.Content),
 		Config: &pb.ChatConfig{
 			Model:       req.Config.Model,
 			Temperature: req.Config.Temperature,
@@ -190,6 +225,7 @@ type httpChatRequest struct {
 	UserID    string            `json:"user_id"`
 	TenantID  string            `json:"tenant_id"`
 	Message   string            `json:"message"`
+	Content   []ContentPart     `json:"content,omitempty"`
 	Metadata  map[string]string `json:"metadata"`
 	Config    httpChatConfig    `json:"config"`
 }
@@ -373,6 +409,7 @@ func (c *AIClient) streamChatHTTP(ctx context.Context, req *ChatRequest) (<-chan
 		UserID:    req.UserID,
 		TenantID:  req.TenantID,
 		Message:   req.Message,
+		Content:   req.Content,
 		Metadata:  req.Metadata,
 		Config: httpChatConfig{
 			Model:           config.Model,

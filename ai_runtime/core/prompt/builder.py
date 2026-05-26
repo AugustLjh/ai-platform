@@ -1,6 +1,8 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from pathlib import Path
 import json
+
+from ai_runtime.core.llm.messages import ContentPart, UnifiedMessage, build_text_part, normalize_messages
 
 
 class PromptTemplate:
@@ -86,6 +88,55 @@ class PromptBuilder:
                 )
 
             messages.append({"role": "user", "content": content})
+
+        return messages
+
+    def build_unified(
+        self,
+        system_prompt: Optional[str] = None,
+        user_message: Optional[str] = None,
+        context: Optional[str] = None,
+        history: Optional[Sequence[UnifiedMessage | Dict[str, Any]]] = None,
+        template_name: Optional[str] = None,
+        user_parts: Optional[Sequence[ContentPart | Dict[str, Any]]] = None,
+        **kwargs,
+    ) -> list[UnifiedMessage]:
+        messages: list[UnifiedMessage] = []
+
+        if system_prompt:
+            messages.append(
+                UnifiedMessage(
+                    role="system",
+                    content=[build_text_part(system_prompt)],
+                )
+            )
+
+        if history:
+            messages.extend(normalize_messages(history))
+
+        if user_message or user_parts:
+            content_parts = list(normalize_messages([{"role": "user", "content": user_parts or []}])[0].content if user_parts else [])
+            if user_message:
+                has_text = any(part.type == "text" and (part.text or "").strip() for part in content_parts)
+                if not has_text:
+                    content_parts.insert(0, build_text_part(user_message))
+
+            if context:
+                content_parts.insert(
+                    0,
+                    build_text_part(f"Context:\n{context}\n\nQuestion: {user_message or ''}"),
+                )
+
+            if template_name and template_name in self.templates:
+                template = self.templates[template_name]
+                content_parts = [build_text_part(template.format(message=user_message or "", context=context or "", **kwargs))]
+
+            messages.append(
+                UnifiedMessage(
+                    role="user",
+                    content=content_parts or [build_text_part(user_message or "")],
+                )
+            )
 
         return messages
 

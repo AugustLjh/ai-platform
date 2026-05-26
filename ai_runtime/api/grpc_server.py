@@ -41,6 +41,16 @@ class ChatServiceGRPC(chat_service_pb2_grpc.ChatServiceServicer):
                 'user_id': request.user_id,
                 'tenant_id': request.tenant_id,
                 'message': request.message,
+                'content': [json.loads(part.data_json) if getattr(part, "data_json", "") else {
+                    'type': part.type,
+                    'text': part.text,
+                    'url': part.url,
+                    'base64': part.base64,
+                    'mime_type': part.mime_type,
+                    'file_id': part.file_id,
+                    'tool_call_id': part.tool_call_id,
+                    'data': part.data_json,
+                } for part in request.content],
                 'metadata': metadata,
                 'config': {
                     'model': request.config.model,

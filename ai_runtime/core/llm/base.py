@@ -1,5 +1,16 @@
-from typing import AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Sequence
 from abc import ABC, abstractmethod
+
+from .messages import (
+    ModelCapabilityProfile,
+    ModelRequestProfile,
+    UnifiedMessage,
+    UnifiedModelRequest,
+    supports_model_request,
+    merge_capability_profiles,
+    normalize_messages,
+    required_input_modalities,
+)
 
 
 class LLMResponse:
@@ -20,14 +31,19 @@ class BaseLLM(ABC):
     def __init__(self, model: str, **kwargs):
         self.model = model
         self.config = kwargs
+        self.capabilities = merge_capability_profiles(kwargs.get("capabilities"))
 
     @abstractmethod
-    async def stream_chat(self, messages: List[Dict[str, str]], **kwargs) -> AsyncIterator[LLMResponse]:
+    async def stream_chat(
+        self,
+        messages: UnifiedModelRequest | Sequence[UnifiedMessage | Dict[str, Any]],
+        **kwargs,
+    ) -> AsyncIterator[LLMResponse]:
         """
         Stream chat completion
 
         Args:
-            messages: List of message dicts with 'role' and 'content'
+            messages: List of messages or raw dicts with 'role' and 'content'
             **kwargs: Additional parameters (temperature, max_tokens, etc.)
 
         Yields:
@@ -35,7 +51,7 @@ class BaseLLM(ABC):
         """
         pass
 
-    async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
+    async def chat(self, messages: UnifiedModelRequest | Sequence[UnifiedMessage | Dict[str, Any]], **kwargs) -> str:
         """
         Non-streaming chat (convenience method)
 
@@ -50,3 +66,12 @@ class BaseLLM(ABC):
         async for chunk in self.stream_chat(messages, **kwargs):
             content += chunk.content
         return content
+
+    def normalize_messages(self, messages: Sequence[UnifiedMessage | Dict[str, Any]]) -> list[UnifiedMessage]:
+        return normalize_messages(messages)
+
+    def required_input_modalities(self, messages: Iterable[UnifiedMessage | Dict[str, Any]]) -> set[str]:
+        return required_input_modalities(messages)
+
+    def supports_request(self, request: ModelRequestProfile | Dict[str, Any]) -> bool:
+        return supports_model_request(self.capabilities, request)

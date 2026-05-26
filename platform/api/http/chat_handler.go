@@ -625,13 +625,38 @@ func toSessionResponse(session *database.Session) ChatSessionResponse {
 }
 
 func toMessageResponse(message *database.Message) ChatMessageResponse {
-	return ChatMessageResponse{
-		ID:        message.ID,
-		Role:      message.Role,
-		Content:   message.Content,
-		CreatedAt: message.CreatedAt.Format(time.RFC3339),
-		Metadata:  message.Metadata,
+	contentParts := make([]ContentPart, 0, len(message.ContentParts))
+	for _, part := range message.ContentParts {
+		contentParts = append(contentParts, ContentPart{
+			Type:       stringPartValue(part["type"]),
+			Text:       stringPartValue(part["text"]),
+			URL:        stringPartValue(part["url"]),
+			Base64:     stringPartValue(part["base64"]),
+			MimeType:   stringPartValue(part["mime_type"]),
+			FileID:     stringPartValue(part["file_id"]),
+			ToolCallID: stringPartValue(part["tool_call_id"]),
+			DataJSON:   stringPartValue(part["data_json"]),
+			FileName:   stringPartValue(part["file_name"]),
+		})
 	}
+	return ChatMessageResponse{
+		ID:           message.ID,
+		Role:         message.Role,
+		Content:      message.Content,
+		ContentParts: contentParts,
+		CreatedAt:    message.CreatedAt.Format(time.RFC3339),
+		Metadata:     message.Metadata,
+	}
+}
+
+func stringPartValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return fmt.Sprint(value)
 }
 
 func toUsageSummaryResponse(summary database.UsageSummary) UsageSummaryResponse {
@@ -695,9 +720,31 @@ func (h *ChatHandler) toServiceRequest(req *ChatRequest) *service.ChatRequest {
 		UserID:    req.UserID,
 		TenantID:  req.TenantID,
 		Message:   req.Message,
+		Content:   toServiceContentParts(req.Content),
 		Metadata:  metadata,
 		Config:    config,
 	}
+}
+
+func toServiceContentParts(parts []ContentPart) []service.ContentPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	result := make([]service.ContentPart, 0, len(parts))
+	for _, part := range parts {
+		result = append(result, service.ContentPart{
+			Type:       part.Type,
+			Text:       part.Text,
+			URL:        part.URL,
+			Base64:     part.Base64,
+			MimeType:   part.MimeType,
+			FileID:     part.FileID,
+			ToolCallID: part.ToolCallID,
+			DataJSON:   part.DataJSON,
+			FileName:   part.FileName,
+		})
+	}
+	return result
 }
 
 // Request/Response types
@@ -707,8 +754,21 @@ type ChatRequest struct {
 	UserID    string             `json:"user_id"`
 	TenantID  string             `json:"tenant_id"`
 	Message   string             `json:"message"`
+	Content   []ContentPart      `json:"content"`
 	Metadata  map[string]string  `json:"metadata"`
 	Config    *ChatConfigRequest `json:"config"`
+}
+
+type ContentPart struct {
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Base64     string `json:"base64,omitempty"`
+	MimeType   string `json:"mime_type,omitempty"`
+	FileID     string `json:"file_id,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	DataJSON   string `json:"data_json,omitempty"`
+	FileName   string `json:"file_name,omitempty"`
 }
 
 type ChatConfigRequest struct {
@@ -748,6 +808,7 @@ type ChatMessageResponse struct {
 	ID        string            `json:"id"`
 	Role      string            `json:"role"`
 	Content   string            `json:"content"`
+	ContentParts []ContentPart  `json:"content_parts,omitempty"`
 	CreatedAt string            `json:"created_at"`
 	Metadata  map[string]string `json:"metadata"`
 }

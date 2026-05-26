@@ -39,6 +39,7 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = Field(default=None, description="User ID")
     tenant_id: Optional[str] = Field(default=None, description="Tenant ID")
     message: str = Field(..., min_length=1, description="User message")
+    content: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Dict[str, str] = Field(default_factory=dict)
     config: ChatConfig = Field(default_factory=ChatConfig)
 
@@ -82,6 +83,7 @@ class InternalChatRequest:
         user_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
         metadata: Optional[Dict[str, str]] = None,
+        content: Optional[List[Dict[str, Any]]] = None,
     ):
         self.session_id = session_id
         self.message = message
@@ -89,6 +91,7 @@ class InternalChatRequest:
         self.user_id = user_id
         self.tenant_id = tenant_id
         self.metadata = metadata or {}
+        self.content = content or []
 
 
 class InternalChatConfig:
@@ -188,6 +191,7 @@ def create_http_app() -> FastAPI:
                 user_id=request.user_id,
                 tenant_id=request.tenant_id,
                 metadata=request.metadata,
+                content=request.content,
                 config=InternalChatConfig(
                     model=request.config.model,
                     use_rag=request.config.use_rag,
@@ -226,6 +230,7 @@ def create_http_app() -> FastAPI:
                     user_id=request.user_id,
                     tenant_id=request.tenant_id,
                     metadata=request.metadata,
+                    content=request.content,
                     config=InternalChatConfig(
                         model=request.config.model,
                         use_rag=request.config.use_rag,

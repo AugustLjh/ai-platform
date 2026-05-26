@@ -16,7 +16,7 @@ The repository is active and already includes a usable mainline for:
 
 - user auth, chat, session history, usage stats, and feedback
 - knowledge base CRUD, document upload/import/search, preview, chunk inspection, and retrieval testing
-- model configuration for `openai`, `deepseek`, `local`, `mock`, and `jina`
+- model configuration for `openai`, `deepseek`, `jina`, `qwen`, `wenxin`, `glm`, `kimi`, `doubao`, `local`, and `mock`
 - agent workspace, run history, structured artifacts, run tree, MCP management, and subagent governance pages
 - agent runtime result contracts, tool/provider bootstrap, MCP integration, skill binding, review flow, and delegation governance
 - PostgreSQL schema management with Alembic
@@ -168,15 +168,15 @@ make prod-down
 Main templates:
 
 - `./.env.example`
-- `./ai_runtime/.env.example`
+- `./ai_runtime/.env.example` (runtime models, embedding, rag, qdrant)
 - `./platform/.env.example`
 
 Important settings:
 
 - `JWT_SECRET`: must be replaced in production
-- `EMBEDDING_PROVIDER`: supports `local`, `openai`, `jina`
-- `LLM_PROVIDER`: supports `openai`, `deepseek`, `local`, `mock`
-- `QDRANT_HOST` / `QDRANT_PORT`: vector database address
+- `EMBEDDING_PROVIDER`: see `./ai_runtime/.env.example`
+- `LLM_PROVIDER`: see `./ai_runtime/.env.example`
+- `QDRANT_HOST` / `QDRANT_PORT`: see `./ai_runtime/.env.example`
 - `AI_RUNTIME_HTTP_ADDR`: required for platform access to runtime HTTP APIs
 - `AI_RUNTIME_CHAT_TRANSPORT`: selects `grpc` or `http` for chat transport on the Go service
 

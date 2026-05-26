@@ -3,13 +3,17 @@ LLM Models Management API
 Provides endpoints for managing LLM model configurations
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List, Dict, Any
 from collections.abc import Mapping
 from uuid import UUID
 import json
 import logging
 
+from ai_runtime.core.llm import SUPPORTED_LLM_PROVIDER_PATTERN
+from ai_runtime.core.llm.adapters import adapter_schema
+from ai_runtime.core.llm.catalog import model_capability_schema
+from ai_runtime.core.llm.messages import capability_profile_from_settings, supports_endpoint_protocol
 from ai_runtime.core.dependencies import get_db_manager, get_current_tenant_id, get_current_user_id
 from ai_runtime.core.database import DatabaseManager
 
@@ -23,12 +27,13 @@ def _deserialize_config(value: Any) -> Dict[str, Any]:
         return {}
     if isinstance(value, str):
         try:
-            return json.loads(value)
+            config = json.loads(value)
+            return _normalize_model_config(config)
         except (json.JSONDecodeError, ValueError) as exc:
             logger.warning(f"Failed to parse model config JSON: {exc}")
             return {}
     if isinstance(value, Mapping):
-        return dict(value)
+        return _normalize_model_config(dict(value))
     return {}
 
 
@@ -38,26 +43,131 @@ def _serialize_config(value: Any) -> str:
     if isinstance(value, str):
         return value
     try:
-        return json.dumps(value)
+        return json.dumps(_normalize_model_config(value))
     except TypeError:
         return json.dumps({})
+
+
+def _normalize_modalities(value: Any, fallback: list[str]) -> list[str]:
+    if value is None:
+        return list(fallback)
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = [value]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        token = str(item or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized or list(fallback)
+
+
+def _normalize_model_config(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    config = dict(value)
+    config["task_type"] = "chat.completion"
+    config["endpoint_protocol"] = str(config.get("endpoint_protocol") or "").strip() or None
+    config["input_modalities"] = _normalize_modalities(config.get("input_modalities"), ["text"])
+    config["output_modalities"] = ["text"]
+    constraints = config.get("constraints")
+    adapter_options = config.get("adapter_options")
+    config["constraints"] = dict(constraints) if isinstance(constraints, Mapping) else {}
+    config["adapter_options"] = dict(adapter_options) if isinstance(adapter_options, Mapping) else {}
+    capabilities = capability_profile_from_settings(
+        config.get("capabilities") if isinstance(config.get("capabilities"), Mapping) else None,
+        {
+            "task_type": config.get("task_type"),
+            "endpoint_protocol": config.get("endpoint_protocol"),
+            "input_modalities": config.get("input_modalities"),
+            "output_modalities": config.get("output_modalities"),
+            "default_output_modalities": ["text"],
+            "supported_response_formats": config.get("supported_response_formats", ["text"]),
+            "supports_tools": bool(config.get("supports_tools", False)),
+            "supports_streaming": bool(config.get("supports_streaming", True)),
+            "supports_reasoning": bool(config.get("supports_reasoning", False)),
+            "supports_vision": bool(config.get("supports_vision", False)),
+            "supports_audio_input": bool(config.get("supports_audio_input", False)),
+            "supports_audio_output": bool(config.get("supports_audio_output", False)),
+            "supports_video_input": bool(config.get("supports_video_input", False)),
+            "supports_file_input": bool(config.get("supports_file_input", False)),
+            "context_window": config.get("context_window"),
+            "max_output_tokens": config.get("max_output_tokens"),
+            "adapter_options": config.get("adapter_options"),
+        },
+    )
+    config["capabilities"] = capabilities.model_dump()
+    config["task_type"] = capabilities.task_type
+    config["endpoint_protocol"] = capabilities.endpoint_protocol or config.get("endpoint_protocol")
+    config["input_modalities"] = capabilities.input_modalities
+    config["output_modalities"] = ["text"]
+    config["default_output_modalities"] = ["text"]
+    config["supported_response_formats"] = capabilities.supported_response_formats
+    config["adapter_options"] = capabilities.adapter_options or config["adapter_options"]
+    config["supports_vision"] = capabilities.supports_vision
+    config["supports_audio_input"] = capabilities.supports_audio_input
+    config["supports_audio_output"] = capabilities.supports_audio_output
+    config["supports_video_input"] = capabilities.supports_video_input
+    config["supports_file_input"] = capabilities.supports_file_input
+    if config["output_modalities"] != ["text"]:
+        config["output_modalities"] = ["text"]
+    if config["task_type"] != "chat.completion":
+        config["task_type"] = "chat.completion"
+    return config
 
 
 # Request/Response Models
 class LLMModelConfig(BaseModel):
     """LLM model configuration"""
+    task_type: str = "chat.completion"
+    endpoint_protocol: Optional[str] = None
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=2000, ge=1, le=8000)
     top_p: Optional[float] = Field(default=1.0, ge=0.0, le=1.0)
     frequency_penalty: Optional[float] = Field(default=0.0, ge=-2.0, le=2.0)
     presence_penalty: Optional[float] = Field(default=0.0, ge=-2.0, le=2.0)
+    input_modalities: List[str] = Field(default_factory=lambda: ["text"])
+    output_modalities: List[str] = Field(default_factory=lambda: ["text"])
+    default_output_modalities: List[str] = Field(default_factory=lambda: ["text"])
+    supported_response_formats: List[str] = Field(default_factory=lambda: ["text"])
+    supports_vision: bool = False
+    supports_audio_input: bool = False
+    supports_audio_output: bool = False
+    supports_video_input: bool = False
+    supports_file_input: bool = False
+    supports_tools: bool = False
+    supports_streaming: bool = True
+    supports_reasoning: bool = False
+    context_window: Optional[int] = Field(default=None, ge=1)
+    max_output_tokens: Optional[int] = Field(default=None, ge=1)
+    constraints: Dict[str, Any] = Field(default_factory=dict)
+    adapter_options: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_chat_text_output(self) -> "LLMModelConfig":
+        output_modalities = _normalize_modalities(self.output_modalities, ["text"])
+        if output_modalities != ["text"]:
+            raise ValueError("LLM model output_modalities must remain ['text']")
+        if self.task_type != "chat.completion":
+            raise ValueError("LLM model task_type must be chat.completion")
+        if self.endpoint_protocol and not supports_endpoint_protocol(self.endpoint_protocol):
+            raise ValueError(f"Unsupported endpoint_protocol: {self.endpoint_protocol}")
+        self.output_modalities = ["text"]
+        self.default_output_modalities = ["text"]
+        return self
 
 
 class LLMModelCreate(BaseModel):
     """Create LLM model request"""
     name: str = Field(..., min_length=1, max_length=100)
     display_name: str = Field(..., min_length=1, max_length=255)
-    provider: str = Field(..., pattern="^(openai|deepseek|local|mock|jina)$")
+    provider: str = Field(..., pattern=SUPPORTED_LLM_PROVIDER_PATTERN)
     model_id: str = Field(..., min_length=1, max_length=100)
     api_base: Optional[str] = Field(None, max_length=500)
     api_key: Optional[str] = None
@@ -99,6 +209,14 @@ class LLMModelsListResponse(BaseModel):
     """List of LLM models"""
     models: List[LLMModelResponse]
     total: int
+
+
+@router.get("/schema")
+async def get_model_provider_schema():
+    return {
+        "adapters": adapter_schema(),
+        "model_capability_catalog": model_capability_schema(),
+    }
 
 
 @router.get("", response_model=LLMModelsListResponse)

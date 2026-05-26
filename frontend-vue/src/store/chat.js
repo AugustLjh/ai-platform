@@ -66,6 +66,16 @@ const parseUploadedFiles = (metadata = {}) => {
   }
 }
 
+const parseContentParts = (value) => {
+  if (!value) return []
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    return Array.isArray(parsed) ? parsed : []
+  } catch (error) {
+    return []
+  }
+}
+
 const buildMessageHtml = (role, content, shouldRenderMarkdown = true) => {
   if (role !== 'assistant' || shouldRenderMarkdown === false) {
     return ''
@@ -128,6 +138,7 @@ const normalizeMessage = (raw) => {
     role: raw.role,
     content: raw.content,
     rawContent: raw.content,
+    contentParts: parseContentParts(raw.content_parts || raw.contentParts),
     timestamp: raw.created_at || raw.createdAt || raw.timestamp || new Date().toISOString(),
     renderMarkdown: shouldRenderMarkdown,
     htmlContent: buildMessageHtml(raw.role, raw.content, shouldRenderMarkdown),
@@ -467,11 +478,51 @@ export const useChatStore = defineStore('chat', {
     addMessage(message) {
       if (!this.currentSessionId) return
       const list = this.messagesBySession[this.currentSessionId] || []
-      list.push({
+      list.push(normalizeMessage({
         ...message,
         timestamp: message.timestamp || new Date().toISOString()
-      })
+      }))
       this.messagesBySession[this.currentSessionId] = list
+    },
+
+    buildContentParts(message, uploadedFiles = []) {
+      const parts = []
+      if (message) {
+        parts.push({ type: 'text', text: message })
+      }
+      if (Array.isArray(uploadedFiles)) {
+        for (const file of uploadedFiles) {
+          if (!file) continue
+          const mimeType = file.content_type || file.mime_type || ''
+          const normalizedMimeType = String(mimeType).toLowerCase()
+          let partType = 'file'
+          if (normalizedMimeType.startsWith('image/')) partType = 'image'
+          else if (normalizedMimeType.startsWith('audio/')) partType = 'audio'
+          else if (normalizedMimeType.startsWith('video/')) partType = 'video'
+          parts.push({
+            type: partType,
+            file_id: file.id || file.file_id || '',
+            file_name: file.name || file.path || '',
+            mime_type: mimeType,
+            text: file.preview_text || ''
+          })
+        }
+      }
+      return parts
+    },
+
+    buildUploadedFilesFromParts(parts = []) {
+      return parseContentParts(parts)
+        .filter((part) => ['image', 'audio', 'video', 'file'].includes(String(part?.type || '').toLowerCase()))
+        .map((part) => ({
+          id: part.file_id || '',
+          file_id: part.file_id || '',
+          name: part.file_name || part.url || part.file_id || 'attachment',
+          path: part.file_name || '',
+          content_type: part.mime_type || '',
+          mime_type: part.mime_type || '',
+          preview_text: part.text || ''
+        }))
     },
 
     updateLastMessage(content) {
@@ -508,6 +559,7 @@ export const useChatStore = defineStore('chat', {
       this.addMessage({
         role: 'user',
         content: message,
+        content_parts: this.buildContentParts(message, configOverride.optimisticUploadedFiles),
         metadata: configOverride.metadata || {},
         uploadedFiles: Array.isArray(configOverride.optimisticUploadedFiles) ? configOverride.optimisticUploadedFiles : []
       })
@@ -543,7 +595,8 @@ export const useChatStore = defineStore('chat', {
             temperature: configOverride.temperature ?? this.config.temperature,
             max_tokens: configOverride.max_tokens ?? this.config.maxTokens,
             knowledge_base_id: effectiveKnowledgeBaseId || undefined,
-            metadata: configOverride.metadata || {}
+            metadata: configOverride.metadata || {},
+            content: this.buildContentParts(message, configOverride.optimisticUploadedFiles)
           },
           (chunk) => {
             const list = this.messagesBySession[sessionId] || []
@@ -558,6 +611,10 @@ export const useChatStore = defineStore('chat', {
             }
             if (chunk.messageId || chunk.message_id) {
               lastMessage.id = chunk.messageId || chunk.message_id
+            }
+            if (chunk.contentParts || chunk.content_parts) {
+              lastMessage.contentParts = parseContentParts(chunk.contentParts || chunk.content_parts)
+              lastMessage.uploadedFiles = this.buildUploadedFilesFromParts(lastMessage.contentParts)
             }
             if (chunk.metadata && Object.keys(chunk.metadata).length > 0) {
               lastMessage.metadata = chunk.metadata
@@ -582,6 +639,7 @@ export const useChatStore = defineStore('chat', {
         const list = this.messagesBySession[sessionId] || []
         if (list.length > 0) {
           list[list.length - 1].content = list[list.length - 1].rawContent || list[list.length - 1].content
+          list[list.length - 1].contentParts = list[list.length - 1].contentParts || []
           list[list.length - 1].streaming = false
           const completedState = buildStreamingMessageBlocks(list[list.length - 1], true)
           list[list.length - 1].renderBlocks = completedState.renderBlocks

@@ -16,7 +16,7 @@ AI Platform 是一个面向聊天、知识库和 Agent Runtime 编排的全栈�
 
 - 用户认证、聊天、会话历史、用量统计和消息反馈
 - 知识库 CRUD、文档上传/导入/搜索、预览、分块查看和检索测试
-- `openai`、`deepseek`、`local`、`mock`、`jina` 模型配置管理
+- `openai`、`deepseek`、`jina`、`qwen`、`wenxin`、`glm`、`kimi`、`doubao`、`local`、`mock` 模型配置管理
 - Agent 工作台、运行历史、结构化产物展示、运行树、MCP 管理和子代理治理页面
 - Agent Runtime 结果契约、工具与 provider 装配、MCP 集成、技能绑定、评审流程和委派治理
 - 基于 Alembic 的 PostgreSQL schema 管理
@@ -168,15 +168,15 @@ make prod-down
 主要模板文件：
 
 - `./.env.example`
-- `./ai_runtime/.env.example`
+- `./ai_runtime/.env.example`（runtime 模型、Embedding、RAG、Qdrant 配置）
 - `./platform/.env.example`
 
 关键配置：
 
 - `JWT_SECRET`：生产环境必须替换
-- `EMBEDDING_PROVIDER`：支持 `local`、`openai`、`jina`
-- `LLM_PROVIDER`：支持 `openai`、`deepseek`、`local`、`mock`
-- `QDRANT_HOST` / `QDRANT_PORT`：向量数据库地址
+- `EMBEDDING_PROVIDER`：见 `./ai_runtime/.env.example`
+- `LLM_PROVIDER`：见 `./ai_runtime/.env.example`
+- `QDRANT_HOST` / `QDRANT_PORT`：见 `./ai_runtime/.env.example`
 - `AI_RUNTIME_HTTP_ADDR`：Platform 访问 Runtime HTTP 接口所需地址
 - `AI_RUNTIME_CHAT_TRANSPORT`：Go 服务使用 `grpc` 或 `http` 调用聊天能力
 

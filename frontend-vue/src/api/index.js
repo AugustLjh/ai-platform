@@ -38,6 +38,7 @@ export const chatAPI = {
     return api.post('/api/v1/chat', {
       session_id: sessionId,
       message,
+      content: config.content || [],
       config
     })
   },
@@ -104,6 +105,7 @@ export const chatAPI = {
       body: JSON.stringify({
         session_id: sessionId,
         message,
+        content: config.content || [],
         metadata: config.metadata || {},
         config
       })
@@ -148,6 +150,7 @@ export const chatAPI = {
                   messageId: json.message_id ?? json.MessageID ?? '',
                   type: json.type ?? json.Type,
                   content: json.content ?? json.Content ?? '',
+                  contentParts: json.content_parts ?? json.contentParts ?? json.ContentParts ?? [],
                   metadata: json.metadata ?? json.Metadata ?? {},
                   error: json.error ?? json.Error ?? ''
                 })

@@ -28,7 +28,7 @@ from ai_runtime.core.parsers.file_parser import FileParser
 from ai_runtime.core.parsers.url_fetcher import URLFetcher
 from ai_runtime.core.audit import AuditLogger
 from ai_runtime.core.quota import QuotaManager
-from ai_runtime.core.llm import BaseLLM, DeepseekLLM, JinaLLM, LocalLLM, OpenAILLM
+from ai_runtime.core.llm import BaseLLM, create_llm_for_provider
 from ai_runtime.core.vector_index import VectorIndex, VectorSearchHit
 
 try:
@@ -1728,21 +1728,16 @@ class DocumentService:
         model_id = model_row.get("model_id") or "unknown-model"
         api_key = model_row.get("api_key_encrypted")
         api_base = model_row.get("api_base")
-        config = dict(model_row.get("config") or {})
-        llm_kwargs = dict(config)
-        if api_base:
-            llm_kwargs["api_base"] = api_base
-
-        if provider == "openai":
-            llm = OpenAILLM(model=model_id, api_key=api_key, **llm_kwargs)
-        elif provider == "deepseek":
-            llm = DeepseekLLM(model=model_id, api_key=api_key, **llm_kwargs)
-        elif provider == "jina":
-            llm = JinaLLM(model=model_id, api_key=api_key, **llm_kwargs)
-        elif provider in {"local", "mock"}:
-            llm = LocalLLM(model=model_id, **llm_kwargs)
-        else:
-            raise ValueError(f"Unsupported rerank LLM provider: {provider}")
+        try:
+            llm = create_llm_for_provider(
+                provider,
+                model=model_id,
+                api_key=api_key,
+                api_base=api_base,
+                config=model_row.get("config") or {},
+            )
+        except ValueError as exc:
+            raise ValueError(f"Unsupported rerank LLM provider: {provider}") from exc
 
         self._rerank_runtime_cache[cache_key] = llm
         return llm

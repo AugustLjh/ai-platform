@@ -29,6 +29,7 @@ type Message struct {
 	SessionID  string
 	Role       string
 	Content    string
+	ContentParts []map[string]any
 	TokenCount int
 	Model      string
 	CreatedAt  time.Time
@@ -229,13 +230,17 @@ func (s *SessionStore) AddMessage(message *Message) error {
 
 	// Insert message
 	query := `
-		INSERT INTO messages (id, session_id, role, content, token_count, model, created_at, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO messages (id, session_id, role, content, content_parts, token_count, model, created_at, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 
 	metadataJSON, err := json.Marshal(normalizeMetadata(message.Metadata))
 	if err != nil {
 		return fmt.Errorf("failed to marshal message metadata: %w", err)
+	}
+	contentPartsJSON, err := json.Marshal(normalizeContentParts(message.ContentParts))
+	if err != nil {
+		return fmt.Errorf("failed to marshal message content parts: %w", err)
 	}
 
 	_, err = tx.Exec(ctx, query,
@@ -243,6 +248,7 @@ func (s *SessionStore) AddMessage(message *Message) error {
 		message.SessionID,
 		message.Role,
 		message.Content,
+		contentPartsJSON,
 		message.TokenCount,
 		message.Model,
 		message.CreatedAt,
@@ -279,7 +285,7 @@ func (s *SessionStore) GetSessionMessages(sessionID string, limit, offset int) (
 	defer cancel()
 
 	query := `
-		SELECT id, session_id, role, content, token_count, model, created_at, metadata
+		SELECT id, session_id, role, content, content_parts, token_count, model, created_at, metadata
 		FROM messages
 		WHERE session_id = $1
 		ORDER BY created_at ASC
@@ -296,11 +302,13 @@ func (s *SessionStore) GetSessionMessages(sessionID string, limit, offset int) (
 	for rows.Next() {
 		message := &Message{}
 		var metadataBytes []byte
+		var contentPartsBytes []byte
 		err := rows.Scan(
 			&message.ID,
 			&message.SessionID,
 			&message.Role,
 			&message.Content,
+			&contentPartsBytes,
 			&message.TokenCount,
 			&message.Model,
 			&message.CreatedAt,
@@ -310,6 +318,7 @@ func (s *SessionStore) GetSessionMessages(sessionID string, limit, offset int) (
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 		message.Metadata = parseMetadata(metadataBytes)
+		message.ContentParts = parseContentParts(contentPartsBytes)
 		messages = append(messages, message)
 	}
 
@@ -359,19 +368,21 @@ func (s *SessionStore) SaveMessageFeedback(userID, messageID string, updates map
 	defer cancel()
 
 	selectQuery := `
-		SELECT m.id, m.session_id, m.role, m.content, m.token_count, m.model, m.created_at, m.metadata
+		SELECT m.id, m.session_id, m.role, m.content, m.content_parts, m.token_count, m.model, m.created_at, m.metadata
 		FROM messages m
 		INNER JOIN sessions s ON s.id = m.session_id
 		WHERE m.id = $1 AND s.user_id = $2
 	`
 
 	var metadataBytes []byte
+	var contentPartsBytes []byte
 	message := &Message{}
 	err := s.pool.QueryRow(ctx, selectQuery, messageID, userID).Scan(
 		&message.ID,
 		&message.SessionID,
 		&message.Role,
 		&message.Content,
+		&contentPartsBytes,
 		&message.TokenCount,
 		&message.Model,
 		&message.CreatedAt,
@@ -385,6 +396,7 @@ func (s *SessionStore) SaveMessageFeedback(userID, messageID string, updates map
 	}
 
 	message.Metadata = parseMetadata(metadataBytes)
+	message.ContentParts = parseContentParts(contentPartsBytes)
 	for key, value := range updates {
 		if value == "" {
 			delete(message.Metadata, key)
@@ -605,6 +617,13 @@ func normalizeMetadata(metadata map[string]string) map[string]string {
 	return metadata
 }
 
+func normalizeContentParts(parts []map[string]any) []map[string]any {
+	if len(parts) == 0 {
+		return []map[string]any{}
+	}
+	return parts
+}
+
 func (s *SessionStore) queryUsageSummary(ctx context.Context, query string, args ...interface{}) (*UsageSummary, error) {
 	summary := &UsageSummary{}
 	if err := s.pool.QueryRow(ctx, query, args...).Scan(
@@ -666,4 +685,19 @@ func parseMetadata(raw []byte) map[string]string {
 		return map[string]string{}
 	}
 	return metadata
+}
+
+func parseContentParts(raw []byte) []map[string]any {
+	if len(raw) == 0 {
+		return []map[string]any{}
+	}
+
+	var parts []map[string]any
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return []map[string]any{}
+	}
+	if parts == nil {
+		return []map[string]any{}
+	}
+	return parts
 }

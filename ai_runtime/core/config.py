@@ -67,7 +67,10 @@ class EmbeddingConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     """LLM configuration"""
-    provider: str = Field(default="mock", description="LLM provider: openai/deepseek/jina/local/mock")
+    provider: str = Field(
+        default="mock",
+        description="LLM provider: openai/deepseek/jina/qwen/wenxin/glm/kimi/doubao/local/mock",
+    )
     api_key: Optional[str] = Field(default=None, description="API key for LLM service")
     api_base: Optional[str] = Field(default=None, description="API base URL")
     model: str = Field(default="gpt-3.5-turbo", description="Model name")
@@ -77,11 +80,28 @@ class LLMConfig(BaseModel):
     @classmethod
     def from_env(cls) -> "LLMConfig":
         """Load from environment variables"""
+        provider = os.getenv("LLM_PROVIDER", "mock").lower()
+        provider_defaults = {
+            "openai": ("OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_MODEL", "gpt-3.5-turbo"),
+            "deepseek": ("DEEPSEEK_API_KEY", "DEEPSEEK_API_BASE", "DEEPSEEK_MODEL", "deepseek-chat"),
+            "jina": ("JINA_API_KEY", "JINA_API_BASE", "JINA_MODEL", "jina-deepsearch-v1"),
+            "qwen": ("QWEN_API_KEY", "QWEN_API_BASE", "QWEN_MODEL", "qwen-plus"),
+            "wenxin": ("WENXIN_API_KEY", "WENXIN_API_BASE", "WENXIN_MODEL", "ernie-4.0-turbo-8k"),
+            "glm": ("GLM_API_KEY", "GLM_API_BASE", "GLM_MODEL", "glm-4-plus"),
+            "kimi": ("KIMI_API_KEY", "KIMI_API_BASE", "KIMI_MODEL", "moonshot-v1-8k"),
+            "doubao": ("DOUBAO_API_KEY", "DOUBAO_API_BASE", "DOUBAO_MODEL", "doubao-seed-1-6"),
+            "local": ("", "", "LOCAL_MODEL", "local-model"),
+            "mock": ("", "", "MOCK_MODEL", "gpt-3.5-turbo"),
+        }
+        api_key_env, api_base_env, model_env, default_model = provider_defaults.get(
+            provider,
+            ("OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_MODEL", "gpt-3.5-turbo"),
+        )
         return cls(
-            provider=os.getenv("LLM_PROVIDER", "mock"),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            api_base=os.getenv("OPENAI_API_BASE"),
-            model=os.getenv("OPENAI_MODEL", "gpt-3.5-turbo"),
+            provider=provider,
+            api_key=os.getenv(api_key_env) if api_key_env else None,
+            api_base=os.getenv(api_base_env) if api_base_env else None,
+            model=os.getenv(model_env, default_model) if model_env else default_model,
             timeout=int(os.getenv("LLM_TIMEOUT", "30")),
             max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
         )

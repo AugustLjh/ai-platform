@@ -18,9 +18,10 @@ type Session struct {
 
 // Message represents a chat message
 type Message struct {
-	Role      string
-	Content   string
-	Timestamp time.Time
+	Role         string
+	Content      string
+	ContentParts []ContentPart
+	Timestamp    time.Time
 }
 
 // SessionManager manages chat sessions
@@ -83,15 +84,20 @@ func (sm *SessionManager) Delete(sessionID string) {
 	delete(sm.sessions, sessionID)
 }
 
-// AddMessage adds a message to the session
-func (s *Session) AddMessage(role, content string) {
+// AddMessage adds a message to the session.
+func (s *Session) AddMessage(role, content string, parts []ContentPart) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	contentParts := make([]ContentPart, 0, len(parts))
+	if len(parts) > 0 {
+		contentParts = append(contentParts, parts...)
+	}
 	s.Messages = append(s.Messages, Message{
-		Role:      role,
-		Content:   content,
-		Timestamp: time.Now(),
+		Role:         role,
+		Content:      content,
+		ContentParts: contentParts,
+		Timestamp:    time.Now(),
 	})
 	s.UpdatedAt = time.Now()
 }

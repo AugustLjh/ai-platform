@@ -109,55 +109,28 @@ services:
     networks:
       - ai-platform
 
+  # Renew Let's Encrypt certs and reload nginx immediately after a successful renewal.
   certbot:
     image: certbot/certbot:latest
     container_name: ai-platform-certbot
     restart: always
     cpus: ${CERTBOT_CPU_LIMIT:-0.25}
     mem_limit: ${CERTBOT_MEMORY_LIMIT:-128m}
-    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done;'"
+    pid: "service:nginx"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        trap 'exit 0' TERM INT;
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet --deploy-hook "kill -HUP 1";
+          sleep 12h & wait $${!};
+        done
     volumes:
       - letsencrypt_data:/etc/letsencrypt:rw
       - certbot_webroot:/var/www/certbot:rw
     networks:
       - ai-platform
-
-  ssl_reloader:
-    image: alpine:3.22
-    container_name: ai-platform-ssl-reloader
-    restart: always
-    cpus: ${SSL_RELOADER_CPU_LIMIT:-0.10}
-    mem_limit: ${SSL_RELOADER_MEMORY_LIMIT:-64m}
-    depends_on:
-      - nginx
-    pid: "service:nginx"
-    environment:
-      - DOMAIN=${DOMAIN}
-      - SSL_RELOAD_INTERVAL=${SSL_RELOAD_INTERVAL:-300}
-    volumes:
-      - letsencrypt_data:/etc/letsencrypt:ro
-    networks:
-      - ai-platform
-    entrypoint:
-      - /bin/sh
-      - -ec
-      - |
-        DOMAIN=$${DOMAIN:-localhost}
-        INTERVAL=$${SSL_RELOAD_INTERVAL:-300}
-        FULLCHAIN="/etc/letsencrypt/live/$${DOMAIN}/fullchain.pem"
-        PRIVKEY="/etc/letsencrypt/live/$${DOMAIN}/privkey.pem"
-        last=""
-        while :; do
-          current=""
-          if [ -f "$${FULLCHAIN}" ] && [ -f "$${PRIVKEY}" ]; then
-            current="$$(sha256sum "$${FULLCHAIN}" "$${PRIVKEY}" | sha256sum | cut -d " " -f1)"
-            if [ -n "$${last}" ] && [ "$${current}" != "$${last}" ]; then
-              kill -HUP 1
-            fi
-            last="$${current}"
-          fi
-          sleep "$${INTERVAL}"
-        done
 
 volumes:
   postgres_data:
