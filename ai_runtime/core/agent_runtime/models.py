@@ -13,6 +13,7 @@ PlannerActionType = Literal["final_answer", "tool_call", "ask_user", "delegate"]
 PlannerStepStatus = Literal["completed", "in_progress", "pending"]
 ArtifactType = Literal[
     "answer",
+    "code_patch",
     "code_files",
     "citations",
     "file_bundle",
@@ -22,6 +23,11 @@ ArtifactType = Literal[
     "task_plan",
     "table",
     "document_excerpt",
+    "directory_tree",
+    "document_pages",
+    "archive_bundle",
+    "verification_report",
+    "workspace_summary",
 ]
 
 
@@ -180,6 +186,17 @@ class RuntimeCreateRunRequest(BaseModel):
 
 class RuntimeResumeRunRequest(BaseModel):
     input_patch: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeArtifactReviewDecisionRequest(BaseModel):
+    decision: Literal["accepted", "rejected"]
+    note: Optional[str] = None
+
+
+class RuntimeWorkspaceWritebackRequest(BaseModel):
+    dry_run: bool = True
+    confirmed: bool = False
+    max_diff_chars: int = Field(default=40000, ge=100, le=100000)
 
 
 class AgentRunSummaryResponse(BaseModel):

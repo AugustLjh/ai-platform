@@ -92,6 +92,104 @@ export const agentsAPI = {
     return api.post(`/api/v1/agents/${agentId}/runs`, payload)
   },
 
+  listWorkspaceSources(params = {}) {
+    return api.get('/api/v1/agents/workspace-sources', { params })
+  },
+
+  inspectWorkspaces() {
+    return api.get('/api/v1/agents/workspaces')
+  },
+
+  cleanupWorkspaces(params = {}) {
+    return api.post('/api/v1/agents/workspaces/cleanup', null, { params })
+  },
+
+  cleanupWorkspaceLocks(params = {}) {
+    return api.post('/api/v1/agents/workspaces/locks/cleanup', null, { params })
+  },
+
+  getRuntimeStatus() {
+    return api.get('/api/v1/agents/runtime-status')
+  },
+
+  getOpsStatus(role = 'user') {
+    return api.get('/api/v1/agents/ops-status', {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  getTenantGovernanceStatus(role = 'user') {
+    return api.get('/api/v1/agents/tenant-governance', {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateOpsStatus(role = 'user') {
+    return api.post('/api/v1/agents/ops-status/evaluate', null, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  getOpsPrometheusMetrics(role = 'user') {
+    return api.get('/api/v1/agents/ops-status/metrics', {
+      headers: { 'X-User-Role': role },
+      responseType: 'text'
+    })
+  },
+
+  getOpsGrafanaDashboard(role = 'user') {
+    return api.get('/api/v1/agents/ops-status/grafana-dashboard', {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  acknowledgeRuntimeAlert(ruleName, role = 'user') {
+    return api.post(`/api/v1/agents/ops-status/alerts/${encodeURIComponent(ruleName)}/acknowledge`, null, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  resolveRuntimeAlert(ruleName, role = 'user') {
+    return api.post(`/api/v1/agents/ops-status/alerts/${encodeURIComponent(ruleName)}/resolve`, null, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateAuditRedactionRules(testCases = [], role = 'user') {
+    return api.post('/api/v1/agents/audit/redaction/evaluate', testCases, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateSubagentQualityRules(testCases = null, role = 'user') {
+    return api.post('/api/v1/agents/subagents/quality/evaluate', testCases || [], {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateWebSearchQualityRules(testCases = null, role = 'user') {
+    return api.post('/api/v1/agents/web/search-quality/evaluate', testCases || [], {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  evaluateProductionReadiness(evidence = {}, role = 'user') {
+    return api.post('/api/v1/agents/production-readiness/evaluate', evidence || {}, {
+      headers: { 'X-User-Role': role }
+    })
+  },
+
+  listEvaluationHistory(evaluationType = '', limit = 10, role = 'user') {
+    const params = { limit }
+    if (evaluationType) {
+      params.evaluation_type = evaluationType
+    }
+    return api.get('/api/v1/agents/evaluations', {
+      params,
+      headers: { 'X-User-Role': role }
+    })
+  },
+
   listTools(agentDefinitionId = '') {
     const params = {}
     if (agentDefinitionId) {
@@ -126,12 +224,32 @@ export const agentsAPI = {
     })
   },
 
+  getRunAuditView(runId, { viewerRole = 'user', includeEvents = true, includeToolCalls = true, eventLimit = 500, role = 'user' } = {}) {
+    return api.get(`/api/v1/agents/runs/${runId}/audit-view`, {
+      params: {
+        viewer_role: viewerRole,
+        include_events: includeEvents,
+        include_tool_calls: includeToolCalls,
+        event_limit: eventLimit
+      },
+      headers: { 'X-User-Role': role }
+    })
+  },
+
   cancelRun(runId) {
     return api.post(`/api/v1/agents/runs/${runId}/cancel`)
   },
 
   resumeRun(runId, payload = {}) {
     return api.post(`/api/v1/agents/runs/${runId}/resume`, payload)
+  },
+
+  reviewRunArtifact(runId, artifactId, payload = {}) {
+    return api.post(`/api/v1/agents/runs/${runId}/artifacts/${artifactId}/review`, payload)
+  },
+
+  writebackRunWorkspace(runId, payload = {}) {
+    return api.post(`/api/v1/agents/runs/${runId}/workspace/writeback`, payload)
   },
 
   async streamRunEvents(runId, { afterSequence = 0, signal, onEvent, onError } = {}) {

@@ -200,7 +200,7 @@ func (h *AgentHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.agentService.ListAvailableTools(
+	result, err := h.agentService.ListAvailableTools(
 		r.Context(),
 		user.TenantID,
 		strings.TrimSpace(r.URL.Query().Get("agent_definition_id")),
@@ -209,7 +209,179 @@ func (h *AgentHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	respondJSON(w, map[string]any{"tools": items, "total": len(items)}, http.StatusOK)
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleWorkspaceSources(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	maxEntries := parseQueryInt(r, "max_entries", 200)
+	maxDepth := parseQueryInt(r, "max_depth", 2)
+	result, err := h.agentService.ListWorkspaceSources(r.Context(), user.TenantID, user.ID, maxEntries, maxDepth)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleInspectWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	result, err := h.agentService.InspectWorkspaces(r.Context(), user.TenantID, user.ID)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleCleanupWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	dryRun := !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("dry_run")), "false")
+	confirmed := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("confirmed")), "true")
+	maxDelete := parseQueryInt(r, "max_delete", 100)
+	result, err := h.agentService.CleanupWorkspaces(r.Context(), user.TenantID, user.ID, dryRun, maxDelete, confirmed)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleCleanupWorkspaceLocks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	dryRun := !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("dry_run")), "false")
+	confirmed := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("confirmed")), "true")
+	maxDelete := parseQueryInt(r, "max_delete", 100)
+	result, err := h.agentService.CleanupWorkspaceLocks(r.Context(), user.TenantID, user.ID, dryRun, maxDelete, confirmed)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	result, err := h.agentService.GetRuntimeStatus(r.Context(), user.TenantID, user.ID)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleAuditRedactionEvaluation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var testCases []map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&testCases); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	result, err := h.agentService.EvaluateAuditRedactionRules(r.Context(), user.TenantID, user.ID, testCases)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleSubagentQualityEvaluation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var testCases []map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&testCases); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	result, err := h.agentService.EvaluateSubagentQualityRules(r.Context(), user.TenantID, user.ID, testCases)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
+}
+
+func (h *AgentHandler) HandleWebSearchQualityEvaluation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := middleware.GetUser(r.Context())
+	if !ok {
+		respondError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var testCases []map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&testCases); err != nil {
+		respondError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	result, err := h.agentService.EvaluateWebSearchQualityRules(r.Context(), user.TenantID, user.ID, testCases)
+	if err != nil {
+		respondError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, result, http.StatusOK)
 }
 
 func (h *AgentHandler) HandleRuns(w http.ResponseWriter, r *http.Request) {

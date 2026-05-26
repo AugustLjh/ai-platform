@@ -144,6 +144,7 @@ class AgentPlanner:
             "If tool use is needed, choose exactly one tool_call action.",
             "When context is incomplete, prefer discovery actions that inspect conversation history, uploaded documents, or retrieved knowledge before synthesis.",
             "Use recent conversation and resolved references to handle pronouns, omitted subjects, and shorthand requests.",
+            "If pending_subagent_invocations is non-empty, those child runs are still executing or awaiting aggregation; do not claim their delegated work is complete until a terminal subagent observation appears in step_history.",
             "Incomplete user input alone is not sufficient reason to choose ask_user.",
             "If the task can proceed under reasonable assumptions, prefer tool_call or final_answer and carry the assumptions forward.",
             "Prefer narrow, evidence-gathering tool calls over broad speculative ones.",
@@ -248,6 +249,7 @@ class AgentPlanner:
             },
             "tool_failures": runtime_context.get("tool_failures", 0),
             "pending_question": prompt_context.get("pending_question", runtime_context.get("pending_question")),
+            "pending_subagent_invocations": runtime_context.get("pending_subagent_invocations", []),
             "available_subagents": [
                 {
                     "slug": target.slug,

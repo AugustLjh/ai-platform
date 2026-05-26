@@ -81,12 +81,12 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 .step-panel {
   background: white;
   border: 1px solid rgba(16, 163, 127, 0.14);
-  border-radius: 24px;
-  padding: 22px;
+  border-radius: 16px;
+  padding: 14px;
   box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
-  max-height: min(72vh, 840px);
+  max-height: min(68vh, 760px);
   overflow: hidden;
   min-width: 0;
   width: 100%;
@@ -96,25 +96,26 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 .panel-head {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   align-items: flex-start;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 
 .panel-head h3 {
-  font-size: 18px;
-  margin: 0 0 6px;
+  font-size: 16px;
+  margin: 0 0 4px;
 }
 
 .panel-head p {
   color: var(--gray-600);
-  font-size: 14px;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .panel-count {
-  min-width: 36px;
-  height: 36px;
-  border-radius: 12px;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 10px;
   background: rgba(16, 163, 127, 0.1);
   color: var(--primary-700);
   display: inline-flex;
@@ -124,7 +125,7 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 }
 
 .empty-state {
-  padding: 20px;
+  padding: 14px;
   border-radius: var(--radius-lg);
   background: var(--gray-50);
   color: var(--gray-500);
@@ -133,7 +134,7 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 
 .step-list {
   display: grid;
-  gap: 16px;
+  gap: 10px;
   min-width: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -141,12 +142,12 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 
 .step-card {
   border: 1px solid var(--gray-200);
-  border-radius: 20px;
-  padding: 18px;
+  border-radius: 14px;
+  padding: 12px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
   min-width: 0;
   max-width: 100%;
-  max-height: 420px;
+  max-height: 360px;
   overflow: auto;
 }
 
@@ -166,7 +167,7 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 }
 
 .step-card h4 {
-  font-size: 17px;
+  font-size: 15px;
   margin-top: 4px;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -203,22 +204,22 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 }
 
 .step-kind {
-  margin-top: 10px;
+  margin-top: 8px;
   color: var(--gray-500);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .step-question {
-  margin-top: 12px;
-  padding: 12px 14px;
+  margin-top: 10px;
+  padding: 10px 12px;
   border-radius: var(--radius-md);
   background: rgba(245, 158, 11, 0.12);
   color: #92400e;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .step-output {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .step-output-label {
@@ -230,7 +231,7 @@ const toolCallsByStep = (stepId) => props.toolCalls.filter((toolCall) => toolCal
 
 pre {
   margin: 0;
-  padding: 12px;
+  padding: 10px;
   border-radius: var(--radius-md);
   background: rgba(13, 13, 13, 0.04);
   font-size: 12px;
@@ -245,10 +246,10 @@ pre {
 
 .tool-call-list {
   display: grid;
-  gap: 12px;
-  margin-top: 14px;
+  gap: 10px;
+  margin-top: 10px;
   min-width: 0;
-  max-height: 280px;
+  max-height: 240px;
   overflow-y: auto;
   padding-right: 4px;
 }

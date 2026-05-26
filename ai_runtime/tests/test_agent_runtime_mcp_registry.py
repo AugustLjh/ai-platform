@@ -1,5 +1,10 @@
 from ai_runtime.core.agent_runtime.mcp.models import MCPServerDefinition
-from ai_runtime.core.agent_runtime.mcp.registry import _sanitize_endpoint, _sanitize_error_message
+from ai_runtime.core.agent_runtime.mcp.registry import (
+    MCPRegistry,
+    _mask_sensitive_object,
+    _sanitize_endpoint,
+    _sanitize_error_message,
+)
 
 
 def build_server(**kwargs):
@@ -48,3 +53,48 @@ def test_sanitize_error_message_masks_server_secrets():
     assert "runtime-secret" not in sanitized
     assert "********" in sanitized
     assert "mode=demo" in sanitized
+
+
+def test_mask_sensitive_object_masks_headers_and_env_values():
+    masked = _mask_sensitive_object(
+        {
+            "headers": {"Authorization": "Bearer secret-token", "X-Trace": "ok"},
+            "env": {"OPENAI_API_KEY": "runtime-secret"},
+            "summary": "safe",
+        }
+    )
+
+    assert masked["headers"]["Authorization"] == "********"
+    assert masked["env"]["OPENAI_API_KEY"] == "********"
+    assert masked["summary"] == "safe"
+
+
+def test_build_audit_report_summarizes_risk_distribution():
+    registry = MCPRegistry(db_pool=None)
+    report = registry._build_audit_report(
+        tenant_id="tenant-1",
+        servers=[
+            {
+                "server": {"id": "server-1", "name": "Docs MCP", "transport": "http", "status": "active"},
+                "security_score": {
+                    "score": 35,
+                    "risk_level": "critical",
+                    "summary": "critical risk",
+                    "evaluated_at": "2026-05-19T00:00:00+00:00",
+                    "breakdown": [],
+                },
+                "recovery": {"status": "blocked", "recoverable": True, "failure_mode": "connection_failed"},
+                "catalog": {"is_stale": True},
+                "connection": {"status": "untested"},
+                "binding_usage": {"agent_count": 2, "active_agent_count": 1},
+                "events": [],
+            }
+        ],
+        recent_events=[{"action_type": "test", "failure_mode": "connection_failed"}],
+        limit=12,
+    )
+
+    assert report["overview"]["critical_risk_count"] == 1
+    assert report["overview"]["blocked_count"] == 1
+    assert report["score_distribution"]["critical"] == 1
+    assert report["recommended_actions"][0].startswith("先处理 critical/blocked")

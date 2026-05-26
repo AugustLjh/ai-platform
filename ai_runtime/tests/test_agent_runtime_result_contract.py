@@ -1,3 +1,5 @@
+from ai_runtime.core.agent_runtime.models import AgentArtifact
+from ai_runtime.core.agent_runtime.events import MASK
 from ai_runtime.core.agent_runtime.result_contract import (
     build_artifacts_from_tool_result,
     build_structured_run_result,
@@ -44,6 +46,27 @@ def test_build_structured_run_result_extracts_answer_and_artifacts():
     assert "review_findings" in artifact_types
     assert "citations" in artifact_types
     assert "code_files" in artifact_types
+
+
+def test_build_structured_run_result_redacts_sensitive_artifact_payloads():
+    result = build_structured_run_result(
+        {
+            "answer": "Token is token=super-secret-token-value",
+            "table": {
+                "rows": [
+                    {
+                        "name": "env",
+                        "api_key": "sk-1234567890abcdef",
+                    }
+                ],
+            },
+        }
+    )
+
+    serialized = str(result["artifacts"])
+    assert "super-secret-token-value" not in serialized
+    assert "sk-1234567890abcdef" not in serialized
+    assert MASK in serialized
 
 
 def test_hydrate_legacy_result_backfills_text_and_artifacts():
@@ -175,6 +198,149 @@ def test_build_artifacts_from_tool_result_promotes_structured_tool_payload_witho
     assert artifacts[0]["metadata"]["tool_call_id"] == "tool-call-1"
 
 
+def test_build_artifacts_from_tool_result_redacts_sensitive_tool_outputs():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Bearer abcdefghijklmnop",
+                    "metadata": {"authorization": "Bearer secret"},
+                }
+            ]
+        },
+        tool_name="mcp_fetch",
+        tool_kind="mcp",
+        step_id="step-1",
+        tool_call_id="tool-call-1",
+    )
+
+    serialized = str(artifacts)
+    assert "abcdefghijklmnop" not in serialized
+    assert "Bearer secret" not in serialized
+
+
+def test_build_artifacts_from_mcp_governance_result_promotes_safe_summary():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "servers": [
+                {
+                    "server": {"id": "server-1", "name": "Docs MCP", "transport": "http", "status": "active"},
+                    "availability": {"status": "available"},
+                    "recovery": {"summary": "refresh first", "status": "stale"},
+                    "security_score": {"risk_level": "medium", "score": 71, "summary": "watch"},
+                }
+            ],
+            "summary": {"total_servers": 1},
+            "tenant_id": "tenant-1",
+        },
+        tool_name="mcp_catalog_status",
+        tool_kind="mcp-governance",
+        step_id="step-1",
+        tool_call_id="tool-call-1",
+    )
+
+    artifact_types = [artifact["artifact_type"] for artifact in artifacts]
+    assert "paged_collection" in artifact_types
+    paged = next(artifact for artifact in artifacts if artifact["artifact_type"] == "paged_collection")
+    assert paged["payload"]["items"][0]["server_name"] == "Docs MCP"
+    assert paged["payload"]["items"][0]["risk_level"] == "medium"
+
+
+def test_build_artifacts_from_tool_result_promotes_workspace_patch_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "applied",
+            "path": "src/app.py",
+            "operation": "modify",
+            "dry_run": False,
+            "changed": True,
+            "before_sha256": "before",
+            "after_sha256": "after",
+            "diff": "--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n",
+            "artifacts": [
+                {
+                    "artifact_type": "code_patch",
+                    "name": "Workspace Patch",
+                    "payload": {
+                        "operation": "modify",
+                        "status": "applied",
+                        "dry_run": False,
+                        "files": [
+                            {
+                                "path": "src/app.py",
+                                "operation": "modify",
+                                "before_sha256": "before",
+                                "after_sha256": "after",
+                                "changed": True,
+                            }
+                        ],
+                        "diff": "--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n",
+                    },
+                }
+            ],
+        },
+        tool_name="workspace_apply_patch",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-call-1",
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "code_patch"
+    assert artifacts[0]["payload"]["files"][0]["path"] == "src/app.py"
+    assert artifacts[0]["metadata"]["tool_call_id"] == "tool-call-1"
+    assert artifacts[0]["metadata"]["operation"] == "modify"
+
+
+def test_build_artifacts_from_tool_result_promotes_delete_patch_metadata():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "dry_run",
+            "path": "src/obsolete.py",
+            "operation": "delete",
+            "dry_run": True,
+            "changed": True,
+            "before_sha256": "before",
+            "after_sha256": None,
+            "diff": "--- a/src/obsolete.py\n+++ b/src/obsolete.py\n@@\n-old\n",
+            "artifacts": [
+                {
+                    "artifact_type": "code_patch",
+                    "name": "Workspace Patch",
+                    "payload": {
+                        "operation": "delete",
+                        "status": "dry_run",
+                        "dry_run": True,
+                        "files": [
+                            {
+                                "path": "src/obsolete.py",
+                                "operation": "delete",
+                                "before_sha256": "before",
+                                "after_sha256": None,
+                                "changed": True,
+                            }
+                        ],
+                        "diff": "--- a/src/obsolete.py\n+++ b/src/obsolete.py\n@@\n-old\n",
+                        "review_notes": ["Deletion requires review."],
+                        "merge_policy": "manual_review_required",
+                    },
+                }
+            ],
+        },
+        tool_name="workspace_delete_path",
+        tool_kind="workspace",
+        tool_call_id="tool-call-2",
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "code_patch"
+    assert artifacts[0]["payload"]["operation"] == "delete"
+    assert artifacts[0]["payload"]["review_notes"] == ["Deletion requires review."]
+    assert artifacts[0]["payload"]["merge_policy"] == "manual_review_required"
+    assert artifacts[0]["metadata"]["tool_call_id"] == "tool-call-2"
+
+
 def test_build_structured_run_result_promotes_implicit_result_lists_into_table_artifacts():
     result = build_structured_run_result(
         {
@@ -268,6 +434,424 @@ def test_build_structured_run_result_promotes_directory_tree_document_pages_and_
     archive_bundle = next(artifact for artifact in result["artifacts"] if artifact["artifact_type"] == "archive_bundle")
     assert archive_bundle["payload"]["entry_count"] == 2
     assert archive_bundle["payload"]["format"] == "zip"
+
+
+def test_workspace_tool_results_promote_to_run_artifacts():
+    tree_artifacts = build_artifacts_from_tool_result(
+        {
+            "workspace_root": "/workspace",
+            "path": ".",
+            "entries": [
+                {"path": "src", "type": "directory", "depth": 1},
+                {"path": "src/app.py", "type": "file", "depth": 2, "size_bytes": 12},
+            ],
+            "truncated": False,
+        },
+        tool_name="workspace_tree",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert tree_artifacts[0]["artifact_type"] == "directory_tree"
+    assert tree_artifacts[0]["metadata"]["workspace_root"] == "/workspace"
+
+    read_artifacts = build_artifacts_from_tool_result(
+        {"path": "src/app.py", "content": "print('ok')\n", "size_bytes": 12, "truncated": False},
+        tool_name="workspace_read_file",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert read_artifacts[0]["artifact_type"] == "code_files"
+    assert read_artifacts[0]["payload"]["files"][0]["path"] == "src/app.py"
+
+    search_artifacts = build_artifacts_from_tool_result(
+        {
+            "query": "needle",
+            "matches": [{"path": "src/app.py", "line": 2, "preview": "needle here"}],
+            "truncated": False,
+        },
+        tool_name="workspace_search_text",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert search_artifacts[0]["artifact_type"] == "document_excerpt"
+    assert search_artifacts[0]["payload"]["items"][0]["source"] == "src/app.py"
+
+    info_artifacts = build_artifacts_from_tool_result(
+        {
+            "path": "src/app.py",
+            "type": "file",
+            "size_bytes": 12,
+            "extension": ".py",
+            "sha256": "abc",
+        },
+        tool_name="workspace_file_info",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert info_artifacts[0]["artifact_type"] == "file_bundle"
+    assert info_artifacts[0]["payload"]["files"][0]["metadata"]["sha256"] == "abc"
+
+
+def test_workspace_status_tool_result_promotes_workspace_summary_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "workspace": {
+                "id": "tenant/run",
+                "root": "/workspace",
+                "status": "ready",
+                "source": {"type": "upload_bundle", "bundle_ids": ["bundle-1"]},
+                "snapshot": {
+                    "file_count": 2,
+                    "total_size_bytes": 42,
+                    "snapshot_at": "2026-05-13T00:00:00+00:00",
+                },
+            }
+        },
+        tool_name="workspace_status",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+
+    assert artifacts[0]["artifact_type"] == "workspace_summary"
+    assert artifacts[0]["payload"]["source"]["type"] == "upload_bundle"
+
+
+def test_runtime_artifact_model_accepts_workspace_and_execution_surface_artifacts():
+    for artifact_type in ("workspace_summary", "code_patch", "verification_report"):
+        artifact = AgentArtifact.model_validate(
+            {
+                "artifact_type": artifact_type,
+                "name": artifact_type,
+                "payload": {},
+            }
+        )
+
+        assert artifact.artifact_type == artifact_type
+
+
+def test_git_tool_results_promote_to_document_excerpt_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "command": ["git", "diff"],
+            "exit_code": 0,
+            "stdout": "diff --git a/app.py b/app.py\n",
+            "stderr": "",
+            "truncated": False,
+        },
+        tool_name="git_diff",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+
+    assert artifacts[0]["artifact_type"] == "document_excerpt"
+    assert artifacts[0]["payload"]["items"][0]["source"] == "git"
+
+    empty_artifacts = build_artifacts_from_tool_result(
+        {
+            "command": ["git", "diff"],
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "truncated": False,
+        },
+        tool_name="git_diff",
+        tool_kind="workspace",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+    assert empty_artifacts[0]["payload"]["items"][0]["text"] == "No changes."
+
+
+def test_sandbox_exec_tool_results_promote_to_verification_report_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "failed",
+            "exit_code": 1,
+            "command": ["python", "-m", "pytest"],
+            "cwd": ".",
+            "duration_ms": 123,
+            "timeout_seconds": 300,
+            "purpose": "test",
+            "failure_category": "non_zero_exit",
+            "stdout": "FAILED tests/test_app.py::test_app",
+            "stderr": "",
+            "truncated": False,
+            "runner": {"backend": "docker", "image": "python:3.12-slim"},
+            "structured_report": {
+                "schema_version": "verification_report.v1",
+                "summary": {"report_count": 1},
+                "reports": [
+                    {
+                        "kind": "test",
+                        "format": "pytest_text",
+                        "summary": {"failed": 1},
+                        "failures": [{"title": "tests/test_app.py::test_app", "severity": "error"}],
+                    }
+                ],
+            },
+        },
+        tool_name="run_tests",
+        tool_kind="sandbox-exec",
+        step_id="step-1",
+        tool_call_id="tool-1",
+    )
+
+    assert artifacts[0]["artifact_type"] == "verification_report"
+    assert artifacts[0]["name"] == "run_tests - Test Verification"
+    assert artifacts[0]["payload"]["kind"] == "test"
+    assert artifacts[0]["payload"]["status"] == "failed"
+    assert artifacts[0]["payload"]["exit_code"] == 1
+    assert artifacts[0]["payload"]["summary"] == "Verification failed (non_zero_exit)."
+    assert artifacts[0]["payload"]["logs"]["stdout"] == "FAILED tests/test_app.py::test_app"
+    assert artifacts[0]["payload"]["runner"]["backend"] == "docker"
+    assert artifacts[0]["payload"]["structured_report"]["schema_version"] == "verification_report.v1"
+    assert artifacts[0]["payload"]["structured_report"]["reports"][0]["summary"]["failed"] == 1
+    assert artifacts[0]["metadata"]["failure_category"] == "non_zero_exit"
+
+
+def test_browser_snapshot_tool_result_promotes_to_document_excerpt_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "completed",
+            "session_id": "browser-session-1",
+            "url": "https://app.example.com/dashboard",
+            "title": "Dashboard",
+            "text": "Ready",
+            "captured_at": "2026-05-14T00:00:00+00:00",
+            "viewport": {"width": 1280, "height": 720},
+            "source": "browser_snapshot",
+        },
+        tool_name="browser_snapshot",
+        tool_kind="web",
+        step_id="step-browser",
+        tool_call_id="tool-browser",
+    )
+
+    assert artifacts[0]["artifact_type"] == "document_excerpt"
+    assert artifacts[0]["name"] == "browser_snapshot - Dashboard"
+    assert artifacts[0]["payload"]["items"][0]["text"] == "Ready"
+    assert artifacts[0]["payload"]["items"][0]["metadata"]["session_id"] == "browser-session-1"
+    assert artifacts[0]["metadata"]["url"] == "https://app.example.com/dashboard"
+
+
+def test_browser_verify_tool_result_promotes_to_verification_report_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "completed",
+            "session_id": "browser-session-1",
+            "url": "https://app.example.com/dashboard",
+            "title": "Dashboard",
+            "text": "Ready",
+            "console_messages": [
+                {"type": "console", "level": "error", "text": "boom", "timestamp": "2026-05-16T00:00:00+00:00"}
+            ],
+            "network_errors": [
+                {"url": "https://app.example.com/api", "method": "GET", "text": "failed", "timestamp": "2026-05-16T00:00:00+00:00"}
+            ],
+            "kind": "browser_verify",
+            "summary": "Browser verification completed.",
+            "structured_report": {
+                "schema_version": "verification_report.v1",
+                "reports": [
+                    {
+                        "kind": "browser_verify",
+                        "format": "browser_diagnostics",
+                        "summary": {"finding_count": 2},
+                        "findings": [
+                            {"title": "boom", "severity": "error"},
+                            {"title": "failed", "severity": "error"},
+                        ],
+                    }
+                ],
+            },
+            "source": "browser_verify",
+        },
+        tool_name="browser_verify",
+        tool_kind="web",
+        step_id="step-browser",
+        tool_call_id="tool-browser",
+    )
+
+    assert artifacts[0]["artifact_type"] == "verification_report"
+    assert artifacts[0]["name"] == "browser_verify - Browser Verification"
+    assert artifacts[0]["payload"]["kind"] == "browser_verify"
+    assert artifacts[0]["payload"]["structured_report"]["reports"][0]["kind"] == "browser_verify"
+    assert artifacts[0]["metadata"]["session_id"] == "browser-session-1"
+
+
+def test_browser_screenshot_tool_result_promotes_to_media_gallery_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "completed",
+            "session_id": "browser-session-1",
+            "url": "https://app.example.com/dashboard",
+            "title": "Dashboard",
+            "captured_at": "2026-05-14T00:00:00+00:00",
+            "images": [
+                {
+                    "title": "Dashboard",
+                    "path": "browser-session-1.png",
+                    "mime_type": "image/png",
+                    "data": "iVBORw0K",
+                    "size_bytes": 6,
+                }
+            ],
+        },
+        tool_name="browser_screenshot",
+        tool_kind="web",
+        step_id="step-browser",
+        tool_call_id="tool-browser",
+    )
+
+    assert artifacts[0]["artifact_type"] == "media_gallery"
+    assert artifacts[0]["payload"]["items"][0]["mime_type"] == "image/png"
+    assert artifacts[0]["payload"]["items"][0]["uri"].startswith("data:image/png;base64,")
+    assert artifacts[0]["metadata"]["session_id"] == "browser-session-1"
+
+
+def test_pdf_extract_tool_result_promotes_to_document_pages_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": 200,
+            "url": "https://files.example.com/guide.pdf",
+            "requested_url": "https://files.example.com/guide.pdf",
+            "filename": "guide.pdf",
+            "page_count": 1,
+            "extracted_pages": 1,
+            "pages": [
+                {
+                    "page_number": 1,
+                    "text": "PDF text",
+                    "source": "https://files.example.com/guide.pdf",
+                }
+            ],
+        },
+        tool_name="pdf_extract",
+        tool_kind="web",
+        step_id="step-pdf",
+        tool_call_id="tool-pdf",
+    )
+
+    assert artifacts[0]["artifact_type"] == "document_pages"
+    assert artifacts[0]["name"] == "pdf_extract - guide.pdf"
+    assert artifacts[0]["payload"]["pages"][0]["text"] == "PDF text"
+    assert artifacts[0]["payload"]["page_count"] == 1
+    assert artifacts[0]["metadata"]["status"] == 200
+
+
+def test_specialized_verification_tool_results_promote_to_verification_report_artifact():
+    artifacts = build_artifacts_from_tool_result(
+        {
+            "status": "completed",
+            "exit_code": 0,
+            "command": ["python", "-m", "pyright", "."],
+            "cwd": ".",
+            "duration_ms": 42,
+            "timeout_seconds": 300,
+            "purpose": "typecheck",
+            "stdout": "0 errors",
+            "stderr": "",
+            "truncated": False,
+            "ecosystem": "python",
+            "report_format": "plain_text",
+        },
+        tool_name="typecheck_run",
+        tool_kind="sandbox-exec",
+        step_id="step-1",
+        tool_call_id="tool-typecheck",
+    )
+
+    assert artifacts[0]["artifact_type"] == "verification_report"
+    assert artifacts[0]["name"] == "typecheck_run - Typecheck Verification"
+    assert artifacts[0]["payload"]["kind"] == "typecheck"
+    assert artifacts[0]["payload"]["status"] == "completed"
+    assert artifacts[0]["payload"]["ecosystem"] == "python"
+    assert artifacts[0]["payload"]["report_format"] == "plain_text"
+
+
+def test_web_tool_results_promote_to_citation_and_excerpt_artifacts():
+    search_artifacts = build_artifacts_from_tool_result(
+        {
+            "query": "runtime",
+            "items": [
+                {
+                    "title": "Runtime Plan",
+                    "url": "https://docs.example.com/runtime",
+                    "snippet": "Use structured web artifacts.",
+                }
+            ],
+            "fetched_at": "2026-05-14T00:00:00+00:00",
+            "source": "web_search",
+        },
+        tool_name="web_search",
+        tool_kind="web",
+        step_id="step-1",
+        tool_call_id="tool-web-1",
+    )
+
+    assert search_artifacts[0]["artifact_type"] == "citations"
+    assert search_artifacts[0]["payload"]["items"][0]["url"] == "https://docs.example.com/runtime"
+    assert search_artifacts[0]["metadata"]["query"] == "runtime"
+
+    page_artifacts = build_artifacts_from_tool_result(
+        {
+            "url": "https://docs.example.com/runtime",
+            "requested_url": "https://docs.example.com/runtime",
+            "status": 200,
+            "title": "Runtime Plan",
+            "text": "Use structured web artifacts.",
+            "fetched_at": "2026-05-14T00:00:00+00:00",
+            "truncated": False,
+        },
+        tool_name="open_page",
+        tool_kind="web",
+        step_id="step-1",
+        tool_call_id="tool-web-2",
+    )
+
+    assert page_artifacts[0]["artifact_type"] == "document_excerpt"
+    assert page_artifacts[0]["payload"]["items"][0]["source"] == "https://docs.example.com/runtime"
+    assert page_artifacts[0]["payload"]["items"][0]["metadata"]["status"] == 200
+
+    download_artifacts = build_artifacts_from_tool_result(
+        {
+            "url": "https://docs.example.com/runtime.pdf",
+            "requested_url": "https://docs.example.com/runtime.pdf",
+            "status": 200,
+            "filename": "runtime.pdf",
+            "content_type": "application/pdf",
+            "bytes": 12,
+            "sha256": "hash",
+            "truncated": False,
+            "files": [
+                {
+                    "name": "runtime.pdf",
+                    "path": "runtime.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 12,
+                    "data": "ZmFrZSBwZGY=",
+                    "source_url": "https://docs.example.com/runtime.pdf",
+                    "metadata": {"sha256": "hash"},
+                }
+            ],
+        },
+        tool_name="download_file",
+        tool_kind="web",
+        step_id="step-1",
+        tool_call_id="tool-web-3",
+    )
+
+    assert download_artifacts[0]["artifact_type"] == "file_bundle"
+    assert download_artifacts[0]["payload"]["files"][0]["name"] == "runtime.pdf"
+    assert download_artifacts[0]["payload"]["files"][0]["uri"].startswith("data:application/pdf;base64,")
+    assert download_artifacts[0]["payload"]["files"][0]["source"] == "https://docs.example.com/runtime.pdf"
+    assert download_artifacts[0]["metadata"]["sha256"] == "hash"
 
 
 def test_build_artifacts_from_tool_result_merges_structured_content_with_code_resources():

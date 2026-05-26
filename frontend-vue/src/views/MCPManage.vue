@@ -136,6 +136,13 @@
           <strong>最近事件 {{ governanceSummary?.recentEventCount || 0 }} 条</strong>
           <p>{{ governanceTopEventStatus }}</p>
         </article>
+        <article class="summary-card">
+          <div class="summary-head">
+            <span class="summary-kicker">Security</span>
+          </div>
+          <strong>{{ auditReportAverageScore }}</strong>
+          <p>{{ auditReportRiskSummary }}</p>
+        </article>
       </div>
 
       <div v-if="bulkExecutionSummary" class="info-banner">
@@ -252,6 +259,37 @@
             <span v-if="event.failureMode" class="mini-badge recovery-neutral">{{ event.failureMode }}</span>
           </div>
         </article>
+      </div>
+
+      <div v-if="auditReport?.topRiskServers?.length" class="bulk-preview-panel">
+        <div class="catalog-tool-head">
+          <strong>MCP 安全审计报表</strong>
+          <span>{{ formatTime(auditReport.generatedAt) }}</span>
+        </div>
+        <p v-if="auditReport.recommendedActions?.length">
+          {{ auditReport.recommendedActions[0] }}
+        </p>
+        <div class="bulk-preview-list">
+          <article
+            v-for="server in auditReport.topRiskServers.slice(0, 6)"
+            :key="server.serverId"
+            class="bulk-preview-card"
+          >
+            <div class="catalog-tool-head">
+              <strong>{{ server.serverName || server.serverId }}</strong>
+              <span :class="['mini-badge', `security-${server.riskLevel || 'unknown'}`]">
+                {{ server.score }}/100
+              </span>
+            </div>
+            <p>{{ server.summary }}</p>
+            <div class="catalog-tool-meta">
+              <span>{{ server.transport || 'transport unknown' }}</span>
+              <span v-if="server.failureMode">{{ server.failureMode }}</span>
+              <span>绑定 {{ server.bindingCount || 0 }}</span>
+              <span>active {{ server.activeCount || 0 }}</span>
+            </div>
+          </article>
+        </div>
       </div>
     </section>
 
@@ -504,6 +542,17 @@
                 </button>
               </div>
             </article>
+
+            <article class="summary-card">
+              <div class="summary-head">
+                <span class="summary-kicker">Security</span>
+                <span :class="['summary-badge', `security-${selectedServer.securityScore?.riskLevel || 'unknown'}`]">
+                  {{ selectedServer.securityScore?.score ?? 0 }}/{{ selectedServer.securityScore?.maxScore ?? 100 }}
+                </span>
+              </div>
+              <strong>{{ selectedServer.securityScore?.summary || '尚未生成安全评分。' }}</strong>
+              <p>风险等级：{{ selectedServer.securityScore?.riskLevel || 'unknown' }}</p>
+            </article>
           </div>
           <div v-if="selectedServer.lastError" class="detail-error">
             {{ selectedServer.lastError }}
@@ -546,6 +595,26 @@
       </div>
 
       <div class="detail-grid secondary-grid">
+        <div class="detail-panel">
+          <h3>安全评分明细</h3>
+          <div v-if="!selectedServer.securityScore?.breakdown?.length" class="mini-empty">当前没有安全评分明细。</div>
+          <div v-else class="audit-list">
+            <article
+              v-for="item in selectedServer.securityScore.breakdown"
+              :key="item.key"
+              class="audit-card"
+            >
+              <div class="catalog-tool-head">
+                <strong>{{ item.label || item.key }}</strong>
+                <span :class="['mini-badge', `security-${item.status || 'unknown'}`]">
+                  {{ item.score }}/{{ item.maxScore }}
+                </span>
+              </div>
+              <p>{{ item.summary }}</p>
+            </article>
+          </div>
+        </div>
+
         <div class="detail-panel">
           <h3>受影响的 Agent</h3>
           <div v-if="!selectedServer.bindingUsage?.agentCount" class="mini-empty">当前没有 agent 绑定这个 server。</div>
@@ -597,12 +666,14 @@ import {
   bindingUsageLabel,
   governanceFocusLabel,
   buildAgentExtensionsRoute,
+  normalizeMCPAuditReport,
   normalizeMCPBulkFollowUpPlan,
   normalizeMCPBulkPreview,
   normalizeMCPEvent,
   normalizeMCPGovernanceSummary,
   normalizeMCPBindingUsage,
   normalizeMCPRecovery,
+  normalizeMCPSecurityScore,
   recoverySeverityTone,
   statusLabel,
   statusTone,
@@ -623,6 +694,7 @@ const selectedServer = ref(null)
 const editingServerId = ref('')
 const lastTestResult = ref(null)
 const governanceSummary = ref(null)
+const auditReport = ref(null)
 const governanceFilter = ref(String(route.query.intent || '').trim() || 'all')
 const eventActionFilter = ref('')
 const eventStatusFilter = ref('')
@@ -683,6 +755,16 @@ const governanceTopEventStatus = computed(() => {
   if (entries.length === 0) return '暂无审计状态趋势'
   const [status, count] = entries.sort((left, right) => right[1] - left[1])[0]
   return `主状态：${status} · ${count} 次`
+})
+const auditReportAverageScore = computed(() => {
+  const average = Number(auditReport.value?.overview?.averageScore || 0)
+  if (!average) return '暂无评分'
+  return `平均安全分 ${average.toFixed(1)}`
+})
+const auditReportRiskSummary = computed(() => {
+  const overview = auditReport.value?.overview
+  if (!overview) return '等待审计报表'
+  return `高风险 ${overview.highRiskCount || 0} · critical ${overview.criticalRiskCount || 0}`
 })
 const bulkExecutionSummary = computed(() => {
   const execution = lastBulkExecution.value
@@ -783,6 +865,7 @@ const normalizeServer = (server = {}) => ({
   } : null,
   bindingUsage: normalizeMCPBindingUsage(server.binding_usage || server.bindingUsage),
   recovery: normalizeMCPRecovery(server.recovery),
+  securityScore: normalizeMCPSecurityScore(server.security_score || server.securityScore),
   events: Array.isArray(server.events) ? server.events.map(normalizeMCPEvent).filter(Boolean) : [],
   tools: Array.isArray(server.tools) ? server.tools.map(normalizeTool) : []
 })
@@ -823,13 +906,17 @@ const loadServers = async () => {
   loading.value = true
   errorMessage.value = ''
   try {
-    const [{ data }, governance] = await Promise.all([
+    const [{ data }, governance, audit] = await Promise.all([
       mcpAPI.listServers(),
-      mcpAPI.getGovernance(governanceQueryParams.value).catch(() => null)
+      mcpAPI.getGovernance(governanceQueryParams.value).catch(() => null),
+      mcpAPI.getAuditReport({ limit: 12 }).catch(() => null)
     ])
     servers.value = (data.servers || []).map(normalizeServer)
     if (governance?.data?.summary) {
       governanceSummary.value = normalizeMCPGovernanceSummary(governance.data.summary)
+    }
+    if (audit?.data) {
+      auditReport.value = normalizeMCPAuditReport(audit.data)
     }
     if (servers.value.length === 0) {
       selectedServer.value = null
@@ -866,8 +953,14 @@ const loadServers = async () => {
 
 const loadGovernance = async () => {
   try {
-    const { data } = await mcpAPI.getGovernance(governanceQueryParams.value)
+    const [{ data }, audit] = await Promise.all([
+      mcpAPI.getGovernance(governanceQueryParams.value),
+      mcpAPI.getAuditReport({ limit: 12 }).catch(() => null)
+    ])
     governanceSummary.value = normalizeMCPGovernanceSummary(data.summary)
+    if (audit?.data) {
+      auditReport.value = normalizeMCPAuditReport(audit.data)
+    }
   } catch (error) {
     console.error('Failed to load MCP governance:', error)
   }
@@ -1670,6 +1763,31 @@ watch([eventActionFilter, eventStatusFilter, eventFailureModeFilter], async () =
 .recovery-high {
   background: rgba(239, 68, 68, 0.12);
   color: #b91c1c;
+}
+
+.security-low,
+.security-healthy {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+}
+
+.security-medium,
+.security-watch,
+.security-warning {
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
+}
+
+.security-high,
+.security-critical {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.security-disabled,
+.security-unknown {
+  background: rgba(148, 163, 184, 0.16);
+  color: #475569;
 }
 
 .recovery-neutral,

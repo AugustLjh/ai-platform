@@ -15,29 +15,30 @@ import (
 var ErrMCPServerNotFound = errors.New("mcp server not found")
 
 type MCPServer struct {
-	ID           string            `json:"id"`
-	TenantID     string            `json:"tenant_id"`
-	Name         string            `json:"name"`
-	Transport    string            `json:"transport"`
-	Endpoint     string            `json:"endpoint,omitempty"`
-	Command      string            `json:"command,omitempty"`
-	Args         json.RawMessage   `json:"args"`
-	Env          json.RawMessage   `json:"env"`
-	Status       string            `json:"status"`
-	LastTestedAt *time.Time        `json:"last_tested_at,omitempty"`
-	LastError    *string           `json:"last_error,omitempty"`
-	Metadata     json.RawMessage   `json:"metadata"`
-	CreatedBy    *string           `json:"created_by,omitempty"`
-	UpdatedBy    *string           `json:"updated_by,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	Tools        []*MCPServerTool  `json:"tools,omitempty"`
-	Connection   *MCPConnection    `json:"connection,omitempty"`
-	Catalog      *MCPCatalog       `json:"catalog,omitempty"`
-	Availability *MCPAvailability  `json:"availability,omitempty"`
-	BindingUsage *MCPBindingUsage  `json:"binding_usage,omitempty"`
-	Recovery     *MCPRecovery      `json:"recovery,omitempty"`
-	Events       []*MCPServerEvent `json:"events,omitempty"`
+	ID            string            `json:"id"`
+	TenantID      string            `json:"tenant_id"`
+	Name          string            `json:"name"`
+	Transport     string            `json:"transport"`
+	Endpoint      string            `json:"endpoint,omitempty"`
+	Command       string            `json:"command,omitempty"`
+	Args          json.RawMessage   `json:"args"`
+	Env           json.RawMessage   `json:"env"`
+	Status        string            `json:"status"`
+	LastTestedAt  *time.Time        `json:"last_tested_at,omitempty"`
+	LastError     *string           `json:"last_error,omitempty"`
+	Metadata      json.RawMessage   `json:"metadata"`
+	CreatedBy     *string           `json:"created_by,omitempty"`
+	UpdatedBy     *string           `json:"updated_by,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	SecurityScore *MCPSecurityScore `json:"security_score,omitempty"`
+	Tools         []*MCPServerTool  `json:"tools,omitempty"`
+	Connection    *MCPConnection    `json:"connection,omitempty"`
+	Catalog       *MCPCatalog       `json:"catalog,omitempty"`
+	Availability  *MCPAvailability  `json:"availability,omitempty"`
+	BindingUsage  *MCPBindingUsage  `json:"binding_usage,omitempty"`
+	Recovery      *MCPRecovery      `json:"recovery,omitempty"`
+	Events        []*MCPServerEvent `json:"events,omitempty"`
 }
 
 type MCPServerTool struct {
@@ -78,6 +79,25 @@ type MCPAvailability struct {
 	Summary  string `json:"summary"`
 	Bindable bool   `json:"bindable"`
 	Reason   string `json:"reason,omitempty"`
+}
+
+type MCPSecurityScore struct {
+	Score       int                     `json:"score"`
+	MaxScore    int                     `json:"max_score"`
+	Status      string                  `json:"status"`
+	RiskLevel   string                  `json:"risk_level,omitempty"`
+	Summary     string                  `json:"summary"`
+	EvaluatedAt *time.Time              `json:"evaluated_at,omitempty"`
+	Breakdown   []*MCPSecurityBreakdown `json:"breakdown,omitempty"`
+}
+
+type MCPSecurityBreakdown struct {
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Score    int    `json:"score"`
+	MaxScore int    `json:"max_score"`
+	Status   string `json:"status"`
+	Summary  string `json:"summary"`
 }
 
 type MCPBindingUsage struct {

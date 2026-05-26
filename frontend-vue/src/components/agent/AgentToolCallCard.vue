@@ -12,8 +12,21 @@
     </div>
 
     <div v-if="hasArguments" class="tool-section">
-      <div class="tool-section-label">参数</div>
-      <pre>{{ formattedArguments }}</pre>
+      <div class="tool-section-header">
+        <div>
+          <div class="tool-section-label">参数</div>
+          <p v-if="argumentSummary" class="tool-section-summary">{{ argumentSummary }}</p>
+        </div>
+        <button
+          class="tool-section-toggle"
+          type="button"
+          :aria-expanded="showArguments ? 'true' : 'false'"
+          @click="showArguments = !showArguments"
+        >
+          {{ showArguments ? '隐藏' : '展开' }}
+        </button>
+      </div>
+      <pre v-if="showArguments">{{ formattedArguments }}</pre>
     </div>
 
     <div v-if="hasResult" class="tool-section">
@@ -25,12 +38,21 @@
       <div class="tool-section-label">错误</div>
       <pre>{{ toolCall.error }}</pre>
     </div>
+
+    <div v-if="recoverySummary" class="tool-section">
+      <div class="tool-section-label">恢复建议</div>
+      <p class="tool-recovery-summary">{{ recoverySummary }}</p>
+      <div v-if="recoveryActions.length > 0" class="recovery-list">
+        <span v-for="action in recoveryActions" :key="action" class="recovery-chip">{{ action }}</span>
+      </div>
+    </div>
   </article>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import AgentToolResultPreview from './AgentToolResultPreview.vue'
+import { redactRuntimePayload, summarizeRedactedObject } from '@/utils/runtimeRedaction'
 
 const props = defineProps({
   toolCall: {
@@ -46,6 +68,7 @@ const statusMap = {
   failed: '失败',
   cancelled: '已取消'
 }
+const showArguments = ref(false)
 
 const statusLabel = computed(() => statusMap[props.toolCall.status] || props.toolCall.status || '未知')
 const toolKindLabel = computed(() => {
@@ -53,10 +76,27 @@ const toolKindLabel = computed(() => {
   if (props.toolCall.toolKind === 'knowledge') return 'Knowledge Tool'
   return 'Builtin Tool'
 })
-const formattedArguments = computed(() => JSON.stringify(props.toolCall.arguments || {}, null, 2))
+const redactedArguments = computed(() => redactRuntimePayload(props.toolCall.arguments || {}))
+const formattedArguments = computed(() => JSON.stringify(redactedArguments.value || {}, null, 2))
 const hasArguments = computed(() => Object.keys(props.toolCall.arguments || {}).length > 0)
+const argumentSummary = computed(() => {
+  const summary = summarizeRedactedObject(redactedArguments.value)
+  return summary ? `已脱敏字段：${summary}` : '参数已脱敏'
+})
 const hasResult = computed(() => props.toolCall.result && Object.keys(props.toolCall.result).length > 0)
 const hasError = computed(() => !!props.toolCall.error)
+const recovery = computed(() => props.toolCall?.result?.recovery || props.toolCall?.recovery || {})
+const recoveryActions = computed(() => Array.isArray(recovery.value?.actions) ? recovery.value.actions.filter((action) => String(action || '').trim()) : [])
+const failureCategory = computed(() => String(props.toolCall?.result?.failure_category || props.toolCall?.result?.failureCategory || '').trim())
+const recoverySummary = computed(() => {
+  const summary = String(recovery.value?.summary || '').trim()
+  const primaryCode = String(recovery.value?.primaryCode || recovery.value?.primary_code || '').trim()
+  const category = failureCategory.value
+  if (summary || primaryCode || category) {
+    return [summary, primaryCode, category].filter(Boolean).join(' · ')
+  }
+  return ''
+})
 
 const formatTime = (value) => {
   if (!value) return '未知时间'
@@ -151,6 +191,62 @@ const formatTime = (value) => {
   color: var(--gray-600);
   text-transform: uppercase;
   margin-bottom: 8px;
+}
+
+.tool-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.tool-section-summary {
+  margin: -4px 0 0;
+  color: var(--gray-500);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.tool-section-toggle {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #ffffff;
+  color: var(--gray-700);
+  border-radius: var(--radius-md);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.tool-section-toggle:hover {
+  border-color: rgba(12, 123, 97, 0.35);
+  color: #0f766e;
+}
+
+.tool-recovery-summary {
+  margin: 0;
+  color: var(--gray-700);
+  line-height: 1.6;
+}
+
+.recovery-list {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recovery-chip {
+  padding: 6px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(245, 158, 11, 0.12);
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 pre {

@@ -448,6 +448,66 @@ func TestBuildMCPGovernanceSummaryFromHydratedServers(t *testing.T) {
 	}
 }
 
+func TestBuildMCPSecurityScoreAndAuditReport(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	server := &database.MCPServer{
+		ID:        "server-1",
+		TenantID:  "tenant-1",
+		Name:      "Docs MCP",
+		Transport: "http",
+		Endpoint:  "http://example.com/mcp",
+		Status:    "active",
+		Connection: &database.MCPConnection{
+			Status: "degraded",
+		},
+		Catalog: &database.MCPCatalog{
+			Status:    "stale",
+			ToolCount: 2,
+			IsStale:   true,
+		},
+		BindingUsage: &database.MCPBindingUsage{
+			AgentCount:       4,
+			ActiveAgentCount: 3,
+		},
+		Recovery: &database.MCPRecovery{
+			Status:      "blocked",
+			FailureMode: "connection_failed",
+			Recoverable: true,
+		},
+		Env:      json.RawMessage(`{"API_KEY":"secret"}`),
+		Metadata: json.RawMessage(`{"headers":{"Authorization":"Bearer secret"}}`),
+		Events: []*database.MCPServerEvent{
+			{Status: "failed", ActionType: "test", FailureMode: "connection_failed"},
+			{Status: "succeeded", ActionType: "refresh", FailureMode: "catalog_stale"},
+		},
+	}
+
+	score := buildMCPSecurityScore(server, []*database.MCPServerTool{{ToolName: "tool-a"}, {ToolName: "tool-b"}}, now)
+	if score == nil || score.Score == 0 {
+		t.Fatalf("expected security score, got %#v", score)
+	}
+	if score.RiskLevel != "critical" {
+		t.Fatalf("expected critical risk, got %#v", score)
+	}
+	if len(score.Breakdown) != 5 {
+		t.Fatalf("expected 5 score breakdown items, got %#v", score.Breakdown)
+	}
+	server.SecurityScore = score
+
+	report := buildMCPAuditReportFromHydratedServers("tenant-1", []*database.MCPServer{server}, []*database.MCPServerEvent{
+		{Status: "failed", ActionType: "test", FailureMode: "connection_failed"},
+	}, 5, now)
+	if report.Overview.TotalServers != 1 {
+		t.Fatalf("expected one server in report, got %#v", report.Overview)
+	}
+	if report.Overview.CriticalRiskCount != 1 {
+		t.Fatalf("expected critical risk count 1, got %#v", report.Overview)
+	}
+	if len(report.RecommendedActions) == 0 {
+		t.Fatalf("expected recommended actions, got %#v", report)
+	}
+}
+
 func TestBuildMCPBulkPreviewOrdersByImpactAndSeverity(t *testing.T) {
 	candidates := []mcpBulkServerCandidate{
 		{server: &database.MCPServer{
@@ -1347,7 +1407,7 @@ func TestBuildSubagentPublicationEventCarriesGovernanceNotes(t *testing.T) {
 	if event.VersionNumber != 2 || event.PreviousVersionNumber != 3 {
 		t.Fatalf("expected version transition to be preserved, got %#v", event)
 	}
-if event.EnabledAuthorizationCount != 2 || !event.CompatibilityMode {
+	if event.EnabledAuthorizationCount != 2 || !event.CompatibilityMode {
 		t.Fatalf("expected impact summary to survive, got %#v", event)
 	}
 }

@@ -282,6 +282,80 @@ func main() {
 			guardMiddleware.Handler,
 		))
 
+	mux.Handle("/api/v1/agents/runtime-status",
+		chain(
+			http.HandlerFunc(agentHandler.HandleRuntimeStatus),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/audit/redaction/evaluate",
+		chain(
+			http.HandlerFunc(agentHandler.HandleAuditRedactionEvaluation),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/subagents/quality/evaluate",
+		chain(
+			http.HandlerFunc(agentHandler.HandleSubagentQualityEvaluation),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/web/search-quality/evaluate",
+		chain(
+			http.HandlerFunc(agentHandler.HandleWebSearchQualityEvaluation),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspace-sources",
+		chain(
+			http.HandlerFunc(agentHandler.HandleWorkspaceSources),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspaces/cleanup",
+		chain(
+			http.HandlerFunc(agentHandler.HandleCleanupWorkspaces),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspaces/locks/cleanup",
+		chain(
+			http.HandlerFunc(agentHandler.HandleCleanupWorkspaceLocks),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspaces/",
+		chain(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.NotFound(w, r)
+			}),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/agents/workspaces",
+		chain(
+			http.HandlerFunc(agentHandler.HandleInspectWorkspaces),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
 	mux.Handle("/api/v1/agents/",
 		chain(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -404,6 +478,14 @@ func main() {
 	mux.Handle("/api/v1/mcp/governance",
 		chain(
 			http.HandlerFunc(mcpHandler.HandleGovernance),
+			authMiddleware.Handler,
+			rateLimiter.Handler,
+			guardMiddleware.Handler,
+		))
+
+	mux.Handle("/api/v1/mcp/audit-report",
+		chain(
+			http.HandlerFunc(mcpHandler.HandleAuditReport),
 			authMiddleware.Handler,
 			rateLimiter.Handler,
 			guardMiddleware.Handler,

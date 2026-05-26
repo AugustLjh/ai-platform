@@ -4,9 +4,11 @@ from datetime import datetime, timezone
 
 import pytest
 
+from ai_runtime.core.agent_runtime.events import MASK
 from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
 from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
 from ai_runtime.core.agent_runtime.policy import RuntimePolicy
+from ai_runtime.core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
 
 
 def _timestamp() -> datetime:
@@ -65,6 +67,30 @@ class FakeExecutor:
 
     def format_output(self, value, output_schema):
         return str(value)
+
+
+class ToolBudgetRegistry(FakeRegistry):
+    async def get_spec(self, tool_name, context=None):
+        if tool_name == "run_tests":
+            return {
+                "kind": "sandbox-exec",
+                "metadata": {
+                    "requires_workspace": False,
+                    "requires_sandbox": True,
+                },
+            }
+        return await super().get_spec(tool_name, context=context)
+
+
+class DummyHandoff:
+    def __init__(self, delegation: SubagentDelegationResult):
+        self.delegation = delegation
+
+    async def start_delegate(self, **kwargs):
+        return self.delegation
+
+    async def delegate(self, **kwargs):
+        return self.delegation
 
 
 class FakeSummarizer:
@@ -132,6 +158,22 @@ class FakeRunRepository:
     async def replace_artifacts(self, run_id, artifacts):
         self.replaced_artifacts = list(artifacts)
         return self.replaced_artifacts
+
+    async def update_artifact_review_decision(self, *, run_id, artifact_id, tenant_id, decision, reviewer_id=None, note=None):
+        matching = None
+        for artifact in self.replaced_artifacts:
+            if artifact.get("id") == artifact_id:
+                matching = artifact
+                break
+        if matching is None:
+            return None
+        matching["metadata"] = {
+            **(matching.get("metadata") or {}),
+            "review_decision": decision,
+            "reviewed_by": reviewer_id,
+            "review_note": note,
+        }
+        return matching
 
 
 class FakeToolCallRepository:
@@ -295,6 +337,252 @@ async def test_orchestrator_promotes_tool_result_artifacts_into_final_run_result
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_emits_tool_policy_approval_events():
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({"text": "ok"}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=FakeRunRepository(),
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+
+    observation = await orchestrator._execute_tool_action(
+        definition=_build_definition(),
+        run=_build_run(),
+        runtime_context={"step_history": [], "tool_failures": 0},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="tool_call",
+                title="Search docs",
+                tool_name="search_docs",
+                tool_arguments={"query": "runtime", "api_key": "secret-value"},
+            ),
+            reasoning="Need docs.",
+            iteration=1,
+        ),
+        runtime_policy=RuntimePolicy(["search_docs"]),
+    )
+
+    assert observation["status"] == "completed"
+    event_types = [event["event_type"] for event in tracer.events]
+    assert "policy.requested" in event_types
+    assert "policy.approved" in event_types
+    requested = next(event for event in tracer.events if event["event_type"] == "policy.requested")
+    assert requested["payload"]["decision"] == "approved"
+    assert requested["payload"]["policy"]["runtime_policy_allows"] is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_denies_tool_before_tool_call_when_policy_blocks_it():
+    tracer = FakeTracer()
+    tool_call_repository = FakeToolCallRepository()
+    run_repository = FakeRunRepository()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({"text": "should not run"}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=tool_call_repository,
+        state_store=FakeStateStore(),
+    )
+
+    observation = await orchestrator._execute_tool_action(
+        definition=_build_definition(),
+        run=_build_run(),
+        runtime_context={"step_history": [], "tool_failures": 0},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="tool_call",
+                title="Search docs",
+                tool_name="search_docs",
+                tool_arguments={"query": "runtime"},
+            ),
+            reasoning="Need docs.",
+            iteration=1,
+        ),
+        runtime_policy=RuntimePolicy(["calculator"]),
+    )
+
+    assert observation["status"] == "failed"
+    assert "not allowed" in observation["error"]
+    assert tool_call_repository.updated_calls == []
+    assert run_repository.updated_steps[-1]["status"] == "failed"
+    assert run_repository.updated_steps[-1]["output_payload"]["tool_result"]["failure_category"] == "policy_denied"
+    assert run_repository.updated_steps[-1]["output_payload"]["recovery"]["primary_code"] == "tool_policy_denied"
+    denied = next(event for event in tracer.events if event["event_type"] == "policy.denied")
+    assert denied["payload"]["policy"]["runtime_policy_allows"] is False
+    assert denied["payload"]["recovery_actions"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_blocks_managed_subagent_tool_call_when_tool_budget_is_exhausted():
+    tracer = FakeTracer()
+    tool_call_repository = FakeToolCallRepository()
+    run_repository = FakeRunRepository()
+    executor = FakeExecutor({"text": "should not run"})
+    executor.registry = ToolBudgetRegistry()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=executor,
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=tool_call_repository,
+        state_store=FakeStateStore(),
+    )
+    target = SubagentTarget(
+        slug="worker",
+        name="Worker",
+        subagent_definition_id="subagent-worker",
+        tool_allowlist=["run_tests"],
+        budget_policy={"max_tool_calls": 1},
+    )
+
+    observation = await orchestrator._execute_tool_action(
+        definition=_build_definition(),
+        run=_build_run(),
+        runtime_context={
+            "step_history": [{"tool_name": "workspace_read_file", "status": "completed"}],
+            "tool_failures": 0,
+        },
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="tool_call",
+                title="Run tests",
+                tool_name="run_tests",
+                tool_arguments={"command": "pytest"},
+            ),
+            reasoning="Need verification.",
+            iteration=2,
+        ),
+        runtime_policy=RuntimePolicy(["run_tests"]),
+        managed_subagent=target,
+    )
+
+    assert observation["status"] == "failed"
+    assert run_repository.updated_steps[-1]["output_payload"]["tool_budget_gate"]["blockers"][0]["code"] == "tool_budget_exceeded"
+    assert tool_call_repository.updated_calls == []
+    assert run_repository.updated_steps[-1]["output_payload"]["tool_result"]["failure_category"] == "tool_budget_exceeded"
+    assert run_repository.updated_steps[-1]["output_payload"]["recovery"]["primary_code"] == "tool_budget_exceeded"
+    denied = next(event for event in tracer.events if event["event_type"] == "policy.denied")
+    assert denied["payload"]["policy_type"] == "managed_subagent_tool_budget"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_records_structured_tool_failure_result_on_execution_error():
+    tracer = FakeTracer()
+    tool_call_repository = FakeToolCallRepository()
+    run_repository = FakeRunRepository()
+
+    class RaisingExecutor(FakeExecutor):
+        async def execute_tool(self, planner_result, tool_context=None, policy=None):
+            raise RuntimeError("sandbox unreachable")
+
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=RaisingExecutor({}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=tool_call_repository,
+        state_store=FakeStateStore(),
+    )
+
+    observation = await orchestrator._execute_tool_action(
+        definition=_build_definition(),
+        run=_build_run(),
+        runtime_context={"step_history": [], "tool_failures": 0},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="tool_call",
+                title="Search docs",
+                tool_name="search_docs",
+                tool_arguments={"query": "runtime"},
+            ),
+            reasoning="Need docs.",
+            iteration=1,
+        ),
+        runtime_policy=RuntimePolicy(["search_docs"]),
+    )
+
+    assert observation["status"] == "failed"
+    assert tool_call_repository.updated_calls[-1]["result"]["failure_category"] == "execution_error"
+    assert tool_call_repository.updated_calls[-1]["result"]["recovery"]["primary_code"] == "tool_execution_failed"
+    failed_event = next(event for event in tracer.events if event["event_type"] == "tool.failed")
+    assert failed_event["payload"]["result"]["failure_category"] == "execution_error"
+    assert failed_event["payload"]["recovery"]["primary_code"] == "tool_execution_failed"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_marks_failed_subagent_step_failed_with_recovery_strategy():
+    target = SubagentTarget(
+        slug="tester",
+        name="Tester",
+        agent_definition_id="agent-tester",
+    )
+    delegation = SubagentDelegationResult(
+        child_run_id="child-run-1",
+        status="failed",
+        target=target,
+        summary="Tester failed.",
+        final_output_text="Tests could not run.",
+        metadata={"error_message": "sandbox unavailable"},
+    )
+    tracer = FakeTracer()
+    run_repository = FakeRunRepository()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=None,
+        run_repository=run_repository,
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+        subagent_handoff=DummyHandoff(delegation),
+    )
+
+    observation, delegated_result = await orchestrator._execute_delegate_action(
+        run=_build_run(),
+        runtime_context={"step_history": [{"tool_name": "git_diff"}]},
+        planner_result=PlannerResult(
+            action=PlannerAction(
+                type="delegate",
+                title="Ask tester",
+                delegate_target="tester",
+                delegate_task="Run focused verification",
+                delegate_input={"checks": ["pytest ai_runtime/tests/test_example.py"]},
+            ),
+            reasoning="Verification is isolated.",
+            iteration=2,
+        ),
+        available_subagents=[target],
+        available_tools=[],
+    )
+
+    assert delegated_result is None
+    assert observation["status"] == "failed"
+    assert observation["result"]["failure_strategy"]["strategy"] == "retry_or_fallback"
+    assert run_repository.updated_steps[-1]["status"] == "failed"
+    assert run_repository.updated_steps[-1]["output_payload"]["failure_strategy"]["retry_allowed"] is True
+    failed_event = next(event for event in tracer.events if event["event_type"] == "subagent.failed")
+    assert failed_event["payload"]["failure_strategy"]["strategy"] == "retry_or_fallback"
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_persists_partial_artifacts_and_terminal_payload_when_run_fails():
     run_row = _build_run().model_dump(mode="json")
     definition_row = _build_definition().model_dump(mode="json")
@@ -352,6 +640,59 @@ async def test_orchestrator_persists_partial_artifacts_and_terminal_payload_when
     assert terminal_event["event_type"] == "run.failed"
     assert terminal_event["payload"]["error"] == "Synthesis failed"
     assert terminal_event["payload"]["artifacts"][0]["artifact_type"] == "citations"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_redacts_completed_run_surface_before_persistence_and_events():
+    run_row = _build_run().model_dump(mode="json")
+    definition_row = _build_definition().model_dump(mode="json")
+    run_repository = FakeRunRepository(run_row=run_row)
+    tracer = FakeTracer()
+    orchestrator = AgentOrchestrator(
+        planner=object(),
+        executor=FakeExecutor({}),
+        summarizer=FakeSummarizer(),
+        llm_service=None,
+        tracer=tracer,
+        agent_repository=FakeAgentRepository(definition_row),
+        run_repository=run_repository,
+        tool_call_repository=FakeToolCallRepository(),
+        state_store=FakeStateStore(),
+    )
+
+    async def fake_execute_run(definition, run):
+        return {
+            "status": "completed",
+            "plan": {},
+            "context": {"env": {"OPENAI_API_KEY": "sk-1234567890abcdef"}},
+            "final_output": "token=super-secret-token-value",
+            "final_output_text": "Bearer abcdefghijklmnop",
+            "final_output_json": {"authorization": "Bearer secret-token"},
+            "artifacts": [
+                {
+                    "artifact_type": "answer",
+                    "name": "Answer",
+                    "payload": {"text": "api_key=sk-1234567890abcdef"},
+                }
+            ],
+        }
+
+    orchestrator._execute_run = fake_execute_run
+
+    result = await orchestrator.start_run("run-parent")
+
+    serialized_updates = str(run_repository.status_updates)
+    serialized_events = str(tracer.events)
+    serialized_artifacts = str(run_repository.replaced_artifacts)
+    assert result.status == "completed"
+    assert "sk-1234567890abcdef" not in serialized_updates
+    assert "super-secret-token-value" not in serialized_updates
+    assert "abcdefghijklmnop" not in serialized_events
+    assert "secret-token" not in serialized_events
+    assert "sk-1234567890abcdef" not in serialized_artifacts
+    assert MASK in serialized_updates
+    assert MASK in serialized_events
+    assert MASK in serialized_artifacts
 
 
 @pytest.mark.asyncio

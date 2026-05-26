@@ -8,10 +8,38 @@ import {
 import { buildRunEventPatch, deriveRunState } from '@/utils/agentRunState'
 import { collectRunEventPages } from '@/utils/runEventHydration'
 import { normalizeMCPBindingUsage, normalizeMCPEvent, normalizeMCPGovernanceSummary, normalizeMCPRecovery } from '@/utils/mcpServers'
-import { collectRunTreeInvocations, normalizeRunTreeNode } from '@/utils/agentRunTree'
+import {
+  collectRunTreeInvocations,
+  filterRunTreeForLatestAttempt,
+  normalizeRunTreeNode
+} from '@/utils/agentRunTree'
+import { normalizeRuntimeStatus } from '@/utils/runtimeStatus'
+import { normalizeTenantGovernance } from '@/utils/tenantGovernance'
+import { normalizeWebSearchQualityEvaluation } from '@/utils/webSearchQuality'
+import { redactRuntimePayload } from '@/utils/runtimeRedaction'
 
 const terminalRunStatuses = new Set(['completed', 'failed', 'cancelled', 'waiting_user'])
 const MCP_BULK_PREVIEW_STORAGE_KEY = 'mcp_bulk_preview_context'
+
+const normalizeEvaluationHistoryEntry = (raw = {}) => ({
+  id: raw.id || '',
+  tenantId: raw.tenant_id || raw.tenantId || '',
+  evaluationType: raw.evaluation_type || raw.evaluationType || '',
+  suiteName: raw.suite_name || raw.suiteName || '',
+  status: raw.status || 'unknown',
+  actorUserId: raw.actor_user_id || raw.actorUserId || '',
+  summary: raw.summary && typeof raw.summary === 'object' ? { ...raw.summary } : {},
+  payload: raw.payload && typeof raw.payload === 'object' ? { ...raw.payload } : {},
+  metadata: raw.metadata && typeof raw.metadata === 'object' ? { ...raw.metadata } : {},
+  createdAt: raw.created_at || raw.createdAt || null,
+  updatedAt: raw.updated_at || raw.updatedAt || null
+})
+
+const normalizeEvaluationHistoryEnvelope = (raw = {}) => ({
+  history: Array.isArray(raw?.history) ? raw.history.map(normalizeEvaluationHistoryEntry) : [],
+  historySummary: raw?.history_summary && typeof raw.history_summary === 'object' ? { ...raw.history_summary } : null,
+  historyComparison: raw?.history_comparison && typeof raw.history_comparison === 'object' ? { ...raw.history_comparison } : null
+})
 
 export const redactMCPBulkPreviewForStorage = (preview = null) => {
   if (!preview || typeof preview !== 'object') return null
@@ -91,8 +119,9 @@ const normalizeRun = (raw = {}) => {
     toolName: toolCall.tool_name || toolCall.toolName || '',
     toolKind: toolCall.tool_kind || toolCall.toolKind || 'builtin',
     status: toolCall.status || 'pending',
-    arguments: parseJSON(toolCall.arguments, {}),
-    result: parseJSON(toolCall.result, {}),
+    arguments: redactRuntimePayload(parseJSON(toolCall.arguments, {})),
+    result: redactRuntimePayload(parseJSON(toolCall.result, {})),
+    recovery: redactRuntimePayload(parseJSON(toolCall.result, {}))?.recovery || {},
     error: toolCall.error_message || toolCall.errorMessage || '',
     createdAt: toolCall.created_at || toolCall.createdAt || null,
     updatedAt: toolCall.updated_at || toolCall.updatedAt || null
@@ -295,6 +324,31 @@ const normalizeToolSpec = (raw = {}) => ({
   metadata: parseJSON(raw.metadata, {})
 })
 
+const normalizeExecutionMode = (raw = {}) => ({
+  name: raw.name || 'context_only',
+  label: raw.label || 'Context Only',
+  summary: raw.summary || '',
+  capabilities: Array.isArray(raw.capabilities) ? [...raw.capabilities] : [],
+  riskLevel: raw.risk_level || raw.riskLevel || 'low',
+  source: raw.source || 'default',
+  recommendedUsage: raw.recommended_usage || raw.recommendedUsage || '',
+  allowedModes: Array.isArray(raw.allowed_modes || raw.allowedModes)
+    ? [...(raw.allowed_modes || raw.allowedModes)]
+    : [],
+  catalogToolCount: Number(raw.catalog_tool_count || raw.catalogToolCount || 0),
+  allowedToolCount: Number(raw.allowed_tool_count || raw.allowedToolCount || 0),
+  blockedToolCount: Number(raw.blocked_tool_count || raw.blockedToolCount || 0),
+  capabilityDetails: Array.isArray(raw.capability_details || raw.capabilityDetails)
+    ? [...(raw.capability_details || raw.capabilityDetails)]
+    : [],
+  toolFamilies: Array.isArray(raw.tool_families || raw.toolFamilies)
+    ? [...(raw.tool_families || raw.toolFamilies)]
+    : [],
+  blockedToolsPreview: Array.isArray(raw.blocked_tools_preview || raw.blockedToolsPreview)
+    ? [...(raw.blocked_tools_preview || raw.blockedToolsPreview)]
+    : []
+})
+
 const sortByUpdatedDesc = (items) => [...items].sort((a, b) => {
   const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime()
   const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime()
@@ -316,6 +370,31 @@ export const useAgentsStore = defineStore('agents', {
     artifacts: [],
     executionSurface: null,
     availableTools: [],
+    availableToolsExecutionMode: null,
+    runtimeStatus: null,
+    opsStatus: null,
+    tenantGovernance: null,
+    opsPrometheusMetrics: '',
+    opsGrafanaDashboard: null,
+    redactionEvaluation: null,
+    subagentQualityEvaluation: null,
+    webSearchQualityEvaluation: null,
+    productionReadinessEvaluation: null,
+    evaluationHistory: {
+      audit_redaction: [],
+      subagent_quality: [],
+      web_search_quality: [],
+      production_readiness: []
+    },
+    evaluationHistoryMeta: {
+      audit_redaction: null,
+      subagent_quality: null,
+      web_search_quality: null,
+      production_readiness: null
+    },
+    runAuditView: null,
+    workspaceInspection: null,
+    workspaceCleanupResult: null,
     skills: [],
     mcpServers: [],
     mcpGovernanceSummary: null,
@@ -373,6 +452,11 @@ export const useAgentsStore = defineStore('agents', {
       this.steps = derived.steps
       this.toolCalls = derived.toolCalls
       this.artifacts = derived.artifacts
+      if (this.currentRunTree) {
+        const filteredTree = filterRunTreeForLatestAttempt(this.currentRunTree, events)
+        this.currentRunTree = filteredTree
+        this.currentRunInvocations = collectRunTreeInvocations(filteredTree)
+      }
       if (run?.id) {
         this.applyRunPatch(run.id, {
           ...derived.runPatch,
@@ -440,7 +524,9 @@ export const useAgentsStore = defineStore('agents', {
     async fetchRunTree(runId, maxDepth = 4) {
       try {
         const { data } = await agentsAPI.getRunTree(runId, maxDepth)
-        const root = data?.root ? normalizeRunTreeNode(data.root) : null
+        const root = data?.root
+          ? filterRunTreeForLatestAttempt(normalizeRunTreeNode(data.root), this.runEvents)
+          : null
         this.currentRunTree = root
         this.currentRunInvocations = collectRunTreeInvocations(root)
         return root
@@ -770,6 +856,44 @@ export const useAgentsStore = defineStore('agents', {
       }
     },
 
+    async reviewRunArtifact(runId, artifactId, payload = {}) {
+      this.error = null
+      try {
+        const { data } = await agentsAPI.reviewRunArtifact(runId, artifactId, payload)
+        const run = normalizeRun(data)
+        this.currentRun = run
+        this.upsertRun(run)
+        this.steps = Array.isArray(run.steps) ? run.steps : []
+        this.toolCalls = Array.isArray(run.toolCalls) ? run.toolCalls : []
+        this.plan = run.plan && Object.keys(run.plan).length > 0 ? run.plan : null
+        this.artifacts = Array.isArray(run.artifacts) ? run.artifacts : []
+        this.executionSurface = deriveRunState(run, this.runEvents).surfaceMeta
+        return data
+      } catch (error) {
+        this.setError(error, 'Failed to review artifact')
+        throw error
+      }
+    },
+
+    async writebackRunWorkspace(runId, payload = {}) {
+      this.error = null
+      try {
+        const { data } = await agentsAPI.writebackRunWorkspace(runId, payload)
+        const run = normalizeRun(data)
+        this.currentRun = run
+        this.upsertRun(run)
+        this.steps = Array.isArray(run.steps) ? run.steps : []
+        this.toolCalls = Array.isArray(run.toolCalls) ? run.toolCalls : []
+        this.plan = run.plan && Object.keys(run.plan).length > 0 ? run.plan : null
+        this.artifacts = Array.isArray(run.artifacts) ? run.artifacts : []
+        this.executionSurface = deriveRunState(run, this.runEvents).surfaceMeta
+        return data
+      } catch (error) {
+        this.setError(error, 'Failed to write back workspace')
+        throw error
+      }
+    },
+
     async fetchSkills() {
       try {
         const { data } = await skillsAPI.listSkills()
@@ -909,9 +1033,236 @@ export const useAgentsStore = defineStore('agents', {
       try {
         const { data } = await agentsAPI.listTools(agentDefinitionId)
         this.availableTools = (data.tools || []).map(normalizeToolSpec)
+        this.availableToolsExecutionMode = normalizeExecutionMode(data.execution_mode || data.executionMode || {})
         return this.availableTools
       } catch (error) {
         this.setError(error, 'Failed to fetch agent tools')
+        throw error
+      }
+    },
+
+    async fetchRuntimeStatus() {
+      try {
+        const { data } = await agentsAPI.getRuntimeStatus()
+        this.runtimeStatus = normalizeRuntimeStatus(data || {})
+        this.workspaceInspection = this.runtimeStatus.workspace?.inspection || null
+        return this.runtimeStatus
+      } catch (error) {
+        this.setError(error, 'Failed to fetch runtime status')
+        throw error
+      }
+    },
+
+    async fetchOpsStatus(role = 'user') {
+      try {
+        const { data } = await agentsAPI.getOpsStatus(role)
+        this.opsStatus = data || null
+        return this.opsStatus
+      } catch (error) {
+        this.setError(error, 'Failed to fetch runtime ops status')
+        throw error
+      }
+    },
+
+    async fetchTenantGovernance(role = 'user') {
+      try {
+        const { data } = await agentsAPI.getTenantGovernanceStatus(role)
+        this.tenantGovernance = normalizeTenantGovernance(data || {})
+        return this.tenantGovernance
+      } catch (error) {
+        this.setError(error, 'Failed to fetch tenant governance status')
+        throw error
+      }
+    },
+
+    async evaluateOpsStatus(role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateOpsStatus(role)
+        this.opsStatus = data || null
+        return this.opsStatus
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate runtime ops status')
+        throw error
+      }
+    },
+
+    async fetchOpsPrometheusMetrics(role = 'user') {
+      try {
+        const { data } = await agentsAPI.getOpsPrometheusMetrics(role)
+        this.opsPrometheusMetrics = typeof data === 'string' ? data : String(data || '')
+        return this.opsPrometheusMetrics
+      } catch (error) {
+        this.setError(error, 'Failed to fetch runtime ops prometheus metrics')
+        throw error
+      }
+    },
+
+    async fetchOpsGrafanaDashboard(role = 'user') {
+      try {
+        const { data } = await agentsAPI.getOpsGrafanaDashboard(role)
+        this.opsGrafanaDashboard = data || null
+        return this.opsGrafanaDashboard
+      } catch (error) {
+        this.setError(error, 'Failed to fetch runtime ops grafana dashboard')
+        throw error
+      }
+    },
+
+    async acknowledgeRuntimeAlert(ruleName, role = 'user') {
+      try {
+        const { data } = await agentsAPI.acknowledgeRuntimeAlert(ruleName, role)
+        this.opsStatus = {
+          ...(this.opsStatus || {}),
+          alerts: data || null
+        }
+        return data
+      } catch (error) {
+        this.setError(error, 'Failed to acknowledge runtime alert')
+        throw error
+      }
+    },
+
+    async resolveRuntimeAlert(ruleName, role = 'user') {
+      try {
+        const { data } = await agentsAPI.resolveRuntimeAlert(ruleName, role)
+        this.opsStatus = {
+          ...(this.opsStatus || {}),
+          alerts: data || null
+        }
+        return data
+      } catch (error) {
+        this.setError(error, 'Failed to resolve runtime alert')
+        throw error
+      }
+    },
+
+    async evaluateAuditRedactionRules(testCases = [], role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateAuditRedactionRules(testCases, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
+        this.redactionEvaluation = data || null
+        this.evaluationHistory.audit_redaction = envelope.history
+        this.evaluationHistoryMeta.audit_redaction = {
+          historySummary: envelope.historySummary,
+          historyComparison: envelope.historyComparison
+        }
+        return this.redactionEvaluation
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate audit redaction rules')
+        throw error
+      }
+    },
+
+    async evaluateSubagentQualityRules(testCases = null, role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateSubagentQualityRules(testCases, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
+        this.subagentQualityEvaluation = data || null
+        this.evaluationHistory.subagent_quality = envelope.history
+        this.evaluationHistoryMeta.subagent_quality = {
+          historySummary: envelope.historySummary,
+          historyComparison: envelope.historyComparison
+        }
+        return this.subagentQualityEvaluation
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate subagent quality rules')
+        throw error
+      }
+    },
+
+    async evaluateWebSearchQualityRules(testCases = null, role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateWebSearchQualityRules(testCases, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
+        this.webSearchQualityEvaluation = normalizeWebSearchQualityEvaluation(data || null)
+        this.evaluationHistory.web_search_quality = envelope.history
+        this.evaluationHistoryMeta.web_search_quality = {
+          historySummary: envelope.historySummary,
+          historyComparison: envelope.historyComparison
+        }
+        return this.webSearchQualityEvaluation
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate web search quality rules')
+        throw error
+      }
+    },
+
+    async evaluateProductionReadiness(evidence = {}, role = 'user') {
+      try {
+        const { data } = await agentsAPI.evaluateProductionReadiness(evidence, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
+        this.productionReadinessEvaluation = data || null
+        this.evaluationHistory.production_readiness = envelope.history
+        this.evaluationHistoryMeta.production_readiness = {
+          historySummary: envelope.historySummary,
+          historyComparison: envelope.historyComparison
+        }
+        return this.productionReadinessEvaluation
+      } catch (error) {
+        this.setError(error, 'Failed to evaluate production readiness')
+        throw error
+      }
+    },
+
+    async fetchEvaluationHistory(evaluationType = '', limit = 10, role = 'user') {
+      try {
+        const { data } = await agentsAPI.listEvaluationHistory(evaluationType, limit, role)
+        const envelope = normalizeEvaluationHistoryEnvelope(data || {})
+        const history = envelope.history
+        if (evaluationType) {
+          this.evaluationHistory[evaluationType] = history
+          this.evaluationHistoryMeta[evaluationType] = {
+            historySummary: envelope.historySummary,
+            historyComparison: envelope.historyComparison
+          }
+        }
+        return history
+      } catch (error) {
+        this.setError(error, 'Failed to fetch evaluation history')
+        throw error
+      }
+    },
+
+    async fetchRunAuditView(runId, options = {}) {
+      try {
+        const { data } = await agentsAPI.getRunAuditView(runId, options)
+        this.runAuditView = data || null
+        return this.runAuditView
+      } catch (error) {
+        this.setError(error, 'Failed to fetch run audit view')
+        throw error
+      }
+    },
+
+    async inspectWorkspaces() {
+      try {
+        const { data } = await agentsAPI.inspectWorkspaces()
+        this.workspaceInspection = data || null
+        return this.workspaceInspection
+      } catch (error) {
+        this.setError(error, 'Failed to inspect workspaces')
+        throw error
+      }
+    },
+
+    async cleanupWorkspaces(params = {}) {
+      try {
+        const { data } = await agentsAPI.cleanupWorkspaces(params)
+        this.workspaceCleanupResult = data || null
+        return this.workspaceCleanupResult
+      } catch (error) {
+        this.setError(error, 'Failed to cleanup workspaces')
+        throw error
+      }
+    },
+
+    async cleanupWorkspaceLocks(params = {}) {
+      try {
+        const { data } = await agentsAPI.cleanupWorkspaceLocks(params)
+        this.workspaceCleanupResult = data || null
+        return this.workspaceCleanupResult
+      } catch (error) {
+        this.setError(error, 'Failed to cleanup workspace locks')
         throw error
       }
     },

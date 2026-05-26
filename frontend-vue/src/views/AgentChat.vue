@@ -16,7 +16,9 @@
           <span v-if="currentRun?.updatedAt">更新于 {{ formatTime(currentRun.updatedAt) }}</span>
           <span v-else>尚未开始运行</span>
         </div>
-        <div class="topbar-actions">
+        <details class="topbar-actions-menu">
+          <summary class="topbar-actions-toggle">操作</summary>
+          <div class="topbar-actions-panel">
           <button
             type="button"
             class="btn btn-secondary"
@@ -45,7 +47,8 @@
           >
             停止运行
           </button>
-        </div>
+          </div>
+        </details>
       </div>
     </header>
 
@@ -152,6 +155,8 @@
             :artifacts="surfaceArtifacts"
             :final-output-json="surfaceOutputJson"
             :surface-meta="executionSurface"
+            :run-tree-invocations="runTreeInvocations"
+            :resolved-invocations="resolvedSubagentInvocations"
           />
         </div>
       </div>
@@ -177,6 +182,56 @@
         <div v-if="uploadError" class="error-banner upload-error">
           {{ uploadError }}
         </div>
+
+        <div v-if="workspaceError" class="error-banner upload-error">
+          {{ workspaceError }}
+        </div>
+
+        <details class="workspace-bind-shell">
+          <summary class="workspace-bind-head">
+            <strong>Workspace 绑定</strong>
+            <button
+              type="button"
+              class="workspace-refresh-btn"
+              :disabled="workspaceLoading"
+              @click.stop.prevent="loadWorkspaceSources"
+            >
+              {{ workspaceLoading ? '刷新中...' : '刷新目录' }}
+            </button>
+          </summary>
+          <div class="workspace-bind-body">
+            <div class="workspace-bind-grid">
+              <label class="workspace-option">
+                <span>模式</span>
+                <select v-model="workspaceMode" class="workspace-select">
+                  <option value="none">仅聊天上下文</option>
+                  <option value="upload_bundle">使用上传文件创建副本</option>
+                  <option value="existing">从允许目录创建副本</option>
+                </select>
+              </label>
+
+              <label v-if="workspaceMode === 'existing'" class="workspace-option workspace-option-wide">
+                <span>项目目录</span>
+                <select v-model="selectedWorkspacePath" class="workspace-select">
+                  <option value="">请选择允许目录</option>
+                  <option
+                    v-for="source in workspaceSources"
+                    :key="source.path"
+                    :value="source.path"
+                  >
+                    {{ formatWorkspaceSource(source) }}
+                  </option>
+                </select>
+              </label>
+            </div>
+            <div class="workspace-bind-meta">
+              <span v-if="workspaceMode === 'upload_bundle'">上传文件会进入 run 级 workspace 副本。</span>
+              <span v-else-if="workspaceMode === 'existing'">项目会复制到 run workspace，不直接写原目录。</span>
+              <span v-else>不绑定 workspace，只使用聊天上下文和上传摘要。</span>
+              <span v-if="workspaceSummaryText">{{ workspaceSummaryText }}</span>
+            </div>
+          </div>
+        </details>
 
         <div v-if="bundles.length > 0" class="composer-upload-list">
           <div
@@ -296,12 +351,25 @@
           :artifacts="artifacts"
           :final-output-json="currentRun?.finalOutputJson"
           :surface-meta="executionSurface"
+          :run-tree-invocations="runTreeInvocations"
+          :resolved-invocations="resolvedSubagentInvocations"
         />
         <AgentPlanPanel :plan="plan" />
       </div>
+      <AgentSubagentCollaborationSummary
+        v-if="runTreeInvocations.length > 0 || resolvedSubagentInvocations.length > 0"
+        :run-tree-invocations="runTreeInvocations"
+        :resolved-invocations="resolvedSubagentInvocations"
+        :artifacts="artifacts"
+        :events="runEvents"
+      />
       <AgentRunTree v-if="currentRunTree" :root="currentRunTree" />
       <AgentSubagentProtocolPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
-      <AgentSubagentInvocationPanel v-if="runTreeInvocations.length > 0" :items="runTreeInvocations" />
+      <AgentSubagentInvocationPanel
+        v-if="runTreeInvocations.length > 0 || resolvedSubagentInvocations.length > 0"
+        :items="runTreeInvocations"
+        :resolved-items="resolvedSubagentInvocations"
+      />
       <AgentTimeline :events="runEvents" />
       <AgentStepList :steps="steps" :tool-calls="toolCalls" />
     </section>
@@ -319,11 +387,15 @@ import AgentRunTree from '@/components/agent/AgentRunTree.vue'
 import AgentSubagentProtocolPanel from '@/components/agent/AgentSubagentProtocolPanel.vue'
 import AgentSubagentInvocationPanel from '@/components/agent/AgentSubagentInvocationPanel.vue'
 import AgentSubagentClarificationCard from '@/components/agent/AgentSubagentClarificationCard.vue'
+import AgentSubagentCollaborationSummary from '@/components/agent/AgentSubagentCollaborationSummary.vue'
 import { useAgentsStore } from '@/store/agents'
 import { useToastStore } from '@/store/toast'
 import { getRunAnswerText } from '@/utils/agentArtifacts'
 import { renderMarkdown } from '@/utils/markdown'
 import { useUploadBundles } from '@/composables/useUploadBundles'
+import { agentsAPI } from '@/api'
+import { collectResolvedSubagentInvocations } from '@/utils/agentRunTree'
+import { buildWorkspaceSourcePayload, getAgentWorkspaceBindingPolicy, formatWorkspaceSource } from '@/utils/workspaceBindings'
 
 const route = useRoute()
 const router = useRouter()
@@ -338,6 +410,12 @@ const surfaceOpen = ref(false)
 const threadRef = ref(null)
 const textareaRef = ref(null)
 const draftSessionId = ref('')
+const workspaceMode = ref('none')
+const selectedWorkspacePath = ref('')
+const workspaceSources = ref([])
+const workspaceInspection = ref(null)
+const workspaceLoading = ref(false)
+const workspaceError = ref('')
 const {
   bundles,
   bundleIds,
@@ -379,6 +457,7 @@ const artifacts = computed(() => agentsStore.artifacts)
 const executionSurface = computed(() => agentsStore.executionSurface)
 const currentRunTree = computed(() => agentsStore.currentRunTree)
 const runTreeInvocations = computed(() => agentsStore.currentRunInvocations)
+const resolvedSubagentInvocations = computed(() => collectResolvedSubagentInvocations(currentRun.value))
 const errorMessage = computed(() => agentsStore.error || '')
 
 const statusMap = {
@@ -425,6 +504,31 @@ const requestedSessionId = computed(() => {
 const currentSessionId = computed(() => {
   const value = String(currentRun.value?.sessionId || requestedSessionId.value || draftSessionId.value || '').trim()
   return value || ''
+})
+const currentWorkspaceSource = computed(() => {
+  const source = currentRun.value?.input?.workspace_source || currentRun.value?.input?.workspace || {}
+  return source && typeof source === 'object' ? source : {}
+})
+const defaultWorkspacePolicy = computed(() => getAgentWorkspaceBindingPolicy(agent.value || {}))
+const workspaceSummaryText = computed(() => {
+  const inspection = workspaceInspection.value || {}
+  const parts = []
+  if (typeof inspection.workspace_count === 'number') {
+    parts.push(`现有 ${inspection.workspace_count} 个 workspace`)
+  }
+  if (typeof inspection.expired_count === 'number' && inspection.expired_count > 0) {
+    parts.push(`过期 ${inspection.expired_count} 个`)
+  }
+  if (workspaceMode.value === 'existing' && selectedWorkspacePath.value) {
+    parts.push(`将复制 ${selectedWorkspacePath.value}`)
+  }
+  if (workspaceMode.value === 'upload_bundle' && bundleIds.value.length > 0) {
+    parts.push(`将物化 ${bundleIds.value.length} 个上传包`)
+  }
+  if (!currentRun.value && defaultWorkspacePolicy.value.enabled && workspaceMode.value !== 'none') {
+    parts.push('已套用智能体默认绑定策略')
+  }
+  return parts.join(' · ')
 })
 
 const createSessionId = () => {
@@ -717,7 +821,8 @@ const loadConversation = async () => {
 
   await Promise.all([
     agentsStore.fetchAgent(agentId),
-    agentsStore.fetchRuns()
+    agentsStore.fetchRuns(),
+    loadWorkspaceSources()
   ])
 
   const latestRun = agentsStore.sortedRuns.find((run) => {
@@ -732,10 +837,62 @@ const loadConversation = async () => {
   if (latestRun?.id) {
     draftSessionId.value = latestRun.sessionId || requestedSessionId.value || ''
     await agentsStore.openRun(latestRun.id, { stream: true })
+    syncWorkspaceBindingFromRun()
     return
   }
 
   draftSessionId.value = requestedSessionId.value || createSessionId()
+  syncWorkspaceBindingFromRun()
+}
+
+const syncWorkspaceBindingFromRun = () => {
+  const source = currentWorkspaceSource.value
+  const sourceType = String(source.type || source.source_type || '').trim()
+  if (sourceType === 'upload_bundle') {
+    workspaceMode.value = 'upload_bundle'
+    selectedWorkspacePath.value = ''
+    return
+  }
+  if (sourceType === 'existing' || sourceType === 'bound' || sourceType === 'local_path') {
+    workspaceMode.value = 'existing'
+    selectedWorkspacePath.value = String(source.root || source.path || '').trim()
+    return
+  }
+  if (!currentRun.value && defaultWorkspacePolicy.value.enabled) {
+    workspaceMode.value = defaultWorkspacePolicy.value.mode
+    selectedWorkspacePath.value = defaultWorkspacePolicy.value.path
+    return
+  }
+  workspaceMode.value = 'none'
+  selectedWorkspacePath.value = ''
+}
+
+const loadWorkspaceSources = async () => {
+  workspaceLoading.value = true
+  workspaceError.value = ''
+  try {
+    const [{ data: sourcesData }, { data: inspectionData }] = await Promise.all([
+      agentsAPI.listWorkspaceSources(),
+      agentsAPI.inspectWorkspaces()
+    ])
+    workspaceSources.value = Array.isArray(sourcesData?.sources) ? sourcesData.sources : []
+    workspaceInspection.value = inspectionData || null
+  } catch (error) {
+    console.error('Failed to load workspace sources:', error)
+    workspaceError.value = error?.response?.data?.detail || error?.message || '加载 workspace 目录失败'
+  } finally {
+    workspaceLoading.value = false
+  }
+}
+
+const resolveWorkspaceSourcePayload = () => {
+  const existingBundleIds = Array.isArray(currentRun.value?.input?.upload_bundle_ids) ? currentRun.value.input.upload_bundle_ids : []
+  return buildWorkspaceSourcePayload({
+    mode: workspaceMode.value,
+    selectedPath: selectedWorkspacePath.value,
+    bundleIds: bundleIds.value,
+    existingBundleIds
+  })
 }
 
 const scrollThreadToBottom = async () => {
@@ -838,6 +995,7 @@ const submitMessage = async () => {
 
   submitLoading.value = true
   try {
+    const workspaceSource = resolveWorkspaceSourcePayload()
     const mergedBundleIds = bundleIds.value.length > 0
       ? Array.from(new Set([
           ...(Array.isArray(currentRun.value?.input?.upload_bundle_ids) ? currentRun.value.input.upload_bundle_ids : []),
@@ -849,6 +1007,9 @@ const submitMessage = async () => {
       if (mergedBundleIds.length > 0) {
         inputPatch.upload_bundle_ids = mergedBundleIds
       }
+      if (workspaceSource) {
+        inputPatch.workspace_source = workspaceSource
+      }
       await agentsStore.resumeRun(currentRun.value.id, inputPatch)
       toastStore.showToast({ type: 'success', message: '已继续执行' })
     } else {
@@ -856,7 +1017,8 @@ const submitMessage = async () => {
       const createdRun = await agentsStore.createRun(agent.value.id, {
         input: {
           message,
-          ...(bundleIds.value.length > 0 ? { upload_bundle_ids: bundleIds.value } : {})
+          ...(bundleIds.value.length > 0 ? { upload_bundle_ids: bundleIds.value } : {}),
+          ...(workspaceSource ? { workspace_source: workspaceSource } : {})
         },
         session_id: nextSessionId,
         metadata: {},
@@ -919,6 +1081,7 @@ watch(() => [route.params.id, route.query.session], async () => {
 
 watch(() => currentRun.value?.id, () => {
   surfaceOpen.value = false
+  syncWorkspaceBindingFromRun()
 })
 
 watch(showStructuredSurface, (visible) => {
@@ -962,18 +1125,18 @@ const formatTime = (value) => {
     minute: '2-digit'
   })
 }
+
 </script>
 
 <style scoped>
 .agent-chat-page {
   min-height: 100%;
-  padding: 20px 24px 24px;
+  height: 100%;
+  padding: 10px 14px 14px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  gap: 18px;
-  background:
-    radial-gradient(circle at top, rgba(16, 163, 127, 0.08), transparent 34%),
-    linear-gradient(180deg, #f4f7f6 0%, #eef3f2 100%);
+  gap: 8px;
+  background: #f6f7f8;
 }
 
 .chat-topbar {
@@ -981,15 +1144,17 @@ const formatTime = (value) => {
   top: 0;
   z-index: 5;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 18px 22px;
-  border-radius: 24px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(16px);
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+  gap: 12px;
+  width: min(1040px, 100%);
+  justify-self: center;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
 }
 
 .topbar-main,
@@ -1003,25 +1168,26 @@ const formatTime = (value) => {
 }
 
 .topbar-copy h1 {
-  font-size: 28px;
-  line-height: 1.08;
+  font-size: 20px;
+  line-height: 1.2;
   color: #0f172a;
 }
 
 .topbar-copy p {
-  margin-top: 8px;
-  max-width: 780px;
+  margin-top: 3px;
+  max-width: 540px;
   color: #475569;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .topbar-kicker {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: #0f766e;
-  margin-bottom: 8px;
+  margin-bottom: 3px;
 }
 
 .back-link {
@@ -1029,36 +1195,82 @@ const formatTime = (value) => {
   text-decoration: none;
   color: #0f766e;
   font-weight: 700;
+  font-size: 13px;
 }
 
 .topbar-side {
   justify-items: end;
   flex-shrink: 0;
+  gap: 8px;
 }
 
 .topbar-meta {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 10px 14px;
+  gap: 6px 10px;
   color: #64748b;
-  font-size: 13px;
+  font-size: 12px;
 }
 
-.topbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
+.topbar-actions-menu {
+  position: relative;
+}
+
+.topbar-actions-menu > summary {
+  list-style: none;
+}
+
+.topbar-actions-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.topbar-actions-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 76px;
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  background: rgba(15, 118, 110, 0.05);
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.topbar-actions-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 10;
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.12);
+}
+
+.topbar-actions-panel .btn {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  font-size: 12px;
 }
 
 .status-chip {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 6px 10px;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -1090,44 +1302,46 @@ const formatTime = (value) => {
 }
 
 .error-banner {
-  padding: 14px 16px;
-  border-radius: 18px;
+  width: min(1040px, 100%);
+  justify-self: center;
+  padding: 10px 12px;
+  border-radius: 12px;
   background: rgba(239, 68, 68, 0.08);
   border: 1px solid rgba(239, 68, 68, 0.18);
   color: #b91c1c;
+  font-size: 13px;
 }
 
 .chat-stage {
   min-height: 0;
+  width: min(1040px, 100%);
+  justify-self: center;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
-  border-radius: 30px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background:
-    radial-gradient(circle at top left, rgba(110, 231, 183, 0.12), transparent 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.98) 100%);
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  background: #ffffff;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.06);
   overflow: hidden;
 }
 
 .chat-thread {
   min-height: 0;
   overflow-y: auto;
-  padding: 28px 24px 18px;
+  padding: 20px clamp(12px, 3vw, 36px) 14px;
   display: grid;
   align-content: start;
-  gap: 20px;
+  gap: 14px;
 }
 
 .empty-chat-card {
-  width: min(760px, 100%);
-  padding: 26px;
-  border-radius: 28px;
-  background:
-    radial-gradient(circle at top right, rgba(16, 163, 127, 0.16), transparent 30%),
-    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  width: min(680px, 100%);
+  justify-self: center;
+  padding: 20px;
+  border-radius: 16px;
+  background: #f8fafc;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.06);
+  box-shadow: none;
 }
 
 .empty-chat-kicker {
@@ -1139,8 +1353,8 @@ const formatTime = (value) => {
 }
 
 .empty-chat-card h2 {
-  margin-top: 12px;
-  font-size: 30px;
+  margin-top: 8px;
+  font-size: 24px;
   color: #0f172a;
 }
 
@@ -1154,7 +1368,7 @@ const formatTime = (value) => {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 20px;
+  margin-top: 16px;
 }
 
 .starter-chip {
@@ -1179,21 +1393,24 @@ const formatTime = (value) => {
 }
 
 .message-card {
-  width: min(820px, 100%);
-  border-radius: 26px;
-  padding: 18px 20px;
+  width: min(760px, 100%);
+  max-width: 100%;
+  border-radius: 16px;
+  padding: 13px 14px;
 }
 
 .user-card {
-  background: linear-gradient(135deg, #0f766e 0%, #115e59 100%);
+  width: fit-content;
+  max-width: min(640px, 84%);
+  background: #0f766e;
   color: white;
-  box-shadow: 0 20px 40px rgba(15, 118, 110, 0.18);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
 }
 
 .assistant-card {
   background: white;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
 }
 
 .assistant-card.tone-question {
@@ -1216,7 +1433,7 @@ const formatTime = (value) => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .message-role {
@@ -1235,9 +1452,9 @@ const formatTime = (value) => {
 }
 
 .user-bubble {
-  padding: 16px 18px;
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.1);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .uploaded-file-list {
@@ -1280,7 +1497,7 @@ const formatTime = (value) => {
   display: flex;
   align-items: center;
   gap: 16px;
-  min-height: 88px;
+  min-height: 76px;
 }
 
 .streaming-copy strong {
@@ -1328,11 +1545,13 @@ const formatTime = (value) => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  width: min(820px, 100%);
-  padding: 12px 16px;
-  border: 1px dashed rgba(15, 118, 110, 0.2);
-  border-radius: 18px;
-  background: rgba(15, 118, 110, 0.04);
+  width: min(760px, 100%);
+  max-width: 100%;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.8);
   color: #0f172a;
   cursor: pointer;
 }
@@ -1340,6 +1559,9 @@ const formatTime = (value) => {
 .detail-toggle span:last-child {
   color: #64748b;
   font-size: 13px;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .surface-toggle {
@@ -1349,11 +1571,11 @@ const formatTime = (value) => {
 
 .composer-shell {
   border-top: 1px solid rgba(15, 23, 42, 0.08);
-  padding: 16px 20px 20px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.82) 0%, rgba(255, 255, 255, 0.96) 18%, rgba(255, 255, 255, 0.98) 100%);
-  backdrop-filter: blur(16px);
+  padding: 9px clamp(10px, 2.5vw, 22px) 12px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
   display: grid;
-  gap: 12px;
+  gap: 8px;
   position: sticky;
   bottom: 0;
   z-index: 4;
@@ -1361,6 +1583,96 @@ const formatTime = (value) => {
 
 .upload-input {
   display: none;
+}
+
+.workspace-bind-shell {
+  display: grid;
+  width: min(760px, 100%);
+  justify-self: center;
+  margin-bottom: 2px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(248, 250, 252, 0.72);
+  overflow: hidden;
+}
+
+.workspace-bind-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #0f172a;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+}
+
+.workspace-bind-head::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-bind-body {
+  display: grid;
+  gap: 10px;
+  padding: 9px 10px 10px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.workspace-refresh-btn {
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  background: rgba(15, 118, 110, 0.06);
+  color: #0f766e;
+  border-radius: 999px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workspace-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.workspace-bind-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.workspace-option {
+  display: grid;
+  gap: 8px;
+}
+
+.workspace-option span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.workspace-option-wide {
+  grid-column: 1 / -1;
+}
+
+.workspace-select {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #fff;
+  color: #0f172a;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.workspace-bind-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 12px;
+  color: #64748b;
 }
 
 .composer-form {
@@ -1424,8 +1736,8 @@ const formatTime = (value) => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
-  border-radius: 18px;
+  padding: 10px 12px;
+  border-radius: 14px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(255, 255, 255, 0.92);
 }
@@ -1464,7 +1776,8 @@ const formatTime = (value) => {
 }
 
 .input-container {
-  width: 100%;
+  width: min(760px, 100%);
+  justify-self: center;
   display: grid;
   gap: 8px;
 }
@@ -1484,11 +1797,11 @@ const formatTime = (value) => {
   display: flex;
   align-items: flex-end;
   gap: 14px;
-  padding: 12px 12px 12px 18px;
-  border-radius: 24px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 16px;
   background: #ffffff;
   border: 1px solid rgba(15, 23, 42, 0.1);
-  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -1499,7 +1812,7 @@ const formatTime = (value) => {
 
 .message-input {
   flex: 1;
-  min-height: 46px;
+  min-height: 40px;
   max-height: 180px;
   resize: none;
   border: none;
@@ -1520,10 +1833,10 @@ const formatTime = (value) => {
 }
 
 .btn-send {
-  width: 46px;
-  height: 46px;
+  width: 40px;
+  height: 40px;
   border: none;
-  border-radius: 16px;
+  border-radius: 12px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -1548,7 +1861,7 @@ const formatTime = (value) => {
 .result-surface {
   display: grid;
   gap: 16px;
-  max-height: min(76vh, 940px);
+  max-height: min(72vh, 880px);
   overflow: hidden;
 }
 
@@ -1568,11 +1881,13 @@ const formatTime = (value) => {
 }
 
 .details-panel {
-  border-radius: 26px;
+  width: min(1040px, 100%);
+  justify-self: center;
+  border-radius: 16px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(255, 255, 255, 0.92);
-  padding: 20px;
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.06);
+  padding: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.05);
 }
 
 .details-panel-head {
@@ -1580,24 +1895,25 @@ const formatTime = (value) => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .details-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-  gap: 16px;
-  margin-bottom: 16px;
+  grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .details-panel-head h2 {
-  font-size: 20px;
+  font-size: 18px;
   color: #0f172a;
 }
 
 .details-panel-head p {
-  margin-top: 6px;
+  margin-top: 4px;
   color: #64748b;
+  font-size: 13px;
 }
 
 .details-head-actions {
@@ -1681,12 +1997,13 @@ const formatTime = (value) => {
 
 @media (max-width: 960px) {
   .agent-chat-page {
-    padding: 16px;
+    padding: 8px;
+    gap: 8px;
   }
 
   .chat-topbar,
   .details-panel {
-    border-radius: 22px;
+    border-radius: 16px;
   }
 
   .chat-topbar,
@@ -1694,18 +2011,31 @@ const formatTime = (value) => {
     flex-direction: column;
   }
 
+  .topbar-side {
+    width: 100%;
+    justify-items: start;
+  }
+
+  .topbar-actions-menu {
+    width: 100%;
+  }
+
+  .topbar-actions-toggle {
+    width: 100%;
+  }
+
+  .topbar-actions-panel {
+    position: static;
+    width: 100%;
+    margin-top: 8px;
+  }
+
   .details-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .topbar-side,
-  .topbar-actions {
-    justify-items: start;
-    justify-content: flex-start;
-  }
-
   .chat-thread {
-    padding: 20px 16px 16px;
+    padding: 18px 12px 14px;
   }
 
   .empty-chat-card,
@@ -1729,6 +2059,17 @@ const formatTime = (value) => {
 
   .composer-tool-meta {
     padding-left: 0;
+  }
+
+  .workspace-bind-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-bind-shell,
+  .input-container,
+  .chat-stage,
+  .error-banner {
+    width: 100%;
   }
 }
 </style>

@@ -122,6 +122,43 @@ services:
     networks:
       - ai-platform
 
+  ssl_reloader:
+    image: alpine:3.22
+    container_name: ai-platform-ssl-reloader
+    restart: always
+    cpus: ${SSL_RELOADER_CPU_LIMIT:-0.10}
+    mem_limit: ${SSL_RELOADER_MEMORY_LIMIT:-64m}
+    depends_on:
+      - nginx
+    pid: "service:nginx"
+    environment:
+      - DOMAIN=${DOMAIN}
+      - SSL_RELOAD_INTERVAL=${SSL_RELOAD_INTERVAL:-300}
+    volumes:
+      - letsencrypt_data:/etc/letsencrypt:ro
+    networks:
+      - ai-platform
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        DOMAIN=$${DOMAIN:-localhost}
+        INTERVAL=$${SSL_RELOAD_INTERVAL:-300}
+        FULLCHAIN="/etc/letsencrypt/live/$${DOMAIN}/fullchain.pem"
+        PRIVKEY="/etc/letsencrypt/live/$${DOMAIN}/privkey.pem"
+        last=""
+        while :; do
+          current=""
+          if [ -f "$${FULLCHAIN}" ] && [ -f "$${PRIVKEY}" ]; then
+            current="$$(sha256sum "$${FULLCHAIN}" "$${PRIVKEY}" | sha256sum | cut -d " " -f1)"
+            if [ -n "$${last}" ] && [ "$${current}" != "$${last}" ]; then
+              kill -HUP 1
+            fi
+            last="$${current}"
+          fi
+          sleep "$${INTERVAL}"
+        done
+
 volumes:
   postgres_data:
     name: ai-platform_postgres_data

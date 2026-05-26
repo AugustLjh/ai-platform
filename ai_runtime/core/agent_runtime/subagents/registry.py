@@ -5,6 +5,10 @@ from uuid import UUID
 
 from ai_runtime.core.agent_runtime.models import AgentDefinition
 from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
+from ai_runtime.core.agent_runtime.subagents.templates import (
+    build_builtin_subagent_target,
+    get_builtin_subagent_template,
+)
 
 
 def _normalize_slug(value: str) -> str:
@@ -60,6 +64,17 @@ def _normalize_allowlist(value: Any) -> list[str]:
         seen.add(text)
         items.append(text)
     return items
+
+
+def _builtin_template_slug(entry: dict[str, Any], fallback_slug: str = "") -> str:
+    for key in ("template", "builtin_template", "template_slug", "role", "type"):
+        value = str(entry.get(key) or "").strip().lower()
+        if value and get_builtin_subagent_template(value) is not None:
+            return value
+    value = str(fallback_slug or "").strip().lower()
+    if value and get_builtin_subagent_template(value) is not None:
+        return value
+    return ""
 
 
 class SubagentRegistry:
@@ -198,7 +213,7 @@ class SubagentRegistry:
             return []
 
         targets: list[SubagentTarget] = []
-        seen_definition_ids: set[str] = set()
+        seen_keys: set[str] = set()
         for entry in raw_items:
             if not isinstance(entry, dict):
                 continue
@@ -210,7 +225,25 @@ class SubagentRegistry:
                 or entry.get("id")
                 or ""
             ).strip()
-            if not definition_id or definition_id in seen_definition_ids or definition_id == definition.id:
+            child_name_hint = str(entry.get("name") or entry.get("slug") or entry.get("template") or "").strip()
+            slug_hint = _normalize_slug(entry.get("slug") or child_name_hint or definition_id)
+            template_slug = _builtin_template_slug(entry, slug_hint)
+
+            if template_slug:
+                target = build_builtin_subagent_target(template_slug, overrides=entry)
+                if target is None:
+                    continue
+                dedupe_key = f"template:{target.slug}"
+                if dedupe_key in seen_keys:
+                    continue
+                targets.append(target)
+                seen_keys.add(dedupe_key)
+                continue
+
+            if not definition_id or definition_id == definition.id:
+                continue
+            dedupe_key = f"agent:{definition_id}"
+            if dedupe_key in seen_keys:
                 continue
 
             child_definition = await self.agent_repository.get_definition(definition_id, definition.tenant_id)
@@ -240,7 +273,7 @@ class SubagentRegistry:
                     metadata=metadata,
                 )
             )
-            seen_definition_ids.add(definition_id)
+            seen_keys.add(dedupe_key)
 
         return targets
 

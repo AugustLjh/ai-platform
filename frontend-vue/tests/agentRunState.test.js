@@ -188,6 +188,39 @@ test('buildRunEventPatch preserves derived artifacts when final event carries on
   )
 })
 
+test('deriveRunState promotes workspace.bound event into context and artifacts', () => {
+  const derived = deriveRunState({
+    id: 'run-workspace',
+    context: {},
+    artifacts: [],
+    toolCalls: []
+  }, [
+    {
+      id: 'event-workspace',
+      runId: 'run-workspace',
+      sequence: 1,
+      eventType: 'workspace.bound',
+      createdAt: '2026-05-13T00:00:00.000Z',
+      payload: {
+        id: 'tenant/run-workspace',
+        root: '/workspace',
+        status: 'ready',
+        source: { type: 'upload_bundle' },
+        snapshot: {
+          file_count: 2,
+          total_size_bytes: 42,
+          snapshot_at: '2026-05-13T00:00:00.000Z'
+        }
+      }
+    }
+  ])
+
+  assert.equal(derived.context.workspace.root, '/workspace')
+  assert.equal(derived.runPatch.context.workspace_root, '/workspace')
+  assert.equal(derived.artifacts[0].artifactType, 'workspace_summary')
+  assert.equal(derived.artifacts[0].payload.snapshot.file_count, 2)
+})
+
 test('buildRunEventPatch for waiting_user keeps question text and promoted artifacts together', () => {
   const patch = buildRunEventPatch({
     id: 'run-3',
@@ -394,6 +427,55 @@ test('buildRunEventPatch rebuilds structured result surfaces for failed terminal
     patch.artifacts.map((artifact) => artifact.artifactType),
     ['answer', 'citations', 'task_plan']
   )
+})
+
+test('deriveRunState preserves structured tool failure recovery payloads from events', () => {
+  const derived = deriveRunState({
+    id: 'run-tool-failure',
+    steps: [],
+    toolCalls: [],
+    artifacts: []
+  }, [
+    {
+      id: 'event-tool-1',
+      eventType: 'tool.started',
+      createdAt: '2026-05-15T00:00:00.000Z',
+      payload: {
+        step_id: 'step-1',
+        tool_call_id: 'tool-1',
+        tool_name: 'run_tests',
+        tool_kind: 'sandbox-exec',
+        arguments: { selector: 'tests/test_sample.py' }
+      }
+    },
+    {
+      id: 'event-tool-2',
+      eventType: 'tool.failed',
+      createdAt: '2026-05-15T00:00:02.000Z',
+      payload: {
+        step_id: 'step-1',
+        tool_call_id: 'tool-1',
+        tool_name: 'run_tests',
+        tool_kind: 'sandbox-exec',
+        error: 'sandbox unreachable',
+        result: {
+          status: 'failed',
+          failure_category: 'execution_error',
+          recovery: {
+            primary_code: 'tool_execution_failed',
+            summary: 'sandbox unreachable',
+            actions: ['Retry after configuring the sandbox runner.']
+          }
+        }
+      }
+    }
+  ])
+
+  assert.equal(derived.toolCalls.length, 1)
+  assert.equal(derived.toolCalls[0].status, 'failed')
+  assert.equal(derived.toolCalls[0].result.failure_category, 'execution_error')
+  assert.equal(derived.toolCalls[0].result.recovery.primary_code, 'tool_execution_failed')
+  assert.equal(derived.toolCalls[0].result.recovery.actions[0], 'Retry after configuring the sandbox runner.')
 })
 
 test('deriveRunState exposes persisted snapshot surface metadata when event history is empty', () => {

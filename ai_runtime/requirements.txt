@@ -32,6 +32,7 @@ striprtf>=0.0.26
 # HTTP client
 aiohttp>=3.9.0
 mcp>=1.24,<2
+playwright>=1.59,<2
 
 # Optional: OpenAI integration
 openai>=1.0.0

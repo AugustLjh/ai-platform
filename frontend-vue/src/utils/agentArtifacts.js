@@ -10,18 +10,21 @@ const textKeys = [
 ]
 const artifactPriority = {
   answer: 0,
+  workspace_summary: 1,
   review_findings: 1,
   citations: 2,
-  code_files: 3,
-  task_plan: 4,
-  table: 5,
-  paged_collection: 6,
-  directory_tree: 7,
-  document_pages: 8,
-  document_excerpt: 9,
-  media_gallery: 10,
-  archive_bundle: 11,
-  file_bundle: 12
+  code_patch: 3,
+  verification_report: 4,
+  code_files: 5,
+  task_plan: 6,
+  table: 7,
+  paged_collection: 8,
+  directory_tree: 9,
+  document_pages: 10,
+  document_excerpt: 11,
+  media_gallery: 12,
+  archive_bundle: 13,
+  file_bundle: 14
 }
 const implicitListKeys = ['items', 'results', 'entries', 'records', 'matches', 'documents', 'data']
 const pagedKeys = ['paged_collection', 'paged_results', 'page', 'page_result']
@@ -80,6 +83,25 @@ const mediaExtensions = {
   '.mov': 'video',
   '.webm': 'video',
   '.mkv': 'video'
+}
+
+const artifactTypeLabels = {
+  answer: '回答',
+  workspace_summary: 'Workspace',
+  review_findings: '审查发现',
+  citations: '引用',
+  code_patch: 'Patch',
+  verification_report: '验证报告',
+  code_files: '代码文件',
+  task_plan: '任务计划',
+  table: '表格',
+  paged_collection: '分页集合',
+  directory_tree: '目录树',
+  document_pages: '文档页',
+  document_excerpt: '文档摘录',
+  media_gallery: '媒体',
+  archive_bundle: '压缩包',
+  file_bundle: '文件包'
 }
 
 export const parseJSON = (value, fallback = null) => {
@@ -455,6 +477,10 @@ const normalizeArtifactPayload = (artifactType, payload) => {
     return { items: normalizeCitations(items) }
   }
 
+  if (type === 'workspace_summary') {
+    return payload && typeof payload === 'object' && !Array.isArray(payload) ? { ...payload } : {}
+  }
+
   if (type === 'review_findings') {
     const items = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.items : payload
     return { items: normalizeFindings(items) }
@@ -463,6 +489,72 @@ const normalizeArtifactPayload = (artifactType, payload) => {
   if (type === 'code_files') {
     const files = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.files : payload
     return { files: normalizeCodeFiles(files) }
+  }
+
+  if (type === 'code_patch') {
+    const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+    const files = Array.isArray(source.files)
+      ? source.files
+        .filter((file) => file && typeof file === 'object')
+        .map((file) => ({
+          path: String(file.path || '').trim(),
+          operation: String(file.operation || source.operation || 'modify').trim(),
+          beforeSha256: file.before_sha256 || file.beforeSha256 || null,
+          afterSha256: file.after_sha256 || file.afterSha256 || null,
+          sizeBytes: Number(file.size_bytes ?? file.sizeBytes ?? 0) || 0,
+          changed: file.changed !== false
+        }))
+        .filter((file) => file.path)
+      : []
+    return {
+      operation: String(source.operation || '').trim(),
+      status: String(source.status || '').trim(),
+      dryRun: Boolean(source.dry_run ?? source.dryRun),
+      files,
+      diff: String(source.diff || ''),
+      truncated: Boolean(source.truncated),
+      reviewNotes: Array.isArray(source.review_notes)
+        ? source.review_notes.map((item) => String(item || '').trim()).filter(Boolean)
+        : Array.isArray(source.reviewNotes)
+          ? source.reviewNotes.map((item) => String(item || '').trim()).filter(Boolean)
+          : [],
+      mergePolicy: String(source.merge_policy || source.mergePolicy || 'manual_review_required').trim(),
+      writeback: source.writeback && typeof source.writeback === 'object' && !Array.isArray(source.writeback)
+        ? { ...source.writeback }
+        : null
+    }
+  }
+
+  if (type === 'verification_report') {
+    const source = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+    const logs = source.logs && typeof source.logs === 'object' && !Array.isArray(source.logs) ? source.logs : {}
+    const runner = source.runner && typeof source.runner === 'object' && !Array.isArray(source.runner) ? source.runner : {}
+    return {
+      kind: String(source.kind || source.purpose || 'shell').trim() || 'shell',
+      status: String(source.status || 'unknown').trim() || 'unknown',
+      exitCode: source.exit_code ?? source.exitCode ?? null,
+      command: Array.isArray(source.command) ? source.command.map((item) => String(item)) : [],
+      cwd: String(source.cwd || '.').trim() || '.',
+      durationMs: Number(source.duration_ms ?? source.durationMs ?? 0) || 0,
+      timeoutSeconds: source.timeout_seconds ?? source.timeoutSeconds ?? null,
+      summary: String(source.summary || '').trim(),
+      failureCategory: source.failure_category ?? source.failureCategory ?? null,
+      truncated: Boolean(source.truncated),
+      logs: {
+        stdout: String(logs.stdout || source.stdout || ''),
+        stderr: String(logs.stderr || source.stderr || '')
+      },
+      runner,
+      selector: source.selector ?? null,
+      target: source.target ?? null,
+      ecosystem: source.ecosystem ?? null,
+      reportFormat: source.report_format ?? source.reportFormat ?? null,
+      structuredReport: source.structured_report && typeof source.structured_report === 'object' && !Array.isArray(source.structured_report)
+        ? source.structured_report
+        : source.structuredReport && typeof source.structuredReport === 'object' && !Array.isArray(source.structuredReport)
+          ? source.structuredReport
+          : null
+    }
   }
 
   if (type === 'file_bundle') {
@@ -539,6 +631,223 @@ export const normalizeArtifact = (raw = {}) => {
     clientKey: raw.client_key || raw.clientKey || raw.id || artifactSignature(artifact)
   }
 }
+
+const artifactReviewStatus = (artifact = {}) => {
+  const metadata = artifact.metadata && typeof artifact.metadata === 'object' && !Array.isArray(artifact.metadata)
+    ? artifact.metadata
+    : {}
+  const payload = artifact.payload && typeof artifact.payload === 'object' && !Array.isArray(artifact.payload)
+    ? artifact.payload
+    : {}
+  const findings = Array.isArray(payload.items) ? payload.items : []
+
+  const explicit = String(
+    metadata.review_status ||
+    metadata.reviewStatus ||
+    metadata.review_decision ||
+    metadata.reviewDecision ||
+    payload.review_status ||
+    payload.reviewStatus ||
+    ''
+  ).trim().toLowerCase()
+  if (explicit) return explicit
+
+  if (artifact.artifactType === 'review_findings') {
+    const blockingCount = findings.filter((item) => {
+      const severity = String(item?.severity || item?.level || '').trim().toLowerCase()
+      return ['high', 'critical', 'error', 'blocking'].includes(severity)
+    }).length
+    return blockingCount > 0 ? 'blocked' : 'reviewed'
+  }
+
+  const mergePolicy = String(payload.mergePolicy || payload.merge_policy || '').trim().toLowerCase()
+  if (mergePolicy.includes('manual_review')) return 'needs_review'
+
+  return 'unreviewed'
+}
+
+const artifactChildRunId = (artifact = {}, collaborationIndex = new Map()) => {
+  const metadata = artifact.metadata && typeof artifact.metadata === 'object' && !Array.isArray(artifact.metadata)
+    ? artifact.metadata
+    : {}
+  const direct = String(
+    metadata.child_run_id ||
+    metadata.childRunId ||
+    metadata.source_child_run_id ||
+    metadata.sourceChildRunId ||
+    ''
+  ).trim()
+  if (direct) return direct
+  const key = artifact.clientKey || artifact.id || ''
+  return collaborationIndex.get(key)?.childRunId || ''
+}
+
+const artifactSourceLabel = (artifact = {}, collaborationIndex = new Map()) => {
+  const metadata = artifact.metadata && typeof artifact.metadata === 'object' && !Array.isArray(artifact.metadata)
+    ? artifact.metadata
+    : {}
+  const childRunId = artifactChildRunId(artifact, collaborationIndex)
+  if (childRunId) return childRunId
+  const sourceTarget = String(metadata.source_target || metadata.sourceTarget || '').trim()
+  if (sourceTarget) return sourceTarget
+  const indexed = collaborationIndex.get(artifact.clientKey || artifact.id || '')
+  if (indexed?.target) return indexed.target
+  return '当前 run'
+}
+
+export const buildArtifactCollaborationIndex = ({
+  runTreeInvocations = [],
+  resolvedInvocations = [],
+  artifacts = []
+} = {}) => {
+  const index = new Map()
+  const remember = (rawArtifact, source = {}) => {
+    const artifact = normalizeArtifact(rawArtifact)
+    const key = artifact.clientKey || artifact.id || ''
+    if (!key) return
+    if (index.has(key)) return
+    index.set(key, {
+      childRunId: String(source.childRunId || '').trim(),
+      invocationId: String(source.invocationId || '').trim(),
+      target: String(source.target || '').trim(),
+      reviewBlocked: Boolean(source.reviewBlocked)
+    })
+  }
+
+  const invocations = Array.isArray(runTreeInvocations) ? runTreeInvocations : []
+  invocations.forEach((item) => {
+    const invocation = item?.invocation || {}
+    const resultPayload = invocation?.resultPayload || {}
+    const promotedArtifacts = (
+      resultPayload?.final_result?.artifacts ||
+      resultPayload?.finalResult?.artifacts ||
+      resultPayload?.promoted_artifacts ||
+      resultPayload?.promotedArtifacts ||
+      []
+    )
+    const reviewResult = item?.reviewResult || invocation?.review_result || invocation?.reviewResult || {}
+    const reviewBlocked = Boolean(
+      item?.reviewGateBlocked ||
+      reviewResult?.gateBlocked ||
+      Number(reviewResult?.blockingFindingCount || reviewResult?.blocking_finding_count || 0) > 0 ||
+      String(reviewResult?.decision || '').trim() === 'review_gate_blocked'
+    )
+    promotedArtifacts.forEach((artifact) => remember(artifact, {
+      childRunId: item?.childRun?.run?.id || item?.childRunId || '',
+      invocationId: invocation?.id || item?.invocationId || '',
+      target: item?.targetName || item?.invocation?.subagentName || '',
+      reviewBlocked
+    }))
+  })
+
+  const resolved = Array.isArray(resolvedInvocations) ? resolvedInvocations : []
+  resolved.forEach((item) => {
+    const reviewResult = item?.reviewResult || {}
+    const reviewBlocked = Boolean(
+      item?.reviewGateBlocked ||
+      reviewResult?.gateBlocked ||
+      Number(reviewResult?.blockingFindingCount || reviewResult?.blocking_finding_count || 0) > 0 ||
+      String(reviewResult?.decision || '').trim() === 'review_gate_blocked'
+    )
+    ;(item?.promotedArtifacts || item?.artifacts || []).forEach((artifact) => remember(artifact, {
+      childRunId: item?.childRunId || '',
+      invocationId: item?.invocationId || item?.id || '',
+      target: item?.target?.name || item?.target?.slug || item?.target || '',
+      reviewBlocked
+    }))
+  })
+
+  ;(Array.isArray(artifacts) ? artifacts : []).forEach((artifact) => remember(artifact, {}))
+  return index
+}
+
+export const summarizeArtifactFilters = ({
+  artifacts = [],
+  runTreeInvocations = [],
+  resolvedInvocations = []
+} = {}) => {
+  const normalizedArtifacts = (Array.isArray(artifacts) ? artifacts : []).map(normalizeArtifact)
+  const collaborationIndex = buildArtifactCollaborationIndex({
+    runTreeInvocations,
+    resolvedInvocations,
+    artifacts: normalizedArtifacts
+  })
+  const typeCounts = {}
+  const childRunCounts = {}
+  const reviewCounts = {
+    all: normalizedArtifacts.length,
+    unreviewed: 0,
+    needs_review: 0,
+    reviewed: 0,
+    blocked: 0
+  }
+
+  normalizedArtifacts.forEach((artifact) => {
+    const type = String(artifact.artifactType || '').trim() || 'unknown'
+    typeCounts[type] = (typeCounts[type] || 0) + 1
+
+    const childRunId = artifactChildRunId(artifact, collaborationIndex)
+    const sourceKey = childRunId || 'current_run'
+    childRunCounts[sourceKey] = (childRunCounts[sourceKey] || 0) + 1
+
+    const review = artifactReviewStatus(artifact)
+    if (!Object.prototype.hasOwnProperty.call(reviewCounts, review)) {
+      reviewCounts[review] = 0
+    }
+    reviewCounts[review] += 1
+  })
+
+  return {
+    total: normalizedArtifacts.length,
+    typeCounts,
+    childRunCounts,
+    reviewCounts,
+    collaborationIndex
+  }
+}
+
+export const filterArtifacts = ({
+  artifacts = [],
+  artifactType = 'all',
+  childRunId = 'all',
+  reviewStatus = 'all',
+  runTreeInvocations = [],
+  resolvedInvocations = []
+} = {}) => {
+  const normalizedArtifacts = (Array.isArray(artifacts) ? artifacts : []).map(normalizeArtifact)
+  const collaborationIndex = buildArtifactCollaborationIndex({
+    runTreeInvocations,
+    resolvedInvocations,
+    artifacts: normalizedArtifacts
+  })
+
+  return normalizedArtifacts.filter((artifact) => {
+    if (artifactType !== 'all' && artifact.artifactType !== artifactType) {
+      return false
+    }
+
+    const artifactRunId = artifactChildRunId(artifact, collaborationIndex)
+    if (childRunId === 'current_run' && artifactRunId) {
+      return false
+    }
+    if (childRunId !== 'all' && childRunId !== 'current_run' && artifactRunId !== childRunId) {
+      return false
+    }
+
+    if (reviewStatus !== 'all' && artifactReviewStatus(artifact) !== reviewStatus) {
+      return false
+    }
+
+    return true
+  })
+}
+
+export const describeArtifact = (artifact, collaborationIndex = new Map()) => ({
+  typeLabel: artifactTypeLabel(artifact?.artifactType),
+  childRunId: artifactChildRunId(artifact, collaborationIndex),
+  sourceLabel: artifactSourceLabel(artifact, collaborationIndex),
+  reviewStatus: artifactReviewStatus(artifact)
+})
 
 export const mergeArtifacts = (...groups) => {
   const merged = []
@@ -647,11 +956,11 @@ const normalizeExcerpts = (value) => {
     if (item && typeof item === 'object') {
       return {
         title: item.title || item.heading || '',
-        text: item.text || item.content || item.excerpt || '',
+        text: item.text || item.content || item.excerpt || item.preview || item.snippet || '',
         source: item.source || '',
         metadata: item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
           ? { ...item.metadata }
-          : Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'heading', 'text', 'content', 'excerpt', 'source', 'metadata'].includes(key)))
+          : Object.fromEntries(Object.entries(item).filter(([key]) => !['title', 'heading', 'text', 'content', 'excerpt', 'preview', 'snippet', 'source', 'metadata'].includes(key)))
       }
     }
     return { title: '', text: String(item || ''), source: '', metadata: {} }
@@ -858,6 +1167,7 @@ const normalizeFileBundle = (value) => {
       ? entry.resource
       : {}
     const source = String(entry.uri || entry.url || entry.href || entry.resource_link || entry.resourceLink || resource.uri || resource.url || resource.href || resource.resource_link || resource.resourceLink || '').trim()
+    const sourceUrl = String(entry.source_url || entry.sourceUrl || resource.source_url || resource.sourceUrl || entry.source || resource.source || '').trim()
     const mimeType = String(entry.mimeType || entry.mime_type || resource.mimeType || resource.mime_type || '').trim()
     const path = String(entry.path || entry.file_path || resource.path || resource.file_path || resource.name || pathFromSource(source)).trim()
     if (!(source || mimeType || isNonEmptyString(entry.name) || isNonEmptyString(entry.title) || isNonEmptyString(resource.name) || isNonEmptyString(resource.title) || isNonEmptyString(entry.data) || isNonEmptyString(resource.data))) {
@@ -883,10 +1193,10 @@ const normalizeFileBundle = (value) => {
       size_bytes: coerceInt(entry.size_bytes ?? entry.sizeBytes ?? entry.bytes ?? resource.size_bytes ?? resource.sizeBytes ?? resource.bytes),
       description: String(entry.description || resource.description || '').trim(),
       preview_text: previewText,
-      source,
+      source: sourceUrl || source,
       metadata: normalizeMetadata(
         { ...resource, ...entry },
-        ['resource', 'uri', 'url', 'href', 'mimeType', 'mime_type', 'path', 'file_path', 'name', 'title', 'description', 'preview_text', 'previewText', 'text', 'content', 'excerpt', 'data', 'blob', 'size_bytes', 'sizeBytes', 'bytes']
+        ['resource', 'uri', 'url', 'href', 'mimeType', 'mime_type', 'path', 'file_path', 'name', 'title', 'source_url', 'sourceUrl', 'source', 'description', 'preview_text', 'previewText', 'text', 'content', 'excerpt', 'data', 'blob', 'size_bytes', 'sizeBytes', 'bytes']
       )
     }]
   })
@@ -1710,6 +2020,38 @@ const buildToolArtifactName = (toolName, artifactName, fallback) => {
   return `${toolLabel} - ${baseName}`
 }
 
+const verificationTitle = (toolName, purpose) => {
+  if (['run_tests', 'test_run'].includes(toolName) || purpose === 'test') return 'Test Verification'
+  if (['run_lint', 'lint_run'].includes(toolName) || purpose === 'lint') return 'Lint Verification'
+  if (toolName === 'run_build' || purpose === 'build') return 'Build Verification'
+  if (toolName === 'typecheck_run' || purpose === 'typecheck') return 'Typecheck Verification'
+  if (toolName === 'coverage_run' || purpose === 'coverage') return 'Coverage Verification'
+  if (toolName === 'dependency_audit' || purpose === 'dependency_audit') return 'Dependency Audit'
+  return 'Sandbox Verification'
+}
+
+const verificationKind = (toolName, purpose) => {
+  if (['run_tests', 'test_run'].includes(toolName) || purpose === 'test') return 'test'
+  if (['run_lint', 'lint_run'].includes(toolName) || purpose === 'lint') return 'lint'
+  if (toolName === 'run_build' || purpose === 'build') return 'build'
+  if (toolName === 'typecheck_run' || purpose === 'typecheck') return 'typecheck'
+  if (toolName === 'coverage_run' || purpose === 'coverage') return 'coverage'
+  if (toolName === 'dependency_audit' || purpose === 'dependency_audit') return 'dependency_audit'
+  return 'shell'
+}
+
+const verificationSummary = (status, exitCode, failureCategory) => {
+  const statusText = String(status || 'unknown').trim() || 'unknown'
+  if (statusText === 'completed') return 'Verification completed successfully.'
+  if (statusText === 'timeout') return 'Verification timed out before completion.'
+  if (statusText === 'failed') {
+    const category = String(failureCategory || 'non_zero_exit').trim() || 'non_zero_exit'
+    return `Verification failed (${category}).`
+  }
+  if (exitCode !== null && exitCode !== undefined) return `Verification finished with exit code ${exitCode}.`
+  return `Verification status: ${statusText}.`
+}
+
 const buildEmbeddedResourceArtifacts = (entry, toolCall = {}) => {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     return []
@@ -1795,6 +2137,147 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
   const structuredContent = payload.structured_content ?? payload.structuredContent
   const text = isNonEmptyString(payload.text) ? payload.text.trim() : ''
   const promoted = []
+
+  if (toolName === 'workspace_status' && payload.workspace && typeof payload.workspace === 'object' && !Array.isArray(payload.workspace)) {
+    promoted.push(normalizeArtifact({
+      artifact_type: 'workspace_summary',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, '', 'Workspace Binding'),
+      payload: payload.workspace,
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true
+      }
+    }))
+  }
+
+  if (toolName === 'workspace_file_info' && isNonEmptyString(payload.path)) {
+    promoted.push(normalizeArtifact({
+      artifact_type: 'file_bundle',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, payload.path, 'File Info'),
+      payload: {
+        files: [{
+          name: String(payload.path || '').split('/').pop() || String(payload.path || ''),
+          path: payload.path,
+          size_bytes: payload.size_bytes,
+          description: payload.type || '',
+          metadata: Object.fromEntries(Object.entries(payload).filter(([key]) => !['path', 'size_bytes', 'type'].includes(key)))
+        }]
+      },
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true
+      }
+    }))
+  }
+
+  if (['workspace_apply_patch', 'workspace_create_file', 'workspace_write_file', 'workspace_rename_path', 'workspace_delete_path'].includes(toolName)) {
+    const rawArtifacts = Array.isArray(payload.artifacts) ? payload.artifacts : []
+    rawArtifacts
+      .filter((artifact) => artifact && typeof artifact === 'object')
+      .forEach((artifact) => {
+        promoted.push(normalizeArtifact({
+          ...artifact,
+          step_id: stepId || artifact.step_id || artifact.stepId || '',
+          name: buildToolArtifactName(toolName, artifact.name, 'Workspace Patch'),
+          metadata: {
+            ...(artifact.metadata || {}),
+            source: 'tool_call',
+            tool_name: toolName,
+            tool_kind: toolKind,
+            tool_call_id: toolCallId,
+            promoted_to_run: true,
+            path: payload.path,
+            operation: payload.operation,
+            dry_run: payload.dry_run ?? payload.dryRun,
+            changed: payload.changed
+          }
+        }))
+      })
+    if (rawArtifacts.length === 0) {
+      promoted.push(normalizeArtifact({
+        artifact_type: 'code_patch',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, '', 'Workspace Patch'),
+        payload: {
+          operation: payload.operation,
+          status: payload.status,
+          dry_run: payload.dry_run ?? payload.dryRun,
+          files: [{
+            path: payload.path,
+            operation: payload.operation,
+            before_sha256: payload.before_sha256 ?? payload.beforeSha256,
+            after_sha256: payload.after_sha256 ?? payload.afterSha256,
+            changed: payload.changed
+          }],
+          diff: payload.diff || '',
+          truncated: payload.truncated,
+          review_notes: payload.review_notes || payload.reviewNotes || [],
+          merge_policy: payload.merge_policy || payload.mergePolicy || 'manual_review_required'
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
+        }
+      }))
+    }
+  }
+
+  if (['shell_exec', 'run_tests', 'run_lint', 'run_build', 'test_run', 'lint_run', 'typecheck_run', 'coverage_run', 'dependency_audit'].includes(toolName)) {
+    const stdout = isNonEmptyString(payload.stdout) ? String(payload.stdout) : ''
+    const stderr = isNonEmptyString(payload.stderr) ? String(payload.stderr) : ''
+    const purpose = isNonEmptyString(payload.purpose) ? String(payload.purpose).trim() : ''
+    const exitCode = payload.exit_code ?? payload.exitCode ?? null
+    const failureCategory = payload.failure_category ?? payload.failureCategory ?? null
+    promoted.push(normalizeArtifact({
+      artifact_type: 'verification_report',
+      step_id: stepId,
+      name: buildToolArtifactName(toolName, '', verificationTitle(toolName, purpose)),
+      payload: {
+        kind: verificationKind(toolName, purpose),
+        status: payload.status || 'unknown',
+        exit_code: exitCode,
+        command: Array.isArray(payload.command) ? payload.command : [],
+        cwd: payload.cwd || '.',
+        duration_ms: payload.duration_ms ?? payload.durationMs ?? 0,
+        timeout_seconds: payload.timeout_seconds ?? payload.timeoutSeconds ?? null,
+        summary: verificationSummary(payload.status, exitCode, failureCategory),
+        failure_category: failureCategory,
+        truncated: payload.truncated,
+        logs: { stdout, stderr },
+        runner: payload.runner && typeof payload.runner === 'object' && !Array.isArray(payload.runner) ? payload.runner : {},
+        selector: payload.selector,
+        target: payload.target,
+        ecosystem: payload.ecosystem,
+        report_format: payload.report_format ?? payload.reportFormat,
+        structured_report: payload.structured_report && typeof payload.structured_report === 'object' && !Array.isArray(payload.structured_report)
+          ? payload.structured_report
+          : payload.structuredReport && typeof payload.structuredReport === 'object' && !Array.isArray(payload.structuredReport)
+            ? payload.structuredReport
+            : null
+      },
+      metadata: {
+        source: 'tool_call',
+        tool_name: toolName,
+        tool_kind: toolKind,
+        tool_call_id: toolCallId,
+        promoted_to_run: true,
+        status: payload.status,
+        exit_code: exitCode,
+        failure_category: failureCategory
+      }
+    }))
+  }
 
   if (structuredContent !== null && structuredContent !== undefined && structuredContent !== '') {
     promoted.push(...buildArtifactsFromStructuredResult(structuredContent, text)
@@ -2013,6 +2496,140 @@ export const buildArtifactsFromToolResult = (result, toolCall = {}, options = {}
     return mergeArtifacts(promoted)
   }
 
+  if (toolName === 'web_search' && Array.isArray(payload.items)) {
+    return mergeArtifacts([
+      normalizeArtifact({
+        artifact_type: 'citations',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, '', 'Search Results'),
+        payload: {
+          items: payload.items
+            .filter((item) => item && typeof item === 'object')
+            .map((item) => ({
+              title: item.title || item.url || 'Search Result',
+              url: item.url || '',
+              snippet: item.snippet || '',
+              source: payload.source || 'web_search',
+              metadata: {
+                query: payload.query,
+                fetched_at: payload.fetched_at
+              }
+            }))
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true,
+          query: payload.query,
+          truncated: payload.truncated
+        }
+      })
+    ])
+  }
+
+  if (['open_page', 'extract_page_text', 'fetch_url'].includes(toolName) && (isNonEmptyString(payload.text) || isNonEmptyString(payload.error))) {
+    return mergeArtifacts([
+      normalizeArtifact({
+        artifact_type: 'document_excerpt',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, payload.title, 'Web Page'),
+        payload: {
+          items: [{
+            title: payload.title || payload.url || toolName,
+            text: payload.text || payload.error || '',
+            source: payload.url || payload.requested_url || 'web',
+            metadata: {
+              requested_url: payload.requested_url,
+              status: payload.status,
+              fetched_at: payload.fetched_at,
+              truncated: payload.truncated,
+              failure_category: payload.failure_category
+            }
+          }]
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true,
+          url: payload.url,
+          status: payload.status,
+          truncated: payload.truncated
+        }
+      })
+    ])
+  }
+
+  if (toolName === 'download_file' && Array.isArray(payload.files)) {
+    return mergeArtifacts([
+      normalizeArtifact({
+        artifact_type: 'file_bundle',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, payload.filename, 'Downloaded File'),
+        payload: {
+          files: normalizeFileBundle(payload.files)
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true,
+          url: payload.url,
+          requested_url: payload.requested_url,
+          status: payload.status,
+          content_type: payload.content_type,
+          bytes: payload.bytes,
+          sha256: payload.sha256,
+          truncated: payload.truncated,
+          failure_category: payload.failure_category
+        }
+      })
+    ])
+  }
+
+  if (['git_status', 'git_diff', 'git_show', 'git_log', 'git_branch'].includes(toolName)) {
+    let gitText = isNonEmptyString(payload.stdout) ? String(payload.stdout).trim() : ''
+    if (!gitText && Number(payload.exit_code) === 0 && ['git_status', 'git_diff'].includes(toolName)) {
+      gitText = 'No changes.'
+    }
+    if (!gitText && isNonEmptyString(payload.stderr)) {
+      gitText = String(payload.stderr).trim()
+    }
+    if (!gitText) {
+      gitText = `${toolName} completed with exit code ${payload.exit_code ?? ''}.`.trim()
+    }
+    return mergeArtifacts([
+      normalizeArtifact({
+        artifact_type: 'document_excerpt',
+        step_id: stepId,
+        name: buildToolArtifactName(toolName, '', 'Git Output'),
+        payload: {
+          items: [{
+            title: Array.isArray(payload.command) ? payload.command.join(' ') : toolName,
+            text: gitText,
+            source: 'git',
+            metadata: {
+              exit_code: payload.exit_code,
+              stderr: payload.stderr,
+              truncated: payload.truncated
+            }
+          }]
+        },
+        metadata: {
+          source: 'tool_call',
+          tool_name: toolName,
+          tool_kind: toolKind,
+          tool_call_id: toolCallId,
+          promoted_to_run: true
+        }
+      })
+    ])
+  }
+
   const fallbackContentItems = normalizeMCPContentItems(payload.content)
   if (fallbackContentItems.length > 0) {
     return mergeArtifacts([
@@ -2114,24 +2731,7 @@ export const getRunAnswerText = (run = {}) => {
   return extractTextCandidate(run.finalOutputJson)
 }
 
-export const artifactTypeLabel = (type) => {
-  const labels = {
-    answer: '回答',
-    archive_bundle: '压缩包清单',
-    code_files: '代码文件',
-    citations: '引用',
-    directory_tree: '目录树',
-    document_pages: '多页文档',
-    file_bundle: '附件文件',
-    media_gallery: '媒体资源',
-    paged_collection: '分页结果',
-    review_findings: '审查发现',
-    task_plan: '任务计划',
-    table: '表格',
-    document_excerpt: '文档摘录'
-  }
-  return labels[type] || type || '结构化结果'
-}
+export const artifactTypeLabel = (type) => artifactTypeLabels[String(type || '').trim()] || String(type || '').trim() || '结构化结果'
 
 export const summarizeArtifacts = (artifacts = []) => {
   return artifacts.map((artifact) => artifactTypeLabel(artifact.artifactType)).join(' · ')

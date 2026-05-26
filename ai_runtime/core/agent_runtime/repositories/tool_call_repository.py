@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from ai_runtime.core.agent_runtime.events import sanitize_runtime_payload
 from ai_runtime.core.agent_runtime.repositories.json_utils import encode_json, parse_json_field
 
 
@@ -50,7 +51,7 @@ class ToolCallRepository:
             _serialize_uuid(step_id),
             tool_name,
             tool_kind,
-            encode_json(arguments, {}),
+            encode_json(sanitize_runtime_payload(arguments), {}),
         )
         return _record_to_dict(row)
 
@@ -78,7 +79,7 @@ class ToolCallRepository:
             """,
             _serialize_uuid(tool_call_id),
             status,
-            encode_json(result, {}) if result is not None else None,
+            encode_json(sanitize_runtime_payload(result), {}) if result is not None else None,
             error_message,
         )
         return _record_to_dict(row) if row else None

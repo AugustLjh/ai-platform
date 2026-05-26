@@ -3,19 +3,24 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import Response, StreamingResponse
 
 from ai_runtime.core.agent_runtime import AgentRuntime
+from ai_runtime.core.agent_runtime.audit_view import evaluate_redaction_rules
 from ai_runtime.core.agent_runtime.models import (
     AgentRunEventListResponse,
     AgentRunListResponse,
     AgentRunSummaryResponse,
     AgentRunTreeResponse,
     AgentSubagentInvocationListResponse,
+    RuntimeArtifactReviewDecisionRequest,
     RuntimeCreateRunRequest,
     RuntimeResumeRunRequest,
+    RuntimeWorkspaceWritebackRequest,
 )
+from ai_runtime.core.agent_runtime.subagents.quality import evaluate_default_subagent_quality_suite
+from ai_runtime.core.agent_runtime.web_quality import evaluate_default_web_search_quality_suite
 from ai_runtime.core.database import get_db_manager
 from ai_runtime.core.dependencies import get_current_tenant_id, get_current_user_id
 
@@ -31,14 +36,55 @@ def get_agent_runtime() -> AgentRuntime:
     return _runtime
 
 
+async def get_started_agent_runtime() -> AgentRuntime:
+    runtime = get_agent_runtime()
+    await runtime.start()
+    return runtime
+
+
+async def get_current_viewer_role(
+    x_user_role: Optional[str] = Header(default=None),
+) -> str:
+    role = str(x_user_role or "user").strip().lower()
+    if role not in {"anonymous", "user", "operator", "admin", "system"}:
+        return "user"
+    return role
+
+
+def _require_admin_or_operator(role: str) -> None:
+    if role not in {"operator", "admin", "system"}:
+        raise HTTPException(status_code=403, detail="operator or admin role is required")
+
+
 @router.post("/runs", response_model=AgentRunSummaryResponse, status_code=201)
 async def create_run(
     request: RuntimeCreateRunRequest,
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     payload = request.model_copy(update={"tenant_id": tenant_id, "user_id": user_id or request.user_id})
+    try:
+        return await runtime.create_run(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{agent_definition_id}/runs", response_model=AgentRunSummaryResponse, status_code=201)
+async def create_run_for_agent(
+    agent_definition_id: str,
+    request: RuntimeCreateRunRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    runtime = await get_started_agent_runtime()
+    payload = request.model_copy(
+        update={
+            "agent_definition_id": agent_definition_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id or request.user_id,
+        }
+    )
     try:
         return await runtime.create_run(payload)
     except Exception as exc:
@@ -51,13 +97,393 @@ async def list_tools(
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
-    runtime = get_agent_runtime()
-    tools = await runtime.list_tools(
+    runtime = await get_started_agent_runtime()
+    result = await runtime.list_tools(
         tenant_id=tenant_id,
         user_id=user_id,
         agent_definition_id=agent_definition_id,
     )
-    return {"tools": tools, "total": len(tools)}
+    return {
+        "tools": result["tools"],
+        "total": len(result["tools"]),
+        "execution_mode": result["execution_mode"],
+    }
+
+
+@router.get("/workspace-sources")
+async def list_workspace_sources(
+    max_entries: int = Query(default=200, ge=1, le=1000),
+    max_depth: int = Query(default=2, ge=0, le=6),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    runtime = await get_started_agent_runtime()
+    return await runtime.list_workspace_sources(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        max_entries=max_entries,
+        max_depth=max_depth,
+    )
+
+
+@router.get("/runtime-status")
+async def get_runtime_status(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    del tenant_id, user_id
+    runtime = await get_started_agent_runtime()
+    return runtime.runtime_status()
+
+
+@router.get("/ops-status")
+async def get_ops_status(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return await runtime.ops_status(tenant_id=tenant_id)
+
+
+@router.get("/tenant-governance")
+async def get_tenant_governance_status(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return await runtime.tenant_governance_status(tenant_id)
+
+
+@router.post("/ops-status/evaluate")
+async def evaluate_ops_status(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    result = await runtime.evaluate_runtime_health()
+    result["tenant_governance"] = await runtime.tenant_governance_status(tenant_id)
+    return result
+
+
+@router.get("/ops-status/metrics")
+async def get_ops_prometheus_metrics(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return Response(
+        content=runtime.ops_prometheus_metrics(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
+@router.get("/ops-status/grafana-dashboard")
+async def get_ops_grafana_dashboard(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return runtime.ops_grafana_dashboard()
+
+
+@router.post("/ops-status/alerts/{rule_name}/acknowledge")
+async def acknowledge_runtime_alert(
+    rule_name: str,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    acknowledged = runtime.alert_manager.acknowledge(rule_name)
+    if not acknowledged:
+        raise HTTPException(status_code=404, detail="active alert not found")
+    return runtime.alert_manager.snapshot()
+
+
+@router.post("/ops-status/alerts/{rule_name}/resolve")
+async def resolve_runtime_alert(
+    rule_name: str,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del tenant_id, user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    resolved = runtime.alert_manager.resolve(rule_name)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="active alert not found")
+    return runtime.alert_manager.snapshot()
+
+
+@router.post("/audit/redaction/evaluate")
+async def evaluate_audit_redaction_rules(
+    test_cases: list[dict],
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    result = evaluate_redaction_rules(test_cases)
+    history_entry = await runtime._persist_evaluation_record(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        evaluation_type="audit_redaction",
+        suite_name="runtime.audit.redaction",
+        result=result,
+    )
+    history = await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type="audit_redaction",
+        limit=10,
+    )
+    return {
+        **result,
+        "history_entry": history_entry,
+        "history": history["history"],
+        "history_summary": history.get("history_summary"),
+        "history_comparison": history.get("history_comparison"),
+    }
+
+
+@router.post("/subagents/quality/evaluate")
+async def evaluate_subagent_quality_rules(
+    test_cases: list[dict],
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    result = evaluate_default_subagent_quality_suite(test_cases)
+    history_entry = await runtime._persist_evaluation_record(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        evaluation_type="subagent_quality",
+        suite_name=str(result.get("suite_name") or "runtime.subagents.quality"),
+        result=result,
+    )
+    history = await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type="subagent_quality",
+        limit=10,
+    )
+    return {
+        **result,
+        "history_entry": history_entry,
+        "history": history["history"],
+        "history_summary": history.get("history_summary"),
+        "history_comparison": history.get("history_comparison"),
+    }
+
+
+@router.post("/web/search-quality/evaluate")
+async def evaluate_web_search_quality_rules(
+    test_cases: list[dict],
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    result = evaluate_default_web_search_quality_suite(test_cases)
+    history_entry = await runtime._persist_evaluation_record(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        evaluation_type="web_search_quality",
+        suite_name=str(result.get("suite_name") or "runtime.web.search_quality"),
+        result=result,
+    )
+    history = await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type="web_search_quality",
+        limit=10,
+    )
+    return {
+        **result,
+        "history_entry": history_entry,
+        "history": history["history"],
+        "history_summary": history.get("history_summary"),
+        "history_comparison": history.get("history_comparison"),
+    }
+
+
+@router.post("/production-readiness/evaluate")
+async def evaluate_production_readiness_rules(
+    evidence: dict | None = None,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    result = runtime.evaluate_production_readiness(evidence=evidence or {})
+    history_entry = await runtime._persist_evaluation_record(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        evaluation_type="production_readiness",
+        suite_name=str(result.get("suite_name") or "runtime.production_readiness"),
+        result=result,
+    )
+    history = await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type="production_readiness",
+        limit=10,
+    )
+    return {
+        **result,
+        "history_entry": history_entry,
+        "history": history["history"],
+        "history_summary": history.get("history_summary"),
+        "history_comparison": history.get("history_comparison"),
+    }
+
+
+@router.get("/evaluations")
+async def list_evaluations(
+    evaluation_type: Optional[str] = Query(default=None),
+    limit: int = Query(default=10, ge=1, le=50),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+    viewer_role: str = Depends(get_current_viewer_role),
+):
+    del user_id
+    _require_admin_or_operator(viewer_role)
+    runtime = await get_started_agent_runtime()
+    return await runtime.list_evaluation_history(
+        tenant_id=tenant_id,
+        evaluation_type=evaluation_type,
+        limit=limit,
+    )
+
+
+@router.get("/workspaces")
+async def inspect_workspaces(
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    runtime = await get_started_agent_runtime()
+    inspection = runtime.workspace_manager.inspect_workspaces()
+    workspaces = [
+        item
+        for item in inspection.get("workspaces", [])
+        if str(item.get("tenant_id") or "") == tenant_id
+    ]
+    lock_summary = inspection.get("lock_summary") if isinstance(inspection.get("lock_summary"), dict) else {}
+    tenant_lock_summary = {
+        **lock_summary,
+        "locks": [
+            item
+            for item in lock_summary.get("locks", [])
+            if str(item.get("tenant_id") or "") == tenant_id
+        ],
+    }
+    tenant_lock_summary["lock_count"] = len(tenant_lock_summary["locks"])
+    tenant_lock_summary["active_lock_count"] = sum(1 for item in tenant_lock_summary["locks"] if not item.get("stale"))
+    tenant_lock_summary["stale_lock_count"] = sum(1 for item in tenant_lock_summary["locks"] if item.get("stale"))
+    tenant_lock_summary["orphan_lock_count"] = sum(1 for item in tenant_lock_summary["locks"] if item.get("orphan"))
+    health = runtime.workspace_manager.build_workspace_health(
+        {
+            **inspection,
+            "workspace_count": len(workspaces),
+            "expired_count": sum(1 for item in workspaces if item.get("expired")),
+            "quota_exceeded_count": sum(1 for item in workspaces if item.get("quota_exceeded")),
+            "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in workspaces),
+            "total_file_count": sum(int(item.get("file_count") or 0) for item in workspaces),
+        },
+        lock_summary=tenant_lock_summary,
+    )
+    return {
+        **inspection,
+        "tenant_id": tenant_id,
+        "workspace_count": len(workspaces),
+        "expired_count": sum(1 for item in workspaces if item.get("expired")),
+        "quota_exceeded_count": sum(1 for item in workspaces if item.get("quota_exceeded")),
+        "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in workspaces),
+        "total_file_count": sum(int(item.get("file_count") or 0) for item in workspaces),
+        "workspaces": workspaces,
+        "lock_summary": tenant_lock_summary,
+        "health": health,
+        "requested_by": user_id,
+    }
+
+
+@router.post("/workspaces/cleanup")
+async def cleanup_workspaces(
+    dry_run: bool = Query(default=True),
+    confirmed: bool = Query(default=False),
+    max_delete: int = Query(default=100, ge=1, le=1000),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    if not dry_run and not confirmed:
+        raise HTTPException(status_code=400, detail="workspace cleanup requires confirmed=true when dry_run=false")
+    runtime = await get_started_agent_runtime()
+    result = runtime.workspace_manager.cleanup_expired_workspaces(
+        dry_run=dry_run,
+        max_delete=max_delete,
+        tenant_id=tenant_id,
+    )
+    selected = list(result.get("deleted", []))
+    failed = list(result.get("failed", []))
+    return {
+        **result,
+        "tenant_id": tenant_id,
+        "selected_count": len(selected),
+        "deleted_count": sum(1 for item in selected if item.get("deleted")),
+        "failed_count": len(failed),
+        "deleted": selected,
+        "failed": failed,
+        "requested_by": user_id,
+    }
+
+
+@router.post("/workspaces/locks/cleanup")
+async def cleanup_workspace_locks(
+    dry_run: bool = Query(default=True),
+    confirmed: bool = Query(default=False),
+    max_delete: int = Query(default=100, ge=1, le=1000),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    if not dry_run and not confirmed:
+        raise HTTPException(status_code=400, detail="workspace lock cleanup requires confirmed=true when dry_run=false")
+    runtime = await get_started_agent_runtime()
+    result = runtime.workspace_manager.cleanup_stale_locks(
+        dry_run=dry_run,
+        max_delete=max_delete,
+        tenant_id=tenant_id,
+    )
+    selected = list(result.get("deleted", []))
+    failed = list(result.get("failed", []))
+    return {
+        **result,
+        "tenant_id": tenant_id,
+        "selected_count": len(selected),
+        "deleted_count": sum(1 for item in selected if item.get("deleted")),
+        "failed_count": len(failed),
+        "deleted": selected,
+        "failed": failed,
+        "requested_by": user_id,
+    }
 
 
 @router.get("/runs", response_model=AgentRunListResponse)
@@ -67,13 +493,13 @@ async def list_runs(
     tenant_id: str = Depends(get_current_tenant_id),
     user_id: Optional[str] = Depends(get_current_user_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     return await runtime.list_runs(tenant_id=tenant_id, user_id=user_id, limit=limit, offset=offset)
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunSummaryResponse)
 async def get_run(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.get_run(run_id, tenant_id)
     except ValueError as exc:
@@ -82,7 +508,7 @@ async def get_run(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
 
 @router.get("/runs/{run_id}/invocations", response_model=AgentSubagentInvocationListResponse)
 async def get_run_invocations(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.list_subagent_invocations(run_id, tenant_id)
     except ValueError as exc:
@@ -95,7 +521,7 @@ async def get_run_tree(
     max_depth: int = Query(default=4, ge=1, le=8),
     tenant_id: str = Depends(get_current_tenant_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.get_run_tree(run_id, tenant_id, max_depth=max_depth)
     except ValueError as exc:
@@ -110,7 +536,7 @@ async def get_run_events(
     limit: int = Query(default=500, ge=1, le=1000),
     tenant_id: str = Depends(get_current_tenant_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     if not stream:
         try:
             return await runtime.list_events(run_id, tenant_id, after_sequence=after_sequence, limit=limit)
@@ -138,9 +564,37 @@ async def get_run_events(
     )
 
 
+@router.get("/runs/{run_id}/audit-view")
+async def get_run_audit_view(
+    run_id: str,
+    viewer_role: str = Query(default="user"),
+    include_events: bool = Query(default=True),
+    include_tool_calls: bool = Query(default=True),
+    event_limit: int = Query(default=500, ge=1, le=1000),
+    tenant_id: str = Depends(get_current_tenant_id),
+    current_role: str = Depends(get_current_viewer_role),
+):
+    allowed_roles = {"anonymous", "user", "operator", "admin", "system"}
+    requested_role = viewer_role if viewer_role in allowed_roles else "user"
+    if current_role not in {"operator", "admin", "system"} and requested_role not in {"anonymous", "user"}:
+        raise HTTPException(status_code=403, detail="operator or admin role is required for elevated audit views")
+    runtime = await get_started_agent_runtime()
+    try:
+        return await runtime.build_run_audit_view(
+            run_id,
+            tenant_id,
+            viewer_role=requested_role,
+            include_events=include_events,
+            include_tool_calls=include_tool_calls,
+            event_limit=event_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/runs/{run_id}/cancel", response_model=AgentRunSummaryResponse)
 async def cancel_run(run_id: str, tenant_id: str = Depends(get_current_tenant_id)):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.cancel_run(run_id, tenant_id)
     except ValueError as exc:
@@ -153,8 +607,52 @@ async def resume_run(
     request: RuntimeResumeRunRequest,
     tenant_id: str = Depends(get_current_tenant_id),
 ):
-    runtime = get_agent_runtime()
+    runtime = await get_started_agent_runtime()
     try:
         return await runtime.resume_run(run_id, tenant_id, input_patch=request.input_patch)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/artifacts/{artifact_id}/review", response_model=AgentRunSummaryResponse)
+async def review_run_artifact(
+    run_id: str,
+    artifact_id: str,
+    request: RuntimeArtifactReviewDecisionRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    runtime = await get_started_agent_runtime()
+    try:
+        return await runtime.review_artifact(
+            run_id=run_id,
+            artifact_id=artifact_id,
+            tenant_id=tenant_id,
+            reviewer_id=user_id,
+            request=request,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/workspace/writeback", response_model=AgentRunSummaryResponse)
+async def writeback_run_workspace(
+    run_id: str,
+    request: RuntimeWorkspaceWritebackRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: Optional[str] = Depends(get_current_user_id),
+):
+    if not request.dry_run and not request.confirmed:
+        raise HTTPException(status_code=400, detail="workspace writeback requires confirmed=true when dry_run=false")
+    runtime = await get_started_agent_runtime()
+    try:
+        return await runtime.writeback_run_workspace(
+            run_id=run_id,
+            tenant_id=tenant_id,
+            reviewer_id=user_id,
+            request=request,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc

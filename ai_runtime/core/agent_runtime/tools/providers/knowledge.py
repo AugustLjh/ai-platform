@@ -298,4 +298,4 @@ class KnowledgeToolProvider:
 
 
 def register_knowledge_tools(registry) -> None:
-    registry.register_provider(KnowledgeToolProvider())
+    registry.register_provider(KnowledgeToolProvider(), name="knowledge")

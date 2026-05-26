@@ -2,11 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildGovernanceRecoverySummary,
   buildInvocationProtocolEntry,
   buildPendingSubagentClarificationEntry,
+  buildSubagentCollaborationSummary,
+  collectResolvedSubagentInvocations,
   clarificationStateLabel,
   collectRunTreeInvocations,
   collectRunTreeNodes,
+  filterRunTreeForLatestAttempt,
+  filterRunTreeInvocationsForLatestAttempt,
   getInvocationClarification,
   getInvocationGovernancePolicy,
   getInvocationProgress,
@@ -139,6 +144,102 @@ test('collectRunTreeNodes and collectRunTreeInvocations flatten nested structure
   )
 })
 
+test('latest attempt filters hide stale run tree branches before run.resumed', () => {
+  const root = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'completed', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-old',
+          parent_run_id: 'run-parent',
+          child_run_id: 'run-old-child',
+          status: 'completed',
+          created_at: '2026-04-01T10:00:00.000Z',
+          request_payload: { task: { message: 'Old child task' } },
+          result_payload: { status: 'completed' }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'run-old-child', status: 'completed', input: { message: 'old child task' } },
+          invocations: []
+        }
+      },
+      {
+        invocation: {
+          id: 'invocation-new',
+          parent_run_id: 'run-parent',
+          child_run_id: 'run-new-child',
+          status: 'completed',
+          created_at: '2026-04-01T10:02:00.000Z',
+          request_payload: { task: { message: 'New child task' } },
+          result_payload: { status: 'completed' }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'run-new-child', status: 'completed', input: { message: 'new child task' } },
+          invocations: []
+        }
+      }
+    ]
+  })
+
+  const events = [
+    { id: 'event-1', eventType: 'run.completed', sequence: 10, createdAt: '2026-04-01T10:00:10.000Z' },
+    { id: 'event-2', eventType: 'run.resumed', sequence: 11, createdAt: '2026-04-01T10:01:00.000Z' }
+  ]
+
+  const filteredRoot = filterRunTreeForLatestAttempt(root, events)
+  const filteredInvocations = filterRunTreeInvocationsForLatestAttempt(collectRunTreeInvocations(root), events)
+
+  assert.equal(filteredRoot.invocations.length, 1)
+  assert.equal(filteredRoot.invocations[0].invocation.id, 'invocation-new')
+  assert.deepEqual(filteredInvocations.map((item) => item.invocation.id), ['invocation-new'])
+})
+
+test('collectResolvedSubagentInvocations normalizes async child results from run context', () => {
+  const resolved = collectResolvedSubagentInvocations({
+    context: {
+      resolved_subagent_invocations: [
+        {
+          child_run_id: 'child-run-1',
+          invocation_id: 'invocation-1',
+          target: { slug: 'parallel-worker', name: 'Parallel Worker' },
+          status: 'completed',
+          step_status: 'completed',
+          summary: 'Worker complete.',
+          final_output_text: 'Worker complete.',
+          promoted_artifacts: [
+            { artifact_type: 'verification_report', name: 'async-worker-report' }
+          ],
+          progress: {
+            protocol_version: 'managed-subagent.progress.v1',
+            state: 'completed',
+            summary: 'Worker complete.'
+          },
+          review_result: {
+            decision: 'not_required',
+            mode: 'none'
+          },
+          governance_policy: {
+            protocol_version: 'managed-subagent.governance.v1',
+            history: { attempt_count: 1 }
+          },
+          pending_completion: true
+        }
+      ]
+    }
+  })
+
+  assert.equal(resolved.length, 1)
+  assert.equal(resolved[0].target.name, 'Parallel Worker')
+  assert.equal(resolved[0].promotedArtifacts[0].name, 'async-worker-report')
+  assert.equal(resolved[0].progress.state, 'completed')
+  assert.equal(resolved[0].reviewResult.decision, 'not_required')
+  assert.equal(resolved[0].governancePolicy.history.attemptCount, 1)
+  assert.equal(resolved[0].pendingCompletion, true)
+})
+
 test('summarizeInvocationTarget and summarizeInvocationTask prefer structured handoff fields', () => {
   const invocation = {
     publicationId: 'publication-1',
@@ -194,6 +295,65 @@ test('getInvocationReviewResult and summarizeInvocationReview normalize reviewer
   assert.equal(reviewResult.mode, 'judge')
   assert.equal(reviewDecisionLabel(reviewResult.decision), '通过但有提示')
   assert.equal(summarizeInvocationReview(invocation), 'Judge 通过但有提示 · 1 条 finding')
+})
+
+test('review gate blocked decisions render as dangerous attention entries', () => {
+  const invocation = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'running', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-1',
+          status: 'completed',
+          result_payload: {
+            status: 'completed',
+            review_result: {
+              mode: 'reviewer',
+              required: true,
+              decision: 'review_gate_blocked',
+              approved: false,
+              gate_blocked: true,
+              finding_count: 1,
+              blocking_finding_count: 1,
+              gate_blockers: [
+                {
+                  code: 'review_gate_blocked',
+                  message: 'reviewer gate blocked by 1 blocking finding(s)'
+                }
+              ],
+              recovery: {
+                primary_code: 'review_gate_blocked',
+                actions: ['Fix the reviewer finding before continuing.']
+              }
+            },
+            governance_policy: {
+              blockers: [
+                {
+                  code: 'review_gate_blocked',
+                  message: 'reviewer gate blocked by 1 blocking finding(s)'
+                }
+              ],
+              recovery: {
+                primary_code: 'review_gate_blocked',
+                actions: ['Fix the reviewer finding before continuing.']
+              }
+            }
+          }
+        }
+      }
+    ]
+  }).invocations[0].invocation
+
+  const reviewResult = getInvocationReviewResult(invocation)
+  assert.equal(reviewResult.gateBlocked, true)
+  assert.equal(reviewDecisionLabel(reviewResult.decision), '评审阻断')
+  assert.equal(summarizeInvocationReview(invocation), 'Reviewer 评审阻断 · 已阻断 · 1 条阻塞')
+
+  const entry = buildInvocationProtocolEntry({ invocation, childRun: null })
+  assert.equal(entry.needsAttention, true)
+  assert.equal(entry.attentionTone, 'danger')
+  assert.equal(entry.recoverySummary, '阻塞 reviewer gate blocked by 1 blocking finding(s) · 恢复建议 Fix the reviewer finding before continuing.')
 })
 
 test('getInvocationQuestion and buildInvocationProtocolEntry expose waiting-user protocol details', () => {
@@ -453,6 +613,13 @@ test('normalizeGovernancePolicy and invocation governance summary expose runtime
       advisoryLimits: [],
       note: ''
     },
+    blockers: [],
+    recovery: {
+      recoverable: false,
+      primaryCode: '',
+      summary: '',
+      actions: []
+    },
     warnings: [],
     history: {
       targetSlug: '',
@@ -500,6 +667,38 @@ test('normalizeGovernancePolicy and invocation governance summary expose runtime
     'max_retry_attempts',
     'timeout_seconds'
   ])
+})
+
+test('normalizeGovernancePolicy and recovery summary expose structured blockers', () => {
+  const governance = normalizeGovernancePolicy({
+    blockers: [
+      {
+        code: 'concurrency_limit_exceeded',
+        message: '1 unresolved child run already exists.',
+        recovery_actions: [
+          'Wait for the existing child run to finish.',
+          'Increase max_concurrent_delegations only if the tasks are independent.'
+        ]
+      }
+    ],
+    recovery: {
+      recoverable: true,
+      primary_code: 'concurrency_limit_exceeded',
+      summary: 'Wait for the current child run or raise the concurrency limit.',
+      actions: [
+        'Wait for the existing child run to finish.',
+        'Increase max_concurrent_delegations only if the tasks are independent.'
+      ]
+    }
+  })
+
+  assert.equal(governance.hasData, true)
+  assert.equal(governance.blockers[0].code, 'concurrency_limit_exceeded')
+  assert.equal(governance.recovery.primaryCode, 'concurrency_limit_exceeded')
+  assert.equal(
+    buildGovernanceRecoverySummary(governance),
+    'Wait for the existing child run to finish. · Increase max_concurrent_delegations only if the tasks are independent.'
+  )
 })
 
 test('buildPendingSubagentClarificationEntry and protocol entry preserve multihop waiting-user and budget context', () => {
@@ -609,4 +808,213 @@ test('buildPendingSubagentClarificationEntry and protocol entry preserve multiho
   assert.match(timelineSummary, /等待补充/)
   assert.match(timelineSummary, /治理 已用 660 tokens · 已用 \$0.23/)
   assert.match(timelineSummary, /Need final production rollout window\./)
+})
+
+test('buildSubagentCollaborationSummary aggregates timeline, artifacts, and reviewer blocks', () => {
+  const root = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'running', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-review',
+          status: 'completed',
+          child_run_id: 'child-review',
+          request_payload: {
+            task: { message: 'Review the worker patch.' },
+            policy_snapshot: { target: { name: 'Reviewer' } }
+          },
+          result_payload: {
+            status: 'completed',
+            final_result: {
+              artifacts: [
+                {
+                  artifact_type: 'review_findings',
+                  name: 'Review Findings',
+                  payload: {
+                    items: [
+                      { title: 'Unsafe writeback', severity: 'high', path: 'src/app.py' }
+                    ]
+                  }
+                }
+              ]
+            },
+            review_result: {
+              mode: 'reviewer',
+              required: true,
+              decision: 'review_gate_blocked',
+              gate_blocked: true,
+              finding_count: 1,
+              blocking_finding_count: 1,
+              summary: 'Unsafe writeback must be fixed.',
+              recovery: {
+                actions: ['Fix the blocking finding before continuing.']
+              }
+            }
+          }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'child-review', status: 'completed', input: { message: 'review' } },
+          invocations: []
+        }
+      }
+    ]
+  })
+
+  const resolved = collectResolvedSubagentInvocations({
+    context: {
+      resolved_subagent_invocations: [
+        {
+          child_run_id: 'child-worker',
+          invocation_id: 'invocation-worker',
+          target: { name: 'Worker', slug: 'worker' },
+          status: 'completed',
+          summary: 'Patch ready.',
+          promoted_artifacts: [
+            { artifact_type: 'code_patch', name: 'Worker Patch', payload: { diff: '+new' } }
+          ],
+          review_result: { decision: 'not_required', mode: 'none' }
+        }
+      ]
+    }
+  })
+
+  const summary = buildSubagentCollaborationSummary({
+    runTreeInvocations: collectRunTreeInvocations(root),
+    resolvedInvocations: resolved,
+    artifacts: [
+      { artifactType: 'verification_report', name: 'npm test', payload: { status: 'completed' } }
+    ],
+    events: [
+      {
+        id: 'event-1',
+        sequence: 1,
+        eventType: 'subagent.completed',
+        payload: {
+          child_status: 'completed',
+          child_run_id: 'child-worker',
+          handoff_envelope: {
+            task: { message: 'Implement patch' },
+            policy_snapshot: { target: { name: 'Worker' } }
+          }
+        },
+        createdAt: '2026-05-17T00:00:00+00:00'
+      }
+    ]
+  })
+
+  assert.equal(summary.totalInvocations, 2)
+  assert.equal(summary.completedCount, 2)
+  assert.equal(summary.reviewBlockCount, 1)
+  assert.equal(summary.promotedArtifactCount, 2)
+  assert.equal(summary.directArtifactCount, 1)
+  assert.equal(summary.artifactTypeCounts['审查发现'], 1)
+  assert.equal(summary.artifactTypeCounts.Patch, 1)
+  assert.equal(summary.artifactTypeCounts['验证报告'], 1)
+  assert.equal(summary.reviewBlocks[0].target, 'Reviewer')
+  assert.equal(summary.reviewBlocks[0].recoveryActions[0], 'Fix the blocking finding before continuing.')
+  assert.equal(summary.eventTimeline.length, 1)
+})
+
+test('buildSubagentCollaborationSummary keeps only latest attempt data after resume', () => {
+  const root = normalizeRunTreeNode({
+    depth: 0,
+    run: { id: 'run-parent', status: 'running', input: { message: 'parent task' } },
+    invocations: [
+      {
+        invocation: {
+          id: 'invocation-old',
+          parent_run_id: 'run-parent',
+          child_run_id: 'child-old',
+          status: 'completed',
+          created_at: '2026-04-01T10:00:00.000Z',
+          request_payload: {
+            task: { message: 'Old attempt' },
+            policy_snapshot: { target: { name: 'Old Worker' } }
+          },
+          result_payload: {
+            status: 'completed',
+            final_result: {
+              artifacts: [
+                {
+                  artifact_type: 'code_patch',
+                  name: 'Old Patch',
+                  payload: { operation: 'modify', diff: '+old' }
+                }
+              ]
+            }
+          }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'child-old', status: 'completed', input: { message: 'old attempt' } },
+          invocations: []
+        }
+      },
+      {
+        invocation: {
+          id: 'invocation-new',
+          parent_run_id: 'run-parent',
+          child_run_id: 'child-new',
+          status: 'completed',
+          created_at: '2026-04-01T10:02:00.000Z',
+          request_payload: {
+            task: { message: 'New attempt' },
+            policy_snapshot: { target: { name: 'New Worker' } }
+          },
+          result_payload: {
+            status: 'completed',
+            final_result: {
+              artifacts: [
+                {
+                  artifact_type: 'verification_report',
+                  name: 'New Report',
+                  payload: { status: 'completed' }
+                }
+              ]
+            }
+          }
+        },
+        child_run: {
+          depth: 1,
+          run: { id: 'child-new', status: 'completed', input: { message: 'new attempt' } },
+          invocations: []
+        }
+      }
+    ]
+  })
+
+  const summary = buildSubagentCollaborationSummary({
+    runTreeInvocations: collectRunTreeInvocations(root),
+    resolvedInvocations: [],
+    artifacts: [
+      { artifactType: 'verification_report', name: 'Current Report', payload: { status: 'completed' } }
+    ],
+    events: [
+      { id: 'event-1', eventType: 'run.completed', sequence: 10, createdAt: '2026-04-01T10:00:10.000Z' },
+      { id: 'event-2', eventType: 'run.resumed', sequence: 11, createdAt: '2026-04-01T10:01:00.000Z' },
+      {
+        id: 'event-3',
+        eventType: 'subagent.completed',
+        sequence: 12,
+        createdAt: '2026-04-01T10:02:30.000Z',
+        payload: {
+          child_status: 'completed',
+          child_run_id: 'child-new',
+          handoff_envelope: {
+            task: { message: 'New attempt' },
+            policy_snapshot: { target: { name: 'New Worker' } }
+          }
+        }
+      }
+    ]
+  })
+
+  assert.equal(summary.totalInvocations, 1)
+  assert.equal(summary.promotedArtifactCount, 1)
+  assert.equal(summary.directArtifactCount, 1)
+  assert.equal(summary.eventTimeline.length, 1)
+  assert.equal(summary.timeline[0].target, 'New Worker')
+  assert.equal(summary.promotedArtifacts[0].sourceChildRunId, 'child-new')
 })

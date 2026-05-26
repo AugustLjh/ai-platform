@@ -2,12 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  describeArtifact,
+  filterArtifacts,
   buildArtifactsFromToolResult,
   buildRunArtifactsFromToolCalls,
   buildArtifactsFromStructuredResult,
   getRunAnswerText,
   mergeArtifacts,
-  normalizeRunResult
+  normalizeRunResult,
+  normalizeArtifact,
+  summarizeArtifactFilters
 } from '../src/utils/agentArtifacts.js'
 
 test('buildArtifactsFromStructuredResult derives task_plan from steps-only payload', () => {
@@ -150,6 +154,291 @@ test('buildArtifactsFromToolResult promotes structured MCP payloads without dupl
   assert.equal(artifacts.find((artifact) => artifact.artifactType === 'table')?.metadata.tool_call_id, 'tool-call-1')
 })
 
+test('buildArtifactsFromToolResult promotes workspace status and file info payloads', () => {
+  const statusArtifacts = buildArtifactsFromToolResult({
+    workspace: {
+      id: 'tenant/run',
+      root: '/workspace',
+      status: 'ready',
+      source: { type: 'upload_bundle' },
+      snapshot: {
+        file_count: 2,
+        total_size_bytes: 42,
+        snapshot_at: '2026-05-13T00:00:00+00:00'
+      }
+    }
+  }, {
+    id: 'tool-1',
+    toolName: 'workspace_status',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(statusArtifacts[0].artifactType, 'workspace_summary')
+  assert.equal(statusArtifacts[0].payload.source.type, 'upload_bundle')
+
+  const infoArtifacts = buildArtifactsFromToolResult({
+    path: 'src/app.py',
+    type: 'file',
+    size_bytes: 12,
+    sha256: 'abc'
+  }, {
+    id: 'tool-2',
+    toolName: 'workspace_file_info',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(infoArtifacts[0].artifactType, 'file_bundle')
+  assert.equal(infoArtifacts[0].payload.files[0].metadata.sha256, 'abc')
+})
+
+test('buildArtifactsFromToolResult surfaces empty git diff as an artifact', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    command: ['git', 'diff'],
+    exit_code: 0,
+    stdout: '',
+    stderr: '',
+    truncated: false
+  }, {
+    id: 'tool-3',
+    toolName: 'git_diff',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'document_excerpt')
+  assert.equal(artifacts[0].payload.items[0].text, 'No changes.')
+})
+
+test('buildArtifactsFromToolResult promotes workspace patch artifacts', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    status: 'applied',
+    path: 'src/app.py',
+    operation: 'modify',
+    dry_run: false,
+    changed: true,
+    before_sha256: 'before',
+    after_sha256: 'after',
+    diff: '--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n',
+    artifacts: [{
+      artifact_type: 'code_patch',
+      name: 'Workspace Patch',
+      payload: {
+        operation: 'modify',
+        status: 'applied',
+        dry_run: false,
+        files: [{
+          path: 'src/app.py',
+          operation: 'modify',
+          before_sha256: 'before',
+          after_sha256: 'after',
+          changed: true
+        }],
+        diff: '--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n'
+      }
+    }]
+  }, {
+    id: 'tool-4',
+    toolName: 'workspace_apply_patch',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'code_patch')
+  assert.equal(artifacts[0].payload.files[0].path, 'src/app.py')
+  assert.equal(artifacts[0].payload.files[0].beforeSha256, 'before')
+  assert.equal(artifacts[0].metadata.tool_call_id, 'tool-4')
+})
+
+test('buildArtifactsFromToolResult promotes sandbox execution into verification report', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    status: 'failed',
+    exit_code: 1,
+    command: ['python', '-m', 'pytest'],
+    cwd: '.',
+    duration_ms: 123,
+    timeout_seconds: 300,
+    purpose: 'test',
+    failure_category: 'non_zero_exit',
+    stdout: 'FAILED tests/test_app.py::test_app',
+    stderr: '',
+    truncated: false,
+    runner: { backend: 'docker', image: 'python:3.12-slim' },
+    structured_report: {
+      schema_version: 'verification_report.v1',
+      summary: { report_count: 1 },
+      reports: [
+        {
+          kind: 'test',
+          format: 'pytest_text',
+          summary: { failed: 1 },
+          failures: [{ title: 'tests/test_app.py::test_app', severity: 'error' }]
+        }
+      ]
+    }
+  }, {
+    id: 'tool-verify-1',
+    toolName: 'run_tests',
+    toolKind: 'sandbox-exec',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'verification_report')
+  assert.equal(artifacts[0].name, 'run_tests - Test Verification')
+  assert.equal(artifacts[0].payload.kind, 'test')
+  assert.equal(artifacts[0].payload.status, 'failed')
+  assert.equal(artifacts[0].payload.exitCode, 1)
+  assert.equal(artifacts[0].payload.logs.stdout, 'FAILED tests/test_app.py::test_app')
+  assert.equal(artifacts[0].payload.structuredReport.schema_version, 'verification_report.v1')
+  assert.equal(artifacts[0].payload.structuredReport.reports[0].summary.failed, 1)
+  assert.equal(artifacts[0].metadata.failure_category, 'non_zero_exit')
+})
+
+test('buildArtifactsFromToolResult promotes specialized verification tools', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    status: 'completed',
+    exit_code: 0,
+    command: ['python', '-m', 'pyright', '.'],
+    cwd: '.',
+    duration_ms: 42,
+    timeout_seconds: 300,
+    purpose: 'typecheck',
+    stdout: '0 errors',
+    stderr: '',
+    truncated: false,
+    ecosystem: 'python',
+    report_format: 'plain_text'
+  }, {
+    id: 'tool-typecheck-1',
+    toolName: 'typecheck_run',
+    toolKind: 'sandbox-exec',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'verification_report')
+  assert.equal(artifacts[0].name, 'typecheck_run - Typecheck Verification')
+  assert.equal(artifacts[0].payload.kind, 'typecheck')
+  assert.equal(artifacts[0].payload.ecosystem, 'python')
+  assert.equal(artifacts[0].payload.reportFormat, 'plain_text')
+})
+
+test('buildArtifactsFromToolResult promotes web search and page results', () => {
+  const searchArtifacts = buildArtifactsFromToolResult({
+    query: 'runtime',
+    items: [
+      {
+        title: 'Runtime Plan',
+        url: 'https://docs.example.com/runtime',
+        snippet: 'Use structured web artifacts.'
+      }
+    ],
+    fetched_at: '2026-05-14T00:00:00+00:00',
+    source: 'web_search'
+  }, {
+    id: 'tool-web-1',
+    toolName: 'web_search',
+    toolKind: 'web',
+    status: 'completed'
+  })
+
+  assert.equal(searchArtifacts[0].artifactType, 'citations')
+  assert.equal(searchArtifacts[0].payload.items[0].url, 'https://docs.example.com/runtime')
+  assert.equal(searchArtifacts[0].metadata.query, 'runtime')
+
+  const pageArtifacts = buildArtifactsFromToolResult({
+    url: 'https://docs.example.com/runtime',
+    requested_url: 'https://docs.example.com/runtime',
+    status: 200,
+    title: 'Runtime Plan',
+    text: 'Use structured web artifacts.',
+    fetched_at: '2026-05-14T00:00:00+00:00',
+    truncated: false
+  }, {
+    id: 'tool-web-2',
+    toolName: 'open_page',
+    toolKind: 'web',
+    status: 'completed'
+  })
+
+  assert.equal(pageArtifacts[0].artifactType, 'document_excerpt')
+  assert.equal(pageArtifacts[0].payload.items[0].source, 'https://docs.example.com/runtime')
+  assert.equal(pageArtifacts[0].payload.items[0].metadata.status, 200)
+
+  const downloadArtifacts = buildArtifactsFromToolResult({
+    url: 'https://docs.example.com/runtime.pdf',
+    requested_url: 'https://docs.example.com/runtime.pdf',
+    status: 200,
+    filename: 'runtime.pdf',
+    content_type: 'application/pdf',
+    bytes: 12,
+    sha256: 'hash',
+    truncated: false,
+    files: [{
+      name: 'runtime.pdf',
+      path: 'runtime.pdf',
+      mime_type: 'application/pdf',
+      size_bytes: 12,
+      data: 'ZmFrZSBwZGY=',
+      source_url: 'https://docs.example.com/runtime.pdf',
+      metadata: { sha256: 'hash' }
+    }]
+  }, {
+    id: 'tool-web-3',
+    toolName: 'download_file',
+    toolKind: 'web',
+    status: 'completed'
+  })
+
+  assert.equal(downloadArtifacts[0].artifactType, 'file_bundle')
+  assert.equal(downloadArtifacts[0].payload.files[0].name, 'runtime.pdf')
+  assert.equal(downloadArtifacts[0].payload.files[0].uri, 'data:application/pdf;base64,ZmFrZSBwZGY=')
+  assert.equal(downloadArtifacts[0].payload.files[0].source, 'https://docs.example.com/runtime.pdf')
+  assert.equal(downloadArtifacts[0].metadata.sha256, 'hash')
+})
+
+test('buildArtifactsFromToolResult promotes delete patch review metadata', () => {
+  const artifacts = buildArtifactsFromToolResult({
+    status: 'dry_run',
+    path: 'src/obsolete.py',
+    operation: 'delete',
+    dry_run: true,
+    changed: true,
+    before_sha256: 'before',
+    after_sha256: null,
+    diff: '--- a/src/obsolete.py\n+++ b/src/obsolete.py\n@@\n-old\n',
+    artifacts: [{
+      artifact_type: 'code_patch',
+      name: 'Workspace Patch',
+      payload: {
+        operation: 'delete',
+        status: 'dry_run',
+        dry_run: true,
+        files: [{
+          path: 'src/obsolete.py',
+          operation: 'delete',
+          before_sha256: 'before',
+          after_sha256: null,
+          changed: true
+        }],
+        diff: '--- a/src/obsolete.py\n+++ b/src/obsolete.py\n@@\n-old\n',
+        review_notes: ['Deletion requires review.'],
+        merge_policy: 'manual_review_required'
+      }
+    }]
+  }, {
+    id: 'tool-5',
+    toolName: 'workspace_delete_path',
+    toolKind: 'workspace',
+    status: 'completed'
+  })
+
+  assert.equal(artifacts[0].artifactType, 'code_patch')
+  assert.equal(artifacts[0].payload.operation, 'delete')
+  assert.deepEqual(artifacts[0].payload.reviewNotes, ['Deletion requires review.'])
+  assert.equal(artifacts[0].payload.mergePolicy, 'manual_review_required')
+})
+
 test('buildArtifactsFromStructuredResult promotes implicit result lists into table artifacts', () => {
   const artifacts = buildArtifactsFromStructuredResult({
     answer: 'Found two matching records.',
@@ -232,6 +521,83 @@ test('buildArtifactsFromStructuredResult promotes directory trees, document page
   assert.equal(artifacts.find((artifact) => artifact.artifactType === 'directory_tree')?.payload?.summary?.file_count, 2)
   assert.equal(artifacts.find((artifact) => artifact.artifactType === 'document_pages')?.payload?.pages?.[1]?.page_number, 2)
   assert.equal(artifacts.find((artifact) => artifact.artifactType === 'archive_bundle')?.payload?.entry_count, 2)
+})
+
+test('summarizeArtifactFilters aggregates artifact types, child runs, and review states', () => {
+  const artifacts = [
+    normalizeArtifact({
+      artifact_type: 'code_patch',
+      name: 'Patch',
+      payload: { files: [{ path: 'src/app.py', operation: 'modify', changed: true }], merge_policy: 'manual_review_required' },
+      metadata: { child_run_id: 'child-1' }
+    }),
+    normalizeArtifact({
+      artifact_type: 'review_findings',
+      name: 'Findings',
+      payload: { items: [{ title: 'Unsafe writeback', severity: 'high' }] },
+      metadata: {}
+    }),
+    normalizeArtifact({
+      artifact_type: 'verification_report',
+      name: 'Verify',
+      payload: { status: 'completed' },
+      metadata: {}
+    })
+  ]
+
+  const summary = summarizeArtifactFilters({ artifacts })
+
+  assert.equal(summary.total, 3)
+  assert.equal(summary.typeCounts.code_patch, 1)
+  assert.equal(summary.childRunCounts['child-1'], 1)
+  assert.equal(summary.childRunCounts.current_run, 2)
+  assert.equal(summary.reviewCounts.needs_review, 1)
+  assert.equal(summary.reviewCounts.blocked, 1)
+  assert.equal(summary.reviewCounts.unreviewed, 1)
+})
+
+test('filterArtifacts filters by artifact type, child run, and review status', () => {
+  const artifacts = [
+    normalizeArtifact({
+      artifact_type: 'code_patch',
+      name: 'Patch',
+      payload: { files: [{ path: 'src/a.py', operation: 'modify', changed: true }], merge_policy: 'manual_review_required' },
+      metadata: { child_run_id: 'child-1' }
+    }),
+    normalizeArtifact({
+      artifact_type: 'review_findings',
+      name: 'Findings',
+      payload: { items: [{ title: 'Unsafe writeback', severity: 'critical' }] },
+      metadata: { child_run_id: 'child-2' }
+    }),
+    normalizeArtifact({
+      artifact_type: 'verification_report',
+      name: 'Verify',
+      payload: { status: 'completed' },
+      metadata: {}
+    })
+  ]
+
+  assert.equal(filterArtifacts({ artifacts, artifactType: 'code_patch' }).length, 1)
+  assert.equal(filterArtifacts({ artifacts, childRunId: 'child-2' }).length, 1)
+  assert.equal(filterArtifacts({ artifacts, childRunId: 'current_run' }).length, 1)
+  assert.equal(filterArtifacts({ artifacts, reviewStatus: 'blocked' }).length, 1)
+  assert.equal(filterArtifacts({ artifacts, reviewStatus: 'needs_review' }).length, 1)
+})
+
+test('describeArtifact falls back to current run source labels', () => {
+  const artifact = normalizeArtifact({
+    artifact_type: 'verification_report',
+    name: 'Verify',
+    payload: { status: 'completed' },
+    metadata: {}
+  })
+
+  const description = describeArtifact(artifact, new Map())
+
+  assert.equal(description.typeLabel, '验证报告')
+  assert.equal(description.sourceLabel, '当前 run')
+  assert.equal(description.reviewStatus, 'unreviewed')
 })
 
 test('buildArtifactsFromToolResult merges structured content with code resources', () => {

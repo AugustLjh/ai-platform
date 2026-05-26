@@ -9,6 +9,10 @@ export const mcpAPI = {
     return api.get('/api/v1/mcp/governance', { params })
   },
 
+  getAuditReport(params = {}) {
+    return api.get('/api/v1/mcp/audit-report', { params })
+  },
+
   getServer(serverId) {
     return api.get(`/api/v1/mcp/servers/${serverId}`)
   },

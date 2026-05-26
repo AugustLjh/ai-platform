@@ -18,6 +18,7 @@ class ToolContext:
     allowed_knowledge_base_ids: tuple[str, ...] = ()
     allowed_mcp_server_ids: tuple[str, ...] = ()
     allowed_mcp_tool_names: tuple[str, ...] = ()
+    workspace_root: str | None = None
     tool_result_cache: ToolResultCache | None = None
 
 
@@ -31,6 +32,7 @@ class ToolLookupContext:
     allowed_knowledge_base_ids: tuple[str, ...] = ()
     allowed_mcp_server_ids: tuple[str, ...] = ()
     allowed_mcp_tool_names: tuple[str, ...] = ()
+    workspace_root: str | None = None
 
 
 @dataclass(slots=True)

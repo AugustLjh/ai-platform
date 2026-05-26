@@ -19,19 +19,40 @@ class ToolProvider(Protocol):
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: Dict[str, BaseTool] = {}
-        self._providers: List[ToolProvider] = []
+        self._registered_provider_names: List[str] = []
+        self._providers: List[tuple[str, ToolProvider]] = []
 
     def register(self, tool: BaseTool) -> None:
         self._tools[tool.spec.name] = tool
 
-    def register_provider(self, provider: ToolProvider) -> None:
-        self._providers.append(provider)
+    def register_provider_name(self, name: str) -> None:
+        provider_name = str(name or "").strip()
+        if provider_name and provider_name not in self._registered_provider_names:
+            self._registered_provider_names.append(provider_name)
+
+    def register_provider(self, provider: ToolProvider, *, name: str | None = None) -> None:
+        provider_name = str(name or getattr(provider, "provider_name", "") or provider.__class__.__name__).strip()
+        self.register_provider_name(provider_name)
+        self._providers.append((provider_name, provider))
+
+    @property
+    def provider_names(self) -> List[str]:
+        return list(self._registered_provider_names)
+
+    def get_provider(self, name: str) -> ToolProvider | None:
+        provider_name = str(name or "").strip()
+        if not provider_name:
+            return None
+        for registered_name, provider in self._providers:
+            if registered_name == provider_name:
+                return provider
+        return None
 
     async def get(self, name: str, context: ToolLookupContext | None = None) -> BaseTool | None:
         tool = self._tools.get(name)
         if tool is not None:
             return tool
-        for provider in self._providers:
+        for _provider_name, provider in self._providers:
             resolved = await provider.get(name, context=context)
             if resolved is not None:
                 return resolved
@@ -47,7 +68,7 @@ class ToolRegistry:
                 "kind": tool.spec.kind,
                 "metadata": tool.spec.metadata,
             }
-        for provider in self._providers:
+        for _provider_name, provider in self._providers:
             spec = await provider.get_spec(name, context=context)
             if spec is not None:
                 return spec
@@ -64,6 +85,6 @@ class ToolRegistry:
             }
             for tool in self._tools.values()
         ]
-        for provider in self._providers:
+        for _provider_name, provider in self._providers:
             items.extend(await provider.list_specs(context=context))
         return items

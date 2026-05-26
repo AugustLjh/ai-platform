@@ -195,6 +195,58 @@ type AgentToolSpec struct {
 	Metadata    json.RawMessage `json:"metadata"`
 }
 
+type AgentToolListResponse struct {
+	Tools         []*AgentToolSpec `json:"tools"`
+	Total         int              `json:"total"`
+	ExecutionMode map[string]any   `json:"execution_mode,omitempty"`
+}
+
+type AgentWorkspaceSourceResponse struct {
+	Status      string           `json:"status"`
+	Enabled     bool             `json:"enabled"`
+	BaseRoot    string           `json:"base_root"`
+	SourceRoots []string         `json:"source_roots"`
+	Count       int              `json:"count"`
+	MaxEntries  int              `json:"max_entries"`
+	MaxDepth    int              `json:"max_depth"`
+	Sources     []map[string]any `json:"sources"`
+}
+
+type AgentWorkspaceInspectionResponse struct {
+	Status             string           `json:"status"`
+	BaseRoot           string           `json:"base_root"`
+	RetentionHours     int              `json:"retention_hours"`
+	WorkspaceCount     int              `json:"workspace_count"`
+	ExpiredCount       int              `json:"expired_count"`
+	QuotaExceededCount int              `json:"quota_exceeded_count"`
+	TotalSizeBytes     int64            `json:"total_size_bytes"`
+	TotalFileCount     int64            `json:"total_file_count"`
+	GeneratedAt        string           `json:"generated_at"`
+	LockSummary        map[string]any   `json:"lock_summary,omitempty"`
+	Health             map[string]any   `json:"health,omitempty"`
+	Workspaces         []map[string]any `json:"workspaces"`
+}
+
+type AgentWorkspaceCleanupResponse struct {
+	Status         string           `json:"status"`
+	DryRun         bool             `json:"dry_run"`
+	BaseRoot       string           `json:"base_root"`
+	TenantID       string           `json:"tenant_id,omitempty"`
+	RetentionHours int              `json:"retention_hours"`
+	CandidateCount int              `json:"candidate_count"`
+	SelectedCount  int              `json:"selected_count"`
+	DeletedCount   int              `json:"deleted_count"`
+	FailedCount    int              `json:"failed_count"`
+	SkippedCount   int              `json:"skipped_count,omitempty"`
+	GeneratedAt    string           `json:"generated_at"`
+	Deleted        []map[string]any `json:"deleted"`
+	Failed         []map[string]any `json:"failed"`
+	Skipped        []map[string]any `json:"skipped,omitempty"`
+}
+
+type AgentRuntimeStatusResponse map[string]any
+type AgentQualityEvaluationResponse map[string]any
+
 type MCPServerUpsertRequest struct {
 	Name      string          `json:"name"`
 	Transport string          `json:"transport"`
@@ -253,6 +305,50 @@ type MCPGovernanceResponse struct {
 	Servers []*database.MCPServer       `json:"servers"`
 	Summary *MCPServerGovernanceSummary `json:"summary"`
 	Total   int                         `json:"total"`
+}
+
+type MCPServerAuditReport struct {
+	TenantID           string                          `json:"tenant_id"`
+	GeneratedAt        time.Time                       `json:"generated_at"`
+	Overview           *MCPServerAuditReportOverview   `json:"overview"`
+	TopRiskServers     []*MCPServerAuditServerSnapshot `json:"top_risk_servers"`
+	ScoreDistribution  map[string]int                  `json:"score_distribution"`
+	RecentEvents       []*database.MCPServerEvent      `json:"recent_events"`
+	FailureModeCounts  map[string]int                  `json:"failure_mode_counts"`
+	ActionTypeCounts   map[string]int                  `json:"action_type_counts"`
+	RecommendedActions []string                        `json:"recommended_actions"`
+}
+
+type MCPServerAuditReportOverview struct {
+	TotalServers      int     `json:"total_servers"`
+	AverageScore      float64 `json:"average_score"`
+	MedianScore       int     `json:"median_score"`
+	LowRiskCount      int     `json:"low_risk_count"`
+	MediumRiskCount   int     `json:"medium_risk_count"`
+	HighRiskCount     int     `json:"high_risk_count"`
+	CriticalRiskCount int     `json:"critical_risk_count"`
+	BlockedCount      int     `json:"blocked_count"`
+	RecoveringCount   int     `json:"recovering_count"`
+	StaleCount        int     `json:"stale_count"`
+	UntestedCount     int     `json:"untested_count"`
+}
+
+type MCPServerAuditServerSnapshot struct {
+	ServerID     string                           `json:"server_id"`
+	ServerName   string                           `json:"server_name"`
+	Transport    string                           `json:"transport"`
+	Status       string                           `json:"status"`
+	Score        int                              `json:"score"`
+	RiskLevel    string                           `json:"risk_level"`
+	Summary      string                           `json:"summary"`
+	FailureMode  string                           `json:"failure_mode,omitempty"`
+	Recoverable  bool                             `json:"recoverable"`
+	BindingCount int                              `json:"binding_count"`
+	ActiveCount  int                              `json:"active_count"`
+	EventCount   int                              `json:"event_count"`
+	LastTestedAt *time.Time                       `json:"last_tested_at,omitempty"`
+	EvaluatedAt  *time.Time                       `json:"evaluated_at,omitempty"`
+	Breakdown    []*database.MCPSecurityBreakdown `json:"breakdown,omitempty"`
 }
 
 type MCPServerBulkActionRequest struct {
@@ -646,14 +742,14 @@ func (s *AgentService) ResumeRun(ctx context.Context, tenantID, runID string, re
 	return s.aiClient.ResumeAgentRun(ctx, runID, tenantID, req.InputPatch)
 }
 
-func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDefinitionID string) ([]*AgentToolSpec, error) {
-	items, err := s.aiClient.ListAgentTools(ctx, tenantID, agentDefinitionID)
+func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDefinitionID string) (*AgentToolListResponse, error) {
+	response, err := s.aiClient.ListAgentTools(ctx, tenantID, agentDefinitionID)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make([]*AgentToolSpec, 0, len(items))
-	for _, item := range items {
+	result := make([]*AgentToolSpec, 0, len(response.Tools))
+	for _, item := range response.Tools {
 		spec := item
 		result = append(result, &AgentToolSpec{
 			Name:        spec.Name,
@@ -663,7 +759,122 @@ func (s *AgentService) ListAvailableTools(ctx context.Context, tenantID, agentDe
 			Metadata:    spec.Metadata,
 		})
 	}
-	return result, nil
+	return &AgentToolListResponse{
+		Tools:         result,
+		Total:         len(result),
+		ExecutionMode: response.ExecutionMode,
+	}, nil
+}
+
+func (s *AgentService) ListWorkspaceSources(ctx context.Context, tenantID, userID string, maxEntries, maxDepth int) (*AgentWorkspaceSourceResponse, error) {
+	response, err := s.aiClient.ListWorkspaceSources(ctx, tenantID, userID, maxEntries, maxDepth)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentWorkspaceSourceResponse{
+		Status:      response.Status,
+		Enabled:     response.Enabled,
+		BaseRoot:    response.BaseRoot,
+		SourceRoots: response.SourceRoots,
+		Count:       response.Count,
+		MaxEntries:  response.MaxEntries,
+		MaxDepth:    response.MaxDepth,
+		Sources:     response.Sources,
+	}, nil
+}
+
+func (s *AgentService) InspectWorkspaces(ctx context.Context, tenantID, userID string) (*AgentWorkspaceInspectionResponse, error) {
+	response, err := s.aiClient.InspectWorkspaces(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentWorkspaceInspectionResponse{
+		Status:             response.Status,
+		BaseRoot:           response.BaseRoot,
+		RetentionHours:     response.RetentionHours,
+		WorkspaceCount:     response.WorkspaceCount,
+		ExpiredCount:       response.ExpiredCount,
+		QuotaExceededCount: response.QuotaExceededCount,
+		TotalSizeBytes:     response.TotalSizeBytes,
+		TotalFileCount:     response.TotalFileCount,
+		GeneratedAt:        response.GeneratedAt,
+		LockSummary:        response.LockSummary,
+		Health:             response.Health,
+		Workspaces:         response.Workspaces,
+	}, nil
+}
+
+func (s *AgentService) CleanupWorkspaces(
+	ctx context.Context,
+	tenantID, userID string,
+	dryRun bool,
+	maxDelete int,
+	confirmed bool,
+) (*AgentWorkspaceCleanupResponse, error) {
+	response, err := s.aiClient.CleanupWorkspaces(ctx, tenantID, userID, dryRun, maxDelete, confirmed)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentWorkspaceCleanupResponse{
+		Status:         response.Status,
+		DryRun:         response.DryRun,
+		BaseRoot:       response.BaseRoot,
+		TenantID:       response.TenantID,
+		RetentionHours: response.RetentionHours,
+		CandidateCount: response.CandidateCount,
+		SelectedCount:  response.SelectedCount,
+		DeletedCount:   response.DeletedCount,
+		FailedCount:    response.FailedCount,
+		SkippedCount:   response.SkippedCount,
+		GeneratedAt:    response.GeneratedAt,
+		Deleted:        response.Deleted,
+		Failed:         response.Failed,
+		Skipped:        response.Skipped,
+	}, nil
+}
+
+func (s *AgentService) CleanupWorkspaceLocks(
+	ctx context.Context,
+	tenantID, userID string,
+	dryRun bool,
+	maxDelete int,
+	confirmed bool,
+) (*AgentWorkspaceCleanupResponse, error) {
+	response, err := s.aiClient.CleanupWorkspaceLocks(ctx, tenantID, userID, dryRun, maxDelete, confirmed)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentWorkspaceCleanupResponse{
+		Status:         response.Status,
+		DryRun:         response.DryRun,
+		BaseRoot:       response.BaseRoot,
+		TenantID:       response.TenantID,
+		CandidateCount: response.CandidateCount,
+		SelectedCount:  response.SelectedCount,
+		DeletedCount:   response.DeletedCount,
+		FailedCount:    response.FailedCount,
+		SkippedCount:   response.SkippedCount,
+		GeneratedAt:    response.GeneratedAt,
+		Deleted:        response.Deleted,
+		Failed:         response.Failed,
+		Skipped:        response.Skipped,
+	}, nil
+}
+
+func (s *AgentService) GetRuntimeStatus(ctx context.Context, tenantID, userID string) (map[string]any, error) {
+	return s.aiClient.GetRuntimeStatus(ctx, tenantID, userID)
+}
+
+func (s *AgentService) EvaluateAuditRedactionRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	return s.aiClient.EvaluateAuditRedactionRules(ctx, tenantID, userID, testCases)
+}
+
+func (s *AgentService) EvaluateSubagentQualityRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	return s.aiClient.EvaluateSubagentQualityRules(ctx, tenantID, userID, testCases)
+}
+
+func (s *AgentService) EvaluateWebSearchQualityRules(ctx context.Context, tenantID, userID string, testCases []map[string]any) (map[string]any, error) {
+	return s.aiClient.EvaluateWebSearchQualityRules(ctx, tenantID, userID, testCases)
 }
 
 func (s *AgentService) ListSkills(tenantID string) ([]*database.Skill, error) {
@@ -818,6 +1029,172 @@ func (s *AgentService) GetMCPGovernance(
 		Summary: summary,
 		Total:   len(servers),
 	}, nil
+}
+
+func (s *AgentService) GetMCPAuditReport(tenantID string, limit int) (*MCPServerAuditReport, error) {
+	servers, err := s.ListMCPServers(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 12
+	}
+	recentEvents, err := s.mcpStore.ListTenantServerEvents(tenantID, "", "", "", "", limit)
+	if err != nil {
+		return nil, err
+	}
+	return buildMCPAuditReportFromHydratedServers(tenantID, servers, recentEvents, limit, time.Now().UTC()), nil
+}
+
+func buildMCPAuditReportFromHydratedServers(
+	tenantID string,
+	servers []*database.MCPServer,
+	recentEvents []*database.MCPServerEvent,
+	limit int,
+	generatedAt time.Time,
+) *MCPServerAuditReport {
+	if limit <= 0 {
+		limit = 12
+	}
+	report := &MCPServerAuditReport{
+		TenantID:           tenantID,
+		GeneratedAt:        generatedAt.UTC(),
+		Overview:           &MCPServerAuditReportOverview{},
+		TopRiskServers:     make([]*MCPServerAuditServerSnapshot, 0),
+		ScoreDistribution:  map[string]int{"low": 0, "medium": 0, "high": 0, "critical": 0},
+		FailureModeCounts:  map[string]int{},
+		ActionTypeCounts:   map[string]int{},
+		RecommendedActions: []string{},
+	}
+
+	scores := make([]int, 0, len(servers))
+	for _, server := range servers {
+		if server == nil || server.SecurityScore == nil {
+			continue
+		}
+		scores = append(scores, server.SecurityScore.Score)
+		report.Overview.TotalServers++
+		switch server.SecurityScore.RiskLevel {
+		case "low":
+			report.Overview.LowRiskCount++
+			report.ScoreDistribution["low"]++
+		case "medium":
+			report.Overview.MediumRiskCount++
+			report.ScoreDistribution["medium"]++
+		case "high":
+			report.Overview.HighRiskCount++
+			report.ScoreDistribution["high"]++
+		case "critical":
+			report.Overview.CriticalRiskCount++
+			report.ScoreDistribution["critical"]++
+		}
+		if server.Recovery != nil {
+			if server.Recovery.Status == "blocked" {
+				report.Overview.BlockedCount++
+			}
+			if server.Recovery.Recoverable && server.Recovery.Status != "healthy" {
+				report.Overview.RecoveringCount++
+			}
+		}
+		if server.Catalog != nil && server.Catalog.IsStale {
+			report.Overview.StaleCount++
+		}
+		if server.Connection != nil && server.Connection.Status == "untested" {
+			report.Overview.UntestedCount++
+		}
+		failureMode := ""
+		if server.Recovery != nil {
+			failureMode = strings.TrimSpace(server.Recovery.FailureMode)
+		}
+		report.TopRiskServers = append(report.TopRiskServers, &MCPServerAuditServerSnapshot{
+			ServerID:    server.ID,
+			ServerName:  server.Name,
+			Transport:   server.Transport,
+			Status:      server.Status,
+			Score:       server.SecurityScore.Score,
+			RiskLevel:   server.SecurityScore.RiskLevel,
+			Summary:     server.SecurityScore.Summary,
+			FailureMode: failureMode,
+			Recoverable: server.Recovery != nil && server.Recovery.Recoverable,
+			BindingCount: func() int {
+				if server.BindingUsage == nil {
+					return 0
+				}
+				return server.BindingUsage.AgentCount
+			}(),
+			ActiveCount: func() int {
+				if server.BindingUsage == nil {
+					return 0
+				}
+				return server.BindingUsage.ActiveAgentCount
+			}(),
+			EventCount:   len(server.Events),
+			LastTestedAt: server.LastTestedAt,
+			EvaluatedAt:  server.SecurityScore.EvaluatedAt,
+			Breakdown:    server.SecurityScore.Breakdown,
+		})
+		for _, event := range server.Events {
+			if event == nil {
+				continue
+			}
+			if strings.TrimSpace(event.FailureMode) != "" && strings.TrimSpace(event.FailureMode) != "none" {
+				report.FailureModeCounts[strings.TrimSpace(event.FailureMode)]++
+			}
+			if strings.TrimSpace(event.ActionType) != "" {
+				report.ActionTypeCounts[strings.TrimSpace(event.ActionType)]++
+			}
+		}
+	}
+
+	if len(scores) > 0 {
+		sort.Ints(scores)
+		sum := 0
+		for _, score := range scores {
+			sum += score
+		}
+		report.Overview.AverageScore = float64(sum) / float64(len(scores))
+		report.Overview.MedianScore = scores[len(scores)/2]
+	}
+
+	sort.SliceStable(report.TopRiskServers, func(i, j int) bool {
+		if report.TopRiskServers[i].Score != report.TopRiskServers[j].Score {
+			return report.TopRiskServers[i].Score < report.TopRiskServers[j].Score
+		}
+		return report.TopRiskServers[i].ServerName < report.TopRiskServers[j].ServerName
+	})
+	if len(report.TopRiskServers) > limit {
+		report.TopRiskServers = report.TopRiskServers[:limit]
+	}
+
+	report.RecentEvents = recentEvents
+	for _, event := range recentEvents {
+		if event == nil {
+			continue
+		}
+		if strings.TrimSpace(event.FailureMode) != "" && strings.TrimSpace(event.FailureMode) != "none" {
+			report.FailureModeCounts[strings.TrimSpace(event.FailureMode)]++
+		}
+		if strings.TrimSpace(event.ActionType) != "" {
+			report.ActionTypeCounts[strings.TrimSpace(event.ActionType)]++
+		}
+	}
+
+	switch {
+	case report.Overview.CriticalRiskCount > 0 || report.Overview.BlockedCount > 0:
+		report.RecommendedActions = append(report.RecommendedActions, "先处理 critical/blocked server，再处理 stale 和 untested 项。")
+	case report.Overview.HighRiskCount > 0:
+		report.RecommendedActions = append(report.RecommendedActions, "优先修复高风险 server 的连接和 catalog，再恢复绑定。")
+	default:
+		report.RecommendedActions = append(report.RecommendedActions, "继续按连接测试、catalog 刷新和审计轮转保持稳定。")
+	}
+	if report.Overview.StaleCount > 0 {
+		report.RecommendedActions = append(report.RecommendedActions, "对 stale catalog server 重新执行 refresh，压缩旧工具快照。")
+	}
+	if report.Overview.UntestedCount > 0 {
+		report.RecommendedActions = append(report.RecommendedActions, "补齐 untested server 的连接验证，建立新基线。")
+	}
+
+	return report
 }
 
 func (s *AgentService) CreateMCPServer(tenantID, userID string, req *MCPServerUpsertRequest) (*database.MCPServer, error) {
@@ -4103,6 +4480,7 @@ func (s *AgentService) hydrateMCPServer(server *database.MCPServer) (*database.M
 	}
 	server.BindingUsage = buildMCPBindingUsageSummary(server, bindingAgents, bindingCount, activeBindingCount, inactiveBindingCount)
 	server.Recovery = buildMCPRecoverySummary(server, server.Connection, server.Catalog, server.Availability, server.BindingUsage)
+	server.SecurityScore = buildMCPSecurityScore(server, tools, time.Now().UTC())
 	events, err := s.mcpStore.ListServerEvents(server.ID, server.TenantID, 12)
 	if err != nil {
 		return nil, err
@@ -4418,6 +4796,313 @@ func buildMCPRecoveryImpact(bindingUsage *database.MCPBindingUsage) *database.MC
 	}
 
 	return impact
+}
+
+func buildMCPSecurityScore(server *database.MCPServer, tools []*database.MCPServerTool, now time.Time) *database.MCPSecurityScore {
+	if server == nil {
+		return nil
+	}
+
+	breakdown := []*database.MCPSecurityBreakdown{
+		buildMCPConnectionSecurityBreakdown(server),
+		buildMCPCatalogSecurityBreakdown(server),
+		buildMCPBindingSecurityBreakdown(server),
+		buildMCPConfigurationSecurityBreakdown(server, tools),
+		buildMCPAuditSecurityBreakdown(server),
+	}
+
+	score := 0
+	maxScore := 0
+	for _, item := range breakdown {
+		if item == nil {
+			continue
+		}
+		score += item.Score
+		maxScore += item.MaxScore
+	}
+	if score < 0 {
+		score = 0
+	}
+	if score > maxScore {
+		score = maxScore
+	}
+
+	status := "healthy"
+	riskLevel := "low"
+	summary := "MCP server 安全基线良好。"
+	switch {
+	case score < 40:
+		status = "critical"
+		riskLevel = "critical"
+		summary = "MCP server 存在关键治理风险，建议先阻断绑定并完成连接与 catalog 修复。"
+	case score < 65:
+		status = "warning"
+		riskLevel = "high"
+		summary = "MCP server 存在高风险项，投入生产前需要完成恢复动作。"
+	case score < 85:
+		status = "watch"
+		riskLevel = "medium"
+		summary = "MCP server 可用但需要持续治理，建议补齐验证或刷新。"
+	}
+	if server.Status != "active" {
+		status = "disabled"
+		riskLevel = "medium"
+		summary = "MCP server 已禁用，重新启用前需要重新完成安全基线验证。"
+	}
+
+	evaluatedAt := now.UTC()
+	return &database.MCPSecurityScore{
+		Score:       score,
+		MaxScore:    maxScore,
+		Status:      status,
+		RiskLevel:   riskLevel,
+		Summary:     summary,
+		EvaluatedAt: &evaluatedAt,
+		Breakdown:   breakdown,
+	}
+}
+
+func buildMCPConnectionSecurityBreakdown(server *database.MCPServer) *database.MCPSecurityBreakdown {
+	item := &database.MCPSecurityBreakdown{
+		Key:      "connection",
+		Label:    "连接验证",
+		MaxScore: 25,
+		Status:   "healthy",
+		Summary:  "最近连接验证通过。",
+	}
+	switch {
+	case server.Status != "active":
+		item.Score = 10
+		item.Status = "disabled"
+		item.Summary = "Server 已禁用，连接基线需要重新确认。"
+	case server.Connection != nil && server.Connection.Status == "healthy":
+		item.Score = 25
+	case server.Connection != nil && server.Connection.Status == "untested":
+		item.Score = 12
+		item.Status = "warning"
+		item.Summary = "尚未完成连接测试。"
+	case server.Connection != nil && server.Connection.Status == "degraded":
+		item.Score = 0
+		item.Status = "critical"
+		item.Summary = "最近连接测试失败。"
+	default:
+		item.Score = 8
+		item.Status = "warning"
+		item.Summary = "连接状态未知。"
+	}
+	return item
+}
+
+func buildMCPCatalogSecurityBreakdown(server *database.MCPServer) *database.MCPSecurityBreakdown {
+	item := &database.MCPSecurityBreakdown{
+		Key:      "catalog",
+		Label:    "工具 Catalog",
+		MaxScore: 25,
+		Status:   "healthy",
+		Summary:  "工具 catalog 已刷新且可用。",
+	}
+	switch {
+	case server.Status != "active":
+		item.Score = 10
+		item.Status = "disabled"
+		item.Summary = "Server 已禁用，catalog 不参与运行时发现。"
+	case server.Catalog != nil && server.Catalog.ToolCount > 0 && !server.Catalog.IsStale:
+		item.Score = 25
+	case server.Catalog != nil && server.Catalog.ToolCount > 0 && server.Catalog.IsStale:
+		item.Score = 14
+		item.Status = "warning"
+		item.Summary = "已有工具缓存，但 catalog 已过期。"
+	case server.Catalog != nil && server.Catalog.Status == "empty":
+		item.Score = 5
+		item.Status = "critical"
+		item.Summary = "最近 catalog 刷新未发现可用工具。"
+	default:
+		item.Score = 0
+		item.Status = "critical"
+		item.Summary = "尚未建立可用工具 catalog。"
+	}
+	return item
+}
+
+func buildMCPBindingSecurityBreakdown(server *database.MCPServer) *database.MCPSecurityBreakdown {
+	item := &database.MCPSecurityBreakdown{
+		Key:      "binding_impact",
+		Label:    "绑定影响面",
+		MaxScore: 20,
+		Status:   "healthy",
+		Summary:  "当前没有高影响绑定风险。",
+	}
+	if server.BindingUsage == nil || server.BindingUsage.AgentCount <= 0 {
+		item.Score = 20
+		item.Summary = "当前未绑定 agent，影响面较低。"
+		return item
+	}
+	activeCount := server.BindingUsage.ActiveAgentCount
+	if server.Recovery != nil && server.Recovery.Recoverable && server.Recovery.Status != "healthy" {
+		switch {
+		case activeCount >= 3:
+			item.Score = 4
+			item.Status = "critical"
+			item.Summary = fmt.Sprintf("风险状态仍影响 %d 个 active agent。", activeCount)
+		case activeCount > 0:
+			item.Score = 10
+			item.Status = "warning"
+			item.Summary = fmt.Sprintf("风险状态仍影响 %d 个 active agent。", activeCount)
+		default:
+			item.Score = 14
+			item.Status = "warning"
+			item.Summary = "风险状态影响已绑定 agent，但当前采样中没有 active agent。"
+		}
+		return item
+	}
+	if activeCount >= 5 {
+		item.Score = 16
+		item.Status = "watch"
+		item.Summary = fmt.Sprintf("已绑定 %d 个 active agent，需保持审计关注。", activeCount)
+		return item
+	}
+	item.Score = 20
+	item.Summary = server.BindingUsage.Summary
+	return item
+}
+
+func buildMCPConfigurationSecurityBreakdown(server *database.MCPServer, tools []*database.MCPServerTool) *database.MCPSecurityBreakdown {
+	item := &database.MCPSecurityBreakdown{
+		Key:      "configuration",
+		Label:    "配置暴露面",
+		MaxScore: 15,
+		Status:   "healthy",
+		Summary:  "配置未发现明显高风险暴露面。",
+		Score:    15,
+	}
+
+	penalty := 0
+	reasons := make([]string, 0, 3)
+	if strings.TrimSpace(server.Transport) == "stdio" {
+		penalty += 3
+		reasons = append(reasons, "stdio transport 需要运行本地命令")
+	}
+	if containsUnmaskedSensitiveRaw(server.Env) || containsUnmaskedSensitiveRaw(server.Metadata) {
+		penalty += 6
+		reasons = append(reasons, "配置中仍包含未脱敏敏感字段")
+	}
+	if strings.TrimSpace(server.Endpoint) != "" {
+		if parsed, err := url.Parse(strings.TrimSpace(server.Endpoint)); err == nil && parsed.Scheme == "http" {
+			penalty += 4
+			reasons = append(reasons, "endpoint 使用明文 HTTP")
+		}
+	}
+	if len(tools) > 30 {
+		penalty += 2
+		reasons = append(reasons, fmt.Sprintf("暴露工具数量较多（%d 个）", len(tools)))
+	}
+
+	item.Score -= penalty
+	if item.Score < 0 {
+		item.Score = 0
+	}
+	switch {
+	case item.Score < 8:
+		item.Status = "critical"
+	case item.Score < item.MaxScore:
+		item.Status = "warning"
+	}
+	if len(reasons) > 0 {
+		item.Summary = strings.Join(reasons, "；") + "。"
+	}
+	return item
+}
+
+func buildMCPAuditSecurityBreakdown(server *database.MCPServer) *database.MCPSecurityBreakdown {
+	item := &database.MCPSecurityBreakdown{
+		Key:      "audit_trail",
+		Label:    "调用审计",
+		MaxScore: 15,
+		Status:   "healthy",
+		Summary:  "最近治理审计未发现失败趋势。",
+		Score:    15,
+	}
+	failed := 0
+	total := 0
+	for _, event := range server.Events {
+		if event == nil {
+			continue
+		}
+		total++
+		if strings.TrimSpace(event.Status) == "failed" {
+			failed++
+		}
+	}
+	if total == 0 {
+		item.Score = 8
+		item.Status = "warning"
+		item.Summary = "尚未形成治理审计历史。"
+		return item
+	}
+	if failed >= 3 {
+		item.Score = 2
+		item.Status = "critical"
+		item.Summary = fmt.Sprintf("最近 %d 条治理事件中有 %d 条失败。", total, failed)
+		return item
+	}
+	if failed > 0 {
+		item.Score = 10
+		item.Status = "warning"
+		item.Summary = fmt.Sprintf("最近 %d 条治理事件中有 %d 条失败。", total, failed)
+	}
+	return item
+}
+
+func containsUnmaskedSensitiveRaw(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	return containsUnmaskedSensitiveValue(parseJSONRaw(raw, `{}`), nil)
+}
+
+func containsUnmaskedSensitiveValue(value any, path []string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			nextPath := append(path, key)
+			if isSensitiveKey(key) || isSensitiveContainerKey(key) {
+				if stringContainsUnmaskedSecret(item) {
+					return true
+				}
+			}
+			if containsUnmaskedSensitiveValue(item, nextPath) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if containsUnmaskedSensitiveValue(item, path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stringContainsUnmaskedSecret(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		return trimmed != "" && trimmed != maskedSecretValue
+	case map[string]any:
+		for _, item := range typed {
+			if stringContainsUnmaskedSecret(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if stringContainsUnmaskedSecret(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *AgentService) buildMCPGovernanceSummary(

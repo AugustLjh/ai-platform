@@ -53,6 +53,20 @@ def _parse_metadata(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def _project_context_metadata(*, source: str) -> dict[str, Any]:
+    return {
+        "provider": "project-context",
+        "legacy_provider": "engineering",
+        "capability": "project_context",
+        "access_level": "read",
+        "side_effect": "none",
+        "requires_workspace": False,
+        "requires_sandbox": False,
+        "risk_level": "low",
+        "source": source,
+    }
+
+
 class ProjectContextTool(BaseTool):
     def _run_repository(self) -> RunRepository:
         return RunRepository(get_db_manager().pool)
@@ -268,7 +282,8 @@ class ProjectListContextTool(ProjectContextTool):
                 "document_query": {"type": "string"},
             },
         },
-        kind="engineering",
+        kind="project-context",
+        metadata=_project_context_metadata(source="conversation_history_and_mounted_documents"),
     )
 
     async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -308,7 +323,8 @@ class ProjectSearchContextTool(ProjectContextTool):
                 "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
             },
         },
-        kind="engineering",
+        kind="project-context",
+        metadata=_project_context_metadata(source="conversation_history_and_mounted_documents"),
     )
 
     async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -406,7 +422,8 @@ class ProjectReadContextItemTool(ProjectContextTool):
                 "max_chars": {"type": "integer", "minimum": 100, "maximum": 20000},
             },
         },
-        kind="engineering",
+        kind="project-context",
+        metadata=_project_context_metadata(source="conversation_history_and_mounted_documents"),
     )
 
     async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -454,7 +471,8 @@ class ProjectListUploadedFilesTool(ProjectContextTool):
         name="project_list_uploaded_files",
         description="List files uploaded in the current run, including folder structure and previews.",
         input_schema={"type": "object", "properties": {}},
-        kind="engineering",
+        kind="project-context",
+        metadata=_project_context_metadata(source="run_uploaded_files"),
     )
 
     async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -478,7 +496,8 @@ class ProjectSearchUploadedFilesTool(ProjectContextTool):
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20},
             },
         },
-        kind="engineering",
+        kind="project-context",
+        metadata=_project_context_metadata(source="run_uploaded_files"),
     )
 
     async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -513,7 +532,8 @@ class ProjectReadUploadedFileTool(ProjectContextTool):
                 "max_chars": {"type": "integer", "minimum": 200, "maximum": 20000},
             },
         },
-        kind="engineering",
+        kind="project-context",
+        metadata=_project_context_metadata(source="run_uploaded_files"),
     )
 
     async def execute(self, context: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -547,13 +567,17 @@ class EngineeringToolProvider:
     def __init__(self, *, enabled_tool_names: Sequence[str]) -> None:
         self.enabled_tool_names = [name for name in enabled_tool_names if name in ENGINEERING_TOOL_TYPES]
         self._metadata = {
-            "provider": "engineering",
+            "provider": "project-context",
+            "legacy_provider": "engineering",
             "source": "conversation_history_uploaded_context_and_agent_mounted_documents",
         }
 
     @classmethod
     def from_env(cls) -> "EngineeringToolProvider":
-        enabled_tool_names = _parse_csv(os.getenv("AGENT_ENGINEERING_TOOLS"), DEFAULT_ENGINEERING_TOOL_NAMES)
+        enabled_tool_names = _parse_csv(
+            os.getenv("AGENT_PROJECT_CONTEXT_TOOLS") or os.getenv("AGENT_ENGINEERING_TOOLS"),
+            DEFAULT_ENGINEERING_TOOL_NAMES,
+        )
         return cls(enabled_tool_names=enabled_tool_names)
 
     def _build_tool(self, name: str) -> BaseTool | None:
