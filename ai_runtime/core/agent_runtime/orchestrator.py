@@ -52,6 +52,12 @@ from ai_runtime.core.agent_runtime.workspace_manager import WorkspaceManager
 logger = logging.getLogger(__name__)
 
 
+def _agent_graph_enabled() -> bool:
+    import os
+
+    return os.getenv("AI_RUNTIME_AGENT_GRAPH", "").lower() in {"1", "true", "yes"}
+
+
 def apply_skill_tool_policy(
     available_tools: list[dict[str, Any]],
     skill_context: SkillRuntimeContext | None,
@@ -2626,6 +2632,25 @@ class AgentOrchestrator:
         )
 
         max_iterations = self._resolve_max_iterations(definition)
+
+        if _agent_graph_enabled():
+            return await self._iterate_via_graph(
+                definition=definition,
+                planning_definition=planning_definition,
+                synthesis_definition=synthesis_definition,
+                output_skill_context=output_skill_context,
+                run=run,
+                managed_subagent=managed_subagent,
+                runtime_context=runtime_context,
+                available_tools=available_tools,
+                available_subagents=available_subagents,
+                runtime_policy=runtime_policy,
+                mounted_knowledge_base_ids=mounted_knowledge_base_ids,
+                planning_resolution=planning_resolution,
+                synthesis_resolution=synthesis_resolution,
+                max_iterations=max_iterations,
+            )
+
         last_plan: Dict[str, Any] | None = None
         for iteration in range(1, max_iterations + 1):
             self._raise_if_cancelled(run.id)
@@ -2717,3 +2742,66 @@ class AgentOrchestrator:
             )
 
         raise RuntimeError(f"Agent exceeded maximum iterations ({max_iterations}) before reaching a final answer")
+
+    async def _iterate_via_graph(
+        self,
+        *,
+        definition: AgentDefinition,
+        planning_definition: AgentDefinition,
+        synthesis_definition: AgentDefinition,
+        output_skill_context: Any,
+        run: AgentRun,
+        managed_subagent: Any,
+        runtime_context: Dict[str, Any],
+        available_tools: list[Dict[str, Any]],
+        available_subagents: list,
+        runtime_policy: Any,
+        mounted_knowledge_base_ids: list[str],
+        planning_resolution: Dict[str, Any],
+        synthesis_resolution: Dict[str, Any],
+        max_iterations: int,
+    ) -> Dict[str, Any]:
+        """Drive the iteration loop through the LangGraph agent graph.
+
+        Returns the same terminal result shape as the inline loop so
+        ``start_run`` doesn't need to change.
+        """
+        from ai_runtime.graphs.agent import RunContext, build_agent_graph, registry
+
+        ctx = RunContext(
+            orchestrator=self,
+            definition=definition,
+            planning_definition=planning_definition,
+            synthesis_definition=synthesis_definition,
+            output_skill_context=output_skill_context,
+            run=run,
+            managed_subagent=managed_subagent,
+            runtime_context=runtime_context,
+            available_tools=available_tools,
+            available_subagents=available_subagents,
+            runtime_policy=runtime_policy,
+            mounted_knowledge_base_ids=mounted_knowledge_base_ids,
+            planning_resolution=planning_resolution,
+            synthesis_resolution=synthesis_resolution,
+        )
+        registry().put(run.id, ctx)
+        try:
+            if not hasattr(self, "_compiled_agent_graph"):
+                self._compiled_agent_graph = build_agent_graph()
+            initial_state: Dict[str, Any] = {
+                "run_id": run.id,
+                "iteration": 0,
+                "max_iterations": max_iterations,
+            }
+            final_state = await self._compiled_agent_graph.ainvoke(
+                initial_state,
+                config={"configurable": {"thread_id": f"agent:{run.id}"}},
+            )
+            terminal = final_state.get("terminal_result")
+            if terminal is None:
+                raise RuntimeError(
+                    f"Agent graph for run {run.id} ended without a terminal_result"
+                )
+            return terminal
+        finally:
+            registry().discard(run.id)

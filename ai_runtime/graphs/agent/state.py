@@ -1,13 +1,24 @@
 """LangGraph state for the agent graph (P6).
 
-The state intentionally tracks the bare minimum needed by the graph
-shell. The bulk of the agent execution context (conversation,
-step_history, governance ledger, pending subagent invocations,
-intent state, promoted artifacts) lives inside the orchestrator's
-in-memory ``runtime_context`` dict and is persisted to the agent_runs
-database row through the existing ``StateStore``. The LangGraph
-checkpoint tables added in P0 (alembic 20260526_0016) provide the
-graph-level resumability for ``ask_user`` interrupts.
+The graph models the iteration loop inside
+:meth:`AgentOrchestrator._execute_run`. The bootstrap + preprocess_intent
+phases stay in the orchestrator (they only run once per run, mutate the
+runtime_context dict in place, and have no branching of interest), as
+does the outer ``start_run`` envelope (run-level status updates and
+``run.started``/``run.completed``/``run.failed`` emission).
+
+What the graph contributes is the topology of the iteration loop:
+
+    iterate_guard -> plan -> {execute_tool, execute_delegate,
+                              synthesize_final, ask_user}
+    execute_tool / execute_delegate -> iterate_guard
+    synthesize_final / ask_user / exhausted -> END
+
+Bulky per-run state (definition, run, runtime_context, available_tools,
+…) lives in :class:`ai_runtime.graphs.agent.context.RunContext` (process-
+local, keyed by run_id). The LangGraph state itself only carries
+control-flow primitives so the AsyncPostgresSaver checkpoint envelope
+stays small.
 """
 from __future__ import annotations
 
@@ -21,12 +32,13 @@ except ImportError:  # pragma: no cover
 
 class AgentState(TypedDict, total=False):
     run_id: str
-    tenant_id: Optional[str]
-    user_id: Optional[str]
+
     iteration: int
+    max_iterations: int
+    last_action_type: Optional[str]
+    last_plan: Optional[Dict[str, Any]]
+
     terminal_result: Optional[Dict[str, Any]]
-    error: Optional[str]
-    ask_user_question: Optional[str]
 
 
 __all__ = ["AgentState"]
