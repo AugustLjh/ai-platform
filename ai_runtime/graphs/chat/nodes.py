@@ -1,15 +1,14 @@
 """LangGraph nodes for the chat graph.
 
-Each node is a pure async function ``ChatState -> ChatState``. The actual
-heavy lifting (LLM resolution, RAG retrieval, message building) delegates
-to the existing :class:`ChatRuntimeService` while we incrementally port
-those primitives into the new layers. This keeps the diff focused on the
-graph topology and event surface; the inner primitives migrate in P8.
+Each node is a pure async function ``ChatState -> ChatState`` that calls
+free helpers in :mod:`ai_runtime.graphs.chat.helpers`. The legacy
+``ChatRuntimeService`` wrapper has been removed; helpers operate directly
+on the request / DB / KB layers.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from ai_runtime.core.chat.response_types import (
     RESPONSE_TYPE_COMPLETE,
@@ -24,18 +23,10 @@ from ai_runtime.core.llm.messages import (
 )
 from ai_runtime.core.uploads.bundle_store import get_attachment_bundle_store
 
+from . import helpers
 from .state import ChatState
 
 logger = logging.getLogger(__name__)
-
-
-def _service():
-    """Lazy import to avoid a circular dep at module load time."""
-    from ai_runtime.core.chat import ChatRuntimeService
-
-    if not hasattr(_service, "_instance"):
-        _service._instance = ChatRuntimeService()  # type: ignore[attr-defined]
-    return _service._instance  # type: ignore[attr-defined]
 
 
 async def parse_node(state: ChatState) -> ChatState:
@@ -45,35 +36,29 @@ async def parse_node(state: ChatState) -> ChatState:
     chunks (the legacy code rebuilt it from ``len(history)`` on every
     yield, which was brittle when history mutated mid-stream).
     """
-    svc = _service()
     history = state.get("history") or []
     session_id = state.get("session_id") or ""
     state["history"] = history
-    state["message_id"] = svc.build_message_id(session_id, len(history))
+    state["message_id"] = helpers.build_message_id(session_id, len(history))
     state["pending_chunks"] = []
     state["response_text"] = ""
     state["usage"] = {}
     state["fallback_used"] = False
     state["fallback_reason"] = None
     state["error"] = None
-    svc.cache_history(session_id, history)
     return state
 
 
 async def resolve_route_node(state: ChatState) -> ChatState:
-    """Resolve governance + LLM candidates and emit ROUTE_DECISION chunk."""
-    svc = _service()
+    """Resolve the route_scene; LLM candidates are deferred until call_model."""
     config = state.get("config") or {}
     use_rag = bool(config.get("use_rag"))
-    state["route_scene"] = svc._determine_route_scene(use_rag)
-    # Candidates are resolved lazily in call_model once the message
-    # request profile is known (depends on uploads + RAG context).
+    state["route_scene"] = helpers.determine_route_scene(use_rag)
     return state
 
 
 async def retrieve_node(state: ChatState) -> ChatState:
     """Optionally pull RAG context + citations and emit a RETRIEVAL chunk."""
-    svc = _service()
     config = state.get("config") or {}
     use_rag = bool(config.get("use_rag"))
     if not use_rag:
@@ -82,7 +67,7 @@ async def retrieve_node(state: ChatState) -> ChatState:
         state["knowledge_base_name"] = None
         return state
 
-    context, citations, kb_name = await svc.build_rag_context_and_citations(
+    context, citations, kb_name = await helpers.build_rag_context_and_citations(
         tenant_id=state.get("tenant_id"),
         user_id=state.get("user_id"),
         knowledge_base_id=config.get("knowledge_base_id"),
@@ -100,7 +85,7 @@ async def retrieve_node(state: ChatState) -> ChatState:
                 "message_id": state.get("message_id"),
                 "type": RESPONSE_TYPE_RETRIEVAL,
                 "content": "",
-                "metadata": svc.build_response_metadata(
+                "metadata": helpers.build_response_metadata(
                     retrieval_status="hit",
                     use_rag=True,
                     knowledge_base_id=config.get("knowledge_base_id"),
@@ -114,7 +99,6 @@ async def retrieve_node(state: ChatState) -> ChatState:
 
 async def build_messages_node(state: ChatState) -> ChatState:
     """Build unified messages with context + uploads and emit ROUTE_DECISION."""
-    svc = _service()
     config = state.get("config") or {}
     upload_bundle_ids = state.get("upload_bundle_ids") or []
     upload_context: Optional[Dict[str, Any]] = None
@@ -126,19 +110,19 @@ async def build_messages_node(state: ChatState) -> ChatState:
             bundle_ids=upload_bundle_ids,
             query=state.get("user_message", ""),
         )
-        state["rag_context"] = svc._build_combined_context(
+        state["rag_context"] = helpers.build_combined_context(
             state.get("rag_context"), upload_context.get("context_text")
         )
     state["upload_context"] = upload_context
 
-    request_user_parts = svc._build_request_user_parts(
+    request_user_parts = helpers.build_request_user_parts(
         state.get("user_message", ""),
         state.get("content_parts") or [],
         upload_context,
     )
     state["request_user_parts"] = request_user_parts
 
-    unified_messages = svc.build_unified_messages(
+    unified_messages = helpers.build_unified_messages(
         user_message=state.get("user_message", ""),
         context=state.get("rag_context"),
         history=state.get("history") or [],
@@ -150,7 +134,7 @@ async def build_messages_node(state: ChatState) -> ChatState:
     state["request_profile"] = request_profile.model_dump()
     required_modalities = set(request_profile.input_modalities)
 
-    governance_resolution = await svc.resolve_llm_candidates(
+    governance_resolution = await helpers.resolve_llm_candidates(
         tenant_id=state.get("tenant_id"),
         user_id=state.get("user_id"),
         knowledge_base_id=config.get("knowledge_base_id"),
@@ -161,7 +145,7 @@ async def build_messages_node(state: ChatState) -> ChatState:
     )
     state["governance_resolution"] = governance_resolution
 
-    state["base_completion_metadata"] = svc.build_response_metadata(
+    state["base_completion_metadata"] = helpers.build_response_metadata(
         retrieval_status="hit" if state.get("citations") else "not_used",
         use_rag=bool(config.get("use_rag")),
         knowledge_base_id=config.get("knowledge_base_id"),
@@ -176,7 +160,6 @@ async def build_messages_node(state: ChatState) -> ChatState:
         model_request_profile=request_profile.model_dump(),
     )
 
-    # ROUTE_DECISION — surface chosen primary candidate to the client.
     candidates = governance_resolution.get("candidates") or []
     if candidates:
         primary = candidates[0]
@@ -208,7 +191,6 @@ async def call_model_node(state: ChatState) -> ChatState:
     the first candidate fails *before* streaming started, we try the next;
     once streaming has started we propagate the failure.
     """
-    svc = _service()
     config = state.get("config") or {}
     governance_resolution = state.get("governance_resolution") or {}
     candidates = governance_resolution.get("candidates") or []
@@ -234,11 +216,11 @@ async def call_model_node(state: ChatState) -> ChatState:
             if constraint_errors:
                 raise RuntimeError("；".join(constraint_errors))
 
-            candidate_messages = svc.build_unified_messages(
+            candidate_messages = helpers.build_unified_messages(
                 user_message=state.get("user_message", ""),
                 context=state.get("rag_context"),
                 history=history,
-                user_parts=svc._materialize_request_user_parts_for_candidate(
+                user_parts=helpers.materialize_request_user_parts_for_candidate(
                     model_candidate,
                     request_user_parts,
                     upload_context,
@@ -269,7 +251,7 @@ async def call_model_node(state: ChatState) -> ChatState:
                     state["usage"] = llm_chunk.usage or {}
                     state["fallback_used"] = fallback_used
                     state["fallback_reason"] = last_error
-                    completion_metadata = svc.build_completion_metadata(
+                    completion_metadata = helpers.build_completion_metadata(
                         base_metadata=base_completion_metadata,
                         model_row=model_candidate,
                         route_scene=state.get("route_scene", "chat"),
@@ -291,14 +273,11 @@ async def call_model_node(state: ChatState) -> ChatState:
                     )
 
             state["response_text"] = full_response
-            svc.cache_history(
-                state.get("session_id", ""),
-                svc.append_history(
-                    history,
-                    state.get("user_message", ""),
-                    full_response,
-                    user_parts=request_user_parts,
-                ),
+            state["history"] = helpers.append_history(
+                history,
+                state.get("user_message", ""),
+                full_response,
+                user_parts=request_user_parts,
             )
             return state
         except Exception as exc:
@@ -316,9 +295,8 @@ async def call_model_node(state: ChatState) -> ChatState:
 
 async def no_hit_node(state: ChatState) -> ChatState:
     """Emit canned no-hit response and terminate when RAG returned nothing."""
-    svc = _service()
     config = state.get("config") or {}
-    no_hit_metadata = svc.build_response_metadata(
+    no_hit_metadata = helpers.build_response_metadata(
         retrieval_status="no_hits",
         use_rag=True,
         knowledge_base_id=config.get("knowledge_base_id"),
@@ -348,9 +326,8 @@ async def no_hit_node(state: ChatState) -> ChatState:
             },
         ]
     )
-    svc.cache_history(
-        state.get("session_id", ""),
-        svc.append_history(state.get("history") or [], state.get("user_message", ""), no_hit_message),
+    state["history"] = helpers.append_history(
+        state.get("history") or [], state.get("user_message", ""), no_hit_message
     )
     state["response_text"] = no_hit_message
     return state

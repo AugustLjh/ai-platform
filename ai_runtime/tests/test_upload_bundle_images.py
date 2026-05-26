@@ -1,7 +1,7 @@
 import pytest
 
-from ai_runtime.core.chat.service import ChatRuntimeService
 from ai_runtime.core.uploads.bundle_store import AttachmentBundleStore
+from ai_runtime.graphs.chat import helpers as chat_helpers
 
 
 class MemoryUpload:
@@ -45,8 +45,7 @@ async def test_jpg_upload_bundle_creates_image_media_part(tmp_path):
 
 
 def test_upload_context_images_are_added_as_image_parts():
-    service = ChatRuntimeService(sessions={})
-    parts = service._build_request_user_parts(
+    parts = chat_helpers.build_request_user_parts(
         "看图",
         [{"type": "text", "text": "看图"}, {"type": "image", "file_id": "front-end-placeholder"}],
         {
@@ -59,17 +58,17 @@ def test_upload_context_images_are_added_as_image_parts():
                     "base64": "abcd",
                 }
             ],
-                "files": [
-                    {
-                        "id": "stored-image",
-                        "name": "receipt.jpg",
-                        "media_kind": "image",
-                        "content_type": "image/jpeg",
-                        "size_bytes": 12,
-                    }
-                ],
-            },
-        )
+            "files": [
+                {
+                    "id": "stored-image",
+                    "name": "receipt.jpg",
+                    "media_kind": "image",
+                    "content_type": "image/jpeg",
+                    "size_bytes": 12,
+                }
+            ],
+        },
+    )
 
     assert [part["type"] for part in parts] == ["text", "image"]
     assert parts[1]["file_id"] == "stored-image"

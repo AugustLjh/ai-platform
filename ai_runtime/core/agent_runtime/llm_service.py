@@ -3,15 +3,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ai_runtime.core.chat.service import ChatRuntimeService
+from ai_runtime.graphs.chat import helpers as chat_helpers
 
 logger = logging.getLogger(__name__)
 
 
 class AgentLLMService:
-    def __init__(self) -> None:
-        self._chat_runtime = ChatRuntimeService()
-
     async def resolve_candidates(
         self,
         *,
@@ -21,7 +18,7 @@ class AgentLLMService:
         route_scene: str,
         requested_model: Optional[str],
     ) -> Dict[str, Any]:
-        return await self._chat_runtime.resolve_llm_candidates(
+        return await chat_helpers.resolve_llm_candidates(
             tenant_id=tenant_id,
             user_id=user_id,
             knowledge_base_id=knowledge_base_id,

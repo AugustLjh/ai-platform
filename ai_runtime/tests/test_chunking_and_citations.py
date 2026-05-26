@@ -2,9 +2,9 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from ai_runtime.core.chat.service import ChatRuntimeService
 from ai_runtime.core.models.knowledge_base import Document, SourceType
 from ai_runtime.core.services.document_service import DocumentService
+from ai_runtime.graphs.chat import helpers as chat_helpers
 
 
 def build_document_service() -> DocumentService:
@@ -66,7 +66,6 @@ def test_structured_chunking_falls_back_to_fixed_chunks_for_long_paragraphs():
 
 
 def test_rag_citations_are_emitted_per_matched_chunk():
-    service = ChatRuntimeService()
     document = Document(
         id="doc-1",
         tenant_id="tenant-1",
@@ -109,10 +108,17 @@ def test_rag_citations_are_emitted_per_matched_chunk():
         ),
     )
 
-    with patch("ai_runtime.core.chat.service.get_container", return_value=SimpleNamespace(document_service=fake_doc_service)):
-        service._get_knowledge_base_name = AsyncMock(return_value="测试知识库")
+    with patch(
+        "ai_runtime.graphs.chat.helpers.get_container",
+        return_value=SimpleNamespace(
+            document_service=fake_doc_service,
+            kb_service=SimpleNamespace(
+                get_knowledge_base=AsyncMock(return_value=SimpleNamespace(name="测试知识库"))
+            ),
+        ),
+    ):
         context, citations, kb_name = asyncio.run(
-            service._build_rag_context_and_citations(
+            chat_helpers.build_rag_context_and_citations(
                 tenant_id="tenant-1",
                 user_id="user-1",
                 knowledge_base_id="kb-1",

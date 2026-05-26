@@ -3,9 +3,9 @@ import asyncio
 from starlette.requests import Request
 
 from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
-from ai_runtime.core.chat.service import ChatRuntimeService
 from ai_runtime.core.dependencies import DEV_DEFAULT_TENANT_ID, get_current_tenant_id
 from ai_runtime.core.services.knowledge_base_service import DEFAULT_GOVERNANCE_SETTINGS
+from ai_runtime.graphs.chat import helpers as chat_helpers
 
 
 async def _empty_receive():
@@ -33,7 +33,6 @@ def test_get_current_tenant_id_uses_valid_development_uuid():
 
 
 def test_parse_request_uses_valid_development_uuid():
-    service = ChatRuntimeService()
     request = type(
         "ChatRequest",
         (),
@@ -45,7 +44,7 @@ def test_parse_request_uses_valid_development_uuid():
         },
     )()
 
-    parsed = service.parse_request(request)
+    parsed = chat_helpers.parse_request(request, sessions={})
 
     assert parsed["tenant_id"] == DEV_DEFAULT_TENANT_ID
 

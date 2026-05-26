@@ -7,11 +7,9 @@ from .response_types import (
     RESPONSE_TYPE_TOOL_CALL,
     map_agent_response_type,
 )
-from .service import ChatRuntimeService
 
 __all__ = [
     "ChatPromptBuilder",
-    "ChatRuntimeService",
     "RESPONSE_TYPE_COMPLETE",
     "RESPONSE_TYPE_CONTENT",
     "RESPONSE_TYPE_ERROR",
