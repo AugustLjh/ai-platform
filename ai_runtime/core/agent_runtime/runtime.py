@@ -44,7 +44,7 @@ from ai_runtime.core.agent_runtime.models import (
     RuntimeCreateRunRequest,
     RuntimeWorkspaceWritebackRequest,
 )
-from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
+from ai_runtime.graphs.agent.runtime import AgentOrchestrator
 from ai_runtime.core.agent_runtime.skills.registry import SkillRegistry
 from ai_runtime.core.agent_runtime.planner import AgentPlanner
 from ai_runtime.core.agent_runtime.production_readiness import evaluate_production_readiness

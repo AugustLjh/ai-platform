@@ -52,12 +52,6 @@ from ai_runtime.core.agent_runtime.workspace_manager import WorkspaceManager
 logger = logging.getLogger(__name__)
 
 
-def _agent_graph_enabled() -> bool:
-    import os
-
-    return os.getenv("AI_RUNTIME_AGENT_GRAPH", "").lower() in {"1", "true", "yes"}
-
-
 def apply_skill_tool_policy(
     available_tools: list[dict[str, Any]],
     skill_context: SkillRuntimeContext | None,
@@ -2633,115 +2627,22 @@ class AgentOrchestrator:
 
         max_iterations = self._resolve_max_iterations(definition)
 
-        if _agent_graph_enabled():
-            return await self._iterate_via_graph(
-                definition=definition,
-                planning_definition=planning_definition,
-                synthesis_definition=synthesis_definition,
-                output_skill_context=output_skill_context,
-                run=run,
-                managed_subagent=managed_subagent,
-                runtime_context=runtime_context,
-                available_tools=available_tools,
-                available_subagents=available_subagents,
-                runtime_policy=runtime_policy,
-                mounted_knowledge_base_ids=mounted_knowledge_base_ids,
-                planning_resolution=planning_resolution,
-                synthesis_resolution=synthesis_resolution,
-                max_iterations=max_iterations,
-            )
-
-        last_plan: Dict[str, Any] | None = None
-        for iteration in range(1, max_iterations + 1):
-            self._raise_if_cancelled(run.id)
-            runtime_context["execution_count"] = iteration
-            pending_terminal_result = await self._collect_pending_subagent_invocations(
-                run=run,
-                runtime_context=runtime_context,
-            )
-            await self._persist_run_state(
-                run.id,
-                status="running",
-                runtime_context=runtime_context,
-                plan=last_plan,
-            )
-            if pending_terminal_result is not None:
-                return pending_terminal_result
-
-            planner_result = await self._plan_next_action(
-                definition=planning_definition,
-                run=run,
-                runtime_context=runtime_context,
-                available_tools=available_tools,
-                available_subagents=available_subagents,
-                llm_resolution=planning_resolution,
-                iteration=iteration,
-            )
-            last_plan = planner_result.model_dump(mode="json")
-            runtime_context["last_plan"] = last_plan
-            await self.tracer.emit_event(
-                run.id,
-                "plan.created",
-                iteration=iteration,
-                plan=last_plan,
-            )
-
-            action = planner_result.action
-            if action.type == "ask_user":
-                return await self._execute_ask_user(
-                    run=run,
-                    runtime_context=runtime_context,
-                    planner_result=planner_result,
-                )
-
-            if action.type == "final_answer":
-                return await self._execute_final_answer(
-                    definition=synthesis_definition,
-                    run=run,
-                    runtime_context=runtime_context,
-                    skill_context=output_skill_context,
-                    managed_subagent=managed_subagent,
-                    planner_result=planner_result,
-                    synthesis_resolution=synthesis_resolution,
-                )
-
-            if action.type == "delegate":
-                observation, delegated_result = await self._execute_delegate_action(
-                    run=run,
-                    runtime_context=runtime_context,
-                    planner_result=planner_result,
-                    available_subagents=available_subagents,
-                    available_tools=available_tools,
-                )
-                runtime_context.setdefault("step_history", []).append(observation)
-                await self._persist_run_state(
-                    run.id,
-                    status="running",
-                    runtime_context=runtime_context,
-                    plan=last_plan,
-                )
-                if delegated_result is not None:
-                    return delegated_result
-                continue
-
-            observation = await self._execute_tool_action(
-                definition=definition,
-                run=run,
-                runtime_context=runtime_context,
-                planner_result=planner_result,
-                runtime_policy=runtime_policy,
-                mounted_knowledge_base_ids=mounted_knowledge_base_ids,
-                managed_subagent=managed_subagent,
-            )
-            runtime_context.setdefault("step_history", []).append(observation)
-            await self._persist_run_state(
-                run.id,
-                status="running",
-                runtime_context=runtime_context,
-                plan=last_plan,
-            )
-
-        raise RuntimeError(f"Agent exceeded maximum iterations ({max_iterations}) before reaching a final answer")
+        return await self._iterate_via_graph(
+            definition=definition,
+            planning_definition=planning_definition,
+            synthesis_definition=synthesis_definition,
+            output_skill_context=output_skill_context,
+            run=run,
+            managed_subagent=managed_subagent,
+            runtime_context=runtime_context,
+            available_tools=available_tools,
+            available_subagents=available_subagents,
+            runtime_policy=runtime_policy,
+            mounted_knowledge_base_ids=mounted_knowledge_base_ids,
+            planning_resolution=planning_resolution,
+            synthesis_resolution=synthesis_resolution,
+            max_iterations=max_iterations,
+        )
 
     async def _iterate_via_graph(
         self,
@@ -2769,7 +2670,7 @@ class AgentOrchestrator:
         from ai_runtime.graphs.agent import RunContext, build_agent_graph, registry
 
         ctx = RunContext(
-            orchestrator=self,
+            runtime=self,
             definition=definition,
             planning_definition=planning_definition,
             synthesis_definition=synthesis_definition,

@@ -16,10 +16,10 @@ from ai_runtime.graphs.agent.context import RunContext
 from ai_runtime.graphs.subagent import build_subagent_graph
 
 
-def _make_ctx(*, orchestrator) -> RunContext:
+def _make_ctx(*, runtime) -> RunContext:
     """Build a RunContext sufficient for the graph nodes to run."""
     return RunContext(
-        orchestrator=orchestrator,
+        runtime=runtime,
         definition=SimpleNamespace(),
         synthesis_definition=SimpleNamespace(),
         planning_definition=SimpleNamespace(),
@@ -72,7 +72,7 @@ async def test_agent_graph_drives_final_answer_path():
     orch.tracer.emit_event = AsyncMock(return_value=None)
     orch._execute_final_answer = AsyncMock(return_value={"status": "completed"})
 
-    ctx = _make_ctx(orchestrator=orch)
+    ctx = _make_ctx(runtime=orch)
     registry().put("run-1", ctx)
     try:
         graph = build_agent_graph()
@@ -109,7 +109,7 @@ async def test_agent_graph_drives_tool_then_final_answer():
     orch._execute_tool_action = AsyncMock(return_value={"observation": "tool-out"})
     orch._execute_final_answer = AsyncMock(return_value={"status": "completed"})
 
-    ctx = _make_ctx(orchestrator=orch)
+    ctx = _make_ctx(runtime=orch)
     registry().put("run-1", ctx)
     try:
         graph = build_agent_graph()
@@ -134,7 +134,7 @@ async def test_agent_graph_short_circuits_on_pending_subagent_invocation():
     orch._persist_run_state = AsyncMock(return_value=None)
     orch._plan_next_action = AsyncMock()  # must NOT be called
 
-    ctx = _make_ctx(orchestrator=orch)
+    ctx = _make_ctx(runtime=orch)
     registry().put("run-1", ctx)
     try:
         graph = build_agent_graph()
@@ -164,7 +164,7 @@ async def test_agent_graph_max_iterations_raises():
     orch.tracer.emit_event = AsyncMock(return_value=None)
     orch._execute_tool_action = AsyncMock(return_value={"observation": "tool"})
 
-    ctx = _make_ctx(orchestrator=orch)
+    ctx = _make_ctx(runtime=orch)
     registry().put("run-1", ctx)
     try:
         graph = build_agent_graph()

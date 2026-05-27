@@ -1,4 +1,4 @@
-from ai_runtime.core.agent_runtime.orchestrator import apply_skill_tool_policy
+from ai_runtime.graphs.agent.runtime import apply_skill_tool_policy
 from ai_runtime.core.agent_runtime.skills.models import SkillDefinition, SkillRuntimeContext
 
 

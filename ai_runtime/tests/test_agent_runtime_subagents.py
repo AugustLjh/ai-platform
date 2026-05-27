@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
-from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
+from ai_runtime.graphs.agent.runtime import AgentOrchestrator
 from ai_runtime.core.agent_runtime.subagents.governance import (
     build_subagent_failure_strategy,
     build_tool_budget_gate,

@@ -6,7 +6,7 @@ import pytest
 
 from ai_runtime.core.agent_runtime.events import MASK
 from ai_runtime.core.agent_runtime.models import AgentDefinition, AgentRun, PlannerAction, PlannerResult
-from ai_runtime.core.agent_runtime.orchestrator import AgentOrchestrator
+from ai_runtime.graphs.agent.runtime import AgentOrchestrator
 from ai_runtime.core.agent_runtime.policy import RuntimePolicy
 from ai_runtime.core.agent_runtime.subagents.models import SubagentDelegationResult, SubagentTarget
 

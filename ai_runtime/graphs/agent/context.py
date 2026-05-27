@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class RunContext:
-    orchestrator: Any
+    runtime: Any
     definition: Any
     synthesis_definition: Any
     planning_definition: Any

@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 
-from ai_runtime.core.agent_runtime import AgentRuntime
+from ai_runtime.core.agent_runtime.runtime import AgentRuntime
 from ai_runtime.core.agent_runtime.audit_view import evaluate_redaction_rules
 from ai_runtime.core.agent_runtime.models import (
     AgentRunEventListResponse,
