@@ -159,6 +159,9 @@ class AttachmentBundleStore:
     def _bundle_json_path(self, tenant_id: str, user_id: str | None, bundle_id: str) -> Path:
         return self._bundle_dir(tenant_id, user_id, bundle_id) / "bundle.json"
 
+    def bundle_exists(self, *, tenant_id: str, user_id: str | None, bundle_id: str) -> bool:
+        return self._bundle_json_path(tenant_id, user_id, bundle_id).exists()
+
     async def create_bundle(
         self,
         *,
@@ -559,11 +562,36 @@ class AttachmentBundleStore:
         max_files: int = MAX_CONTEXT_FILES,
     ) -> dict[str, Any]:
         if not bundle_ids:
-            return {"context_text": "", "files": [], "media_parts": [], "directory_tree": []}
+            return {
+                "context_text": "",
+                "files": [],
+                "media_parts": [],
+                "directory_tree": [],
+                "bundle_ids": [],
+                "missing_bundle_ids": [],
+            }
 
-        bundle_ids = [str(bundle_id).strip() for bundle_id in bundle_ids if str(bundle_id).strip()]
+        requested_bundle_ids = [str(bundle_id).strip() for bundle_id in bundle_ids if str(bundle_id).strip()]
+        missing_bundle_ids = [
+            bundle_id
+            for bundle_id in requested_bundle_ids
+            if not self.bundle_exists(tenant_id=tenant_id, user_id=user_id, bundle_id=bundle_id)
+        ]
+        missing_bundle_id_set = set(missing_bundle_ids)
+        bundle_ids = [
+            bundle_id
+            for bundle_id in requested_bundle_ids
+            if bundle_id not in missing_bundle_id_set
+        ]
         if not bundle_ids:
-            return {"context_text": "", "files": [], "media_parts": [], "directory_tree": []}
+            return {
+                "context_text": "",
+                "files": [],
+                "media_parts": [],
+                "directory_tree": [],
+                "bundle_ids": [],
+                "missing_bundle_ids": missing_bundle_ids,
+            }
 
         manifest = self.list_bundle_files(tenant_id=tenant_id, user_id=user_id, bundle_ids=bundle_ids)
         hits = self.search_bundle_files(
@@ -686,6 +714,8 @@ class AttachmentBundleStore:
             "files": file_summaries,
             "media_parts": media_parts,
             "directory_tree": manifest["directory_tree"],
+            "bundle_ids": manifest["bundle_ids"],
+            "missing_bundle_ids": missing_bundle_ids,
         }
 
     def summarize_bundles(

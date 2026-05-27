@@ -74,3 +74,19 @@ def test_upload_context_images_are_added_as_image_parts():
     assert parts[1]["file_id"] == "stored-image"
     assert parts[1]["base64"] == "abcd"
     assert parts[1]["data"]["size_bytes"] == 12
+
+
+def test_missing_upload_bundle_is_skipped(tmp_path):
+    store = AttachmentBundleStore(storage_root=tmp_path)
+
+    context = store.build_prompt_context(
+        tenant_id="tenant-1",
+        user_id="user-1",
+        bundle_ids=["missing-bundle"],
+        query="hello",
+    )
+
+    assert context["bundle_ids"] == []
+    assert context["missing_bundle_ids"] == ["missing-bundle"]
+    assert context["context_text"] == ""
+    assert context["files"] == []

@@ -62,8 +62,10 @@ services:
       - AGENT_WEB_MAX_OUTPUT_CHARS=${AGENT_WEB_MAX_OUTPUT_CHARS:-40000}
       - AGENT_WEB_TIMEOUT_SECONDS=${AGENT_WEB_TIMEOUT_SECONDS:-20}
       - AGENT_WEB_SEARCH_ENDPOINT=${AGENT_WEB_SEARCH_ENDPOINT:-}
+      - CHAT_UPLOAD_STORAGE_ROOT=/data/upload-bundles
     volumes:
       - huggingface_cache:/root/.cache/huggingface
+      - upload_bundles:/data/upload-bundles
     healthcheck:
       test:
         - CMD
@@ -118,6 +120,9 @@ services:
 volumes:
   huggingface_cache:
     name: ai-platform_huggingface_cache
+    driver: local
+  upload_bundles:
+    name: ai-platform_upload_bundles
     driver: local
 
 networks:
