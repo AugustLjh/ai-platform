@@ -1,8 +1,8 @@
-"""Agent graph builder (P6).
+"""Agent graph builder.
 
-Compiles a multi-node StateGraph that mirrors the legacy
-``AgentOrchestrator._execute_run`` iteration loop. The graph's caller
-is responsible for bootstrap and finalize — see :mod:`.nodes`.
+Compiles the multi-node StateGraph driven by
+``AgentOrchestrator._execute_run``. The graph's caller is responsible
+for bootstrap and finalize — see :mod:`.nodes`.
 """
 from __future__ import annotations
 

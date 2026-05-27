@@ -1,13 +1,8 @@
-"""Agent graph nodes (P6).
+"""Agent graph nodes.
 
-The graph models the iteration loop of :meth:`AgentRuntime._execute_run`.
-Each node delegates leaf compute to existing runtime methods so this
-stays a control-flow rewrite, not a logic rewrite.
-
-The graph's caller is responsible for bootstrap (definition resolution,
-runtime_context preparation, skill/intent setup) and finalize (terminal
-status update, run-level events). See
-:meth:`AgentRuntime._iterate_via_graph` for the wiring.
+Each node delegates to :class:`~ai_runtime.graphs.agent.runtime.AgentOrchestrator`
+methods. Bootstrap and finalize live in ``AgentOrchestrator._execute_run``;
+the graph handles iteration routing only.
 """
 from __future__ import annotations
 

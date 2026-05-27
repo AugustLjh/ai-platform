@@ -1421,11 +1421,6 @@ class AgentRuntime:
             return
         self.state_store.reset_cancel(run_id)
 
-        # Both legacy and graph paths route through orchestrator.start_run;
-        # the graph path is selected inside _execute_run via the
-        # AI_RUNTIME_AGENT_GRAPH env flag, so the outer envelope (status
-        # transitions, run.started/completed/failed events, cancel handling)
-        # stays identical regardless of which iteration loop runs.
         task = asyncio.create_task(self.orchestrator.start_run(run_id))
         self.state_store.register_task(run_id, task)
 
