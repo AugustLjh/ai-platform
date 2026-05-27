@@ -1,30 +1,14 @@
-from .base import BaseLLM, LLMResponse
-from .openai import OpenAILLM
-from .local import LocalLLM
-from .deepseek import DeepseekLLM
-from .jina import JinaLLM
-from .chinese import DoubaoLLM, GLMLLM, KimiLLM, QwenLLM, WenxinLLM
-from .providers import (
-    OPENAI_COMPATIBLE_LLM_PROVIDERS,
-    SUPPORTED_LLM_PROVIDER_PATTERN,
-    SUPPORTED_LLM_PROVIDERS,
-    create_llm_for_provider,
-)
+"""Multimodal message + capability helpers shared with the LangChain stack.
 
-__all__ = [
-    "BaseLLM",
-    "LLMResponse",
-    "OpenAILLM",
-    "LocalLLM",
-    "DeepseekLLM",
-    "JinaLLM",
-    "QwenLLM",
-    "WenxinLLM",
-    "GLMLLM",
-    "KimiLLM",
-    "DoubaoLLM",
-    "SUPPORTED_LLM_PROVIDERS",
-    "SUPPORTED_LLM_PROVIDER_PATTERN",
-    "OPENAI_COMPATIBLE_LLM_PROVIDERS",
-    "create_llm_for_provider",
-]
+After P8.3 the legacy ``BaseLLM`` provider hierarchy is gone; this package
+only exposes the message/capability primitives in ``messages.py`` (still
+used by the chat-graph helpers, the agent runtime, and the API layer).
+
+Submodules are imported explicitly by their callers — the package
+``__init__`` stays empty to break the eager dependency chain on the
+LangChain-side ``ai_runtime.llm`` package (whose ``__init__`` imports
+``capability`` which in turn imports back here).
+
+The LangChain ``BaseChatModel`` factory + provider subclasses live in
+``ai_runtime.llm``.
+"""

@@ -28,7 +28,8 @@ from ai_runtime.core.parsers.file_parser import FileParser
 from ai_runtime.core.parsers.url_fetcher import URLFetcher
 from ai_runtime.core.audit import AuditLogger
 from ai_runtime.core.quota import QuotaManager
-from ai_runtime.core.llm import BaseLLM, create_llm_for_provider
+from ai_runtime.llm.factory import build_chat_model
+from langchain_core.messages import HumanMessage, SystemMessage
 from ai_runtime.core.vector_index import VectorIndex, VectorSearchHit
 
 try:
@@ -46,6 +47,24 @@ class DuplicateDocumentError(Exception):
     def __init__(self, payload: Dict[str, Any]):
         self.payload = payload
         super().__init__(payload.get("message") or "Duplicate document detected")
+
+
+def _ai_message_text(message: Any) -> str:
+    """Flatten a LangChain ``AIMessage`` to plain text for parsing."""
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return str(content or "")
 
 AI_METADATA_KEYS = {
     "ai_summary",
@@ -1718,26 +1737,29 @@ class DocumentService:
             "config": self._deserialize_model_config(row["config"]),
         }
 
-    def _create_llm_instance(self, model_row: Dict[str, Any]) -> BaseLLM:
+    def _create_llm_instance(self, model_row: Dict[str, Any]):
         cache_key = model_row["id"]
         cached = self._rerank_runtime_cache.get(cache_key)
-        if isinstance(cached, BaseLLM):
+        if cached is not None and not isinstance(cached, dict):
             return cached
 
-        provider = (model_row.get("provider") or "").lower()
-        model_id = model_row.get("model_id") or "unknown-model"
-        api_key = model_row.get("api_key_encrypted")
-        api_base = model_row.get("api_base")
         try:
-            llm = create_llm_for_provider(
-                provider,
-                model=model_id,
-                api_key=api_key,
-                api_base=api_base,
-                config=model_row.get("config") or {},
+            llm = build_chat_model(
+                {
+                    "id": model_row.get("id"),
+                    "name": model_row.get("name"),
+                    "display_name": model_row.get("display_name"),
+                    "provider": model_row.get("provider"),
+                    "model_id": model_row.get("model_id"),
+                    "api_base": model_row.get("api_base"),
+                    "api_key": model_row.get("api_key_encrypted"),
+                    "config": model_row.get("config") or {},
+                }
             )
         except ValueError as exc:
-            raise ValueError(f"Unsupported rerank LLM provider: {provider}") from exc
+            raise ValueError(
+                f"Unsupported rerank LLM provider: {model_row.get('provider')}"
+            ) from exc
 
         self._rerank_runtime_cache[cache_key] = llm
         return llm
@@ -1905,35 +1927,28 @@ class DocumentService:
 
     async def _apply_llm_rerank(
         self,
-        llm: BaseLLM,
+        llm: Any,
         query: str,
         results: List[tuple[Document, float]],
     ) -> List[tuple[Document, float]]:
         candidate_payload = self._build_rerank_candidate_payload(query, results)
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a retrieval reranker. Score how well each candidate answers the query. "
-                    "Return strict JSON only in the form "
-                    "{\"results\":[{\"index\":0,\"score\":0.0}]}. "
-                    "Scores must be floats between 0 and 1. Use every candidate exactly once."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Query:\n{self._truncate_for_rerank(query, 800)}\n\n"
-                    f"Candidates:\n{json.dumps(candidate_payload, ensure_ascii=False)}"
-                ),
-            },
-        ]
+        system_text = (
+            "You are a retrieval reranker. Score how well each candidate answers the query. "
+            "Return strict JSON only in the form "
+            "{\"results\":[{\"index\":0,\"score\":0.0}]}. "
+            "Scores must be floats between 0 and 1. Use every candidate exactly once."
+        )
+        user_text = (
+            f"Query:\n{self._truncate_for_rerank(query, 800)}\n\n"
+            f"Candidates:\n{json.dumps(candidate_payload, ensure_ascii=False)}"
+        )
 
-        raw_response = await llm.chat(
-            messages,
+        response = await llm.ainvoke(
+            [SystemMessage(content=system_text), HumanMessage(content=user_text)],
             temperature=0,
             max_tokens=RERANK_MAX_RESPONSE_TOKENS,
         )
+        raw_response = _ai_message_text(response)
         scores = self._parse_rerank_scores(raw_response, len(results))
         if not scores:
             raise ValueError("LLM rerank response did not contain usable scores")

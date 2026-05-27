@@ -26,7 +26,6 @@ except ImportError:  # pragma: no cover - skeleton fallback
 
 from pydantic import Field
 
-from ai_runtime.core.llm.catalog import infer_model_capabilities
 from ai_runtime.core.llm.messages import (
     ModelCapabilityProfile,
     capability_profile_from_settings,
@@ -38,6 +37,7 @@ from ai_runtime.llm.adapters import (
     get_adapter_spec_for_protocol,
     normalize_endpoint_protocol,
 )
+from ai_runtime.llm.catalog import infer_model_capabilities
 
 
 class _OpenAICompatBase(ChatOpenAI):  # type: ignore[misc]

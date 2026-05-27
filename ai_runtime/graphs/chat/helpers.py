@@ -21,7 +21,6 @@ from uuid import UUID
 from ai_runtime.core.chat.prompting import ChatPromptBuilder
 from ai_runtime.core.chat.response_types import RESPONSE_TYPE_ERROR
 from ai_runtime.core.dependencies import DEV_DEFAULT_TENANT_ID, get_container
-from ai_runtime.core.llm import create_llm_for_provider
 from ai_runtime.core.llm.messages import (
     ContentPart,
     ModelRequestProfile,
@@ -35,6 +34,7 @@ from ai_runtime.core.uploads.bundle_store import (
     UPLOAD_BUNDLE_IDS_METADATA_KEY,
     normalize_bundle_ids,
 )
+from ai_runtime.llm.factory import build_chat_model
 
 logger = logging.getLogger(__name__)
 
@@ -574,8 +574,17 @@ def build_capabilities_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def candidate_capability(candidate: Dict[str, Any]):
+    """Resolve the capability profile for a candidate.
+
+    Both legacy ``BaseLLM`` (``.capabilities``) and the LangChain
+    ``BaseChatModel`` subclasses in ``ai_runtime.llm`` (``.capability``)
+    expose the profile; check both. Falls back to the dict on the row's
+    ``config``.
+    """
+    llm = candidate.get("llm") or candidate.get("model")
     return (
-        getattr(candidate.get("llm"), "capabilities", None)
+        getattr(llm, "capability", None)
+        or getattr(llm, "capabilities", None)
         or (candidate.get("config") or {}).get("capabilities")
         or candidate.get("config", {})
     )
@@ -611,21 +620,29 @@ _LLM_INSTANCE_CACHE: Dict[str, Any] = {}
 
 
 def _create_llm_instance(model_row: Dict[str, Any]):
+    """Build a LangChain ``BaseChatModel`` for the given DB row.
+
+    The instance is cached process-wide by row id so we don't pay the
+    instantiation cost (api client setup, capability inference) on every
+    chat request.
+    """
     cache_key = model_row["id"]
     cached = _LLM_INSTANCE_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    provider = (model_row.get("provider") or "").lower()
-    model_id = model_row.get("model_id") or "unknown-model"
-    api_key = model_row.get("api_key_encrypted")
-    api_base = model_row.get("api_base")
-    llm = create_llm_for_provider(
-        provider,
-        model=model_id,
-        api_key=api_key,
-        api_base=api_base,
-        config=model_row.get("config") or {},
+    config = model_row.get("config") or {}
+    llm = build_chat_model(
+        {
+            "id": model_row.get("id"),
+            "name": model_row.get("name"),
+            "display_name": model_row.get("display_name"),
+            "provider": model_row.get("provider"),
+            "model_id": model_row.get("model_id"),
+            "api_base": model_row.get("api_base"),
+            "api_key": model_row.get("api_key_encrypted"),
+            "config": config,
+        }
     )
     _LLM_INSTANCE_CACHE[cache_key] = llm
     return llm
@@ -740,27 +757,37 @@ async def _get_governance_settings(
 
 
 def _env_default_candidate() -> Dict[str, Any]:
-    """Build the env-default fallback candidate (Deepseek by default)."""
+    """Build the env-default fallback candidate.
+
+    Provider + model come from ``LLMConfig.from_env()``. Used only when
+    no DB rows are configured for a tenant.
+    """
     import os
     from ai_runtime.core.config import LLMConfig
 
     llm_config = LLMConfig.from_env()
-    llm = create_llm_for_provider(
-        llm_config.provider,
-        model=os.getenv("DEFAULT_CHAT_MODEL", llm_config.model),
-        api_key=llm_config.api_key,
-        api_base=llm_config.api_base,
-        config={
-            "timeout": llm_config.timeout,
-            "max_retries": llm_config.max_retries,
-        },
+    model_id = os.getenv("DEFAULT_CHAT_MODEL", llm_config.model)
+    llm = build_chat_model(
+        {
+            "id": "env-default",
+            "name": "env-default",
+            "display_name": "Environment Default",
+            "provider": llm_config.provider,
+            "model_id": model_id,
+            "api_base": llm_config.api_base,
+            "api_key": llm_config.api_key,
+            "config": {
+                "timeout": llm_config.timeout,
+                "max_retries": llm_config.max_retries,
+            },
+        }
     )
     return {
         "id": "env-default",
         "name": "env-default",
         "display_name": "Environment Default",
         "provider": llm_config.provider,
-        "model_id": llm.model,
+        "model_id": model_id,
         "config": {},
         "llm": llm,
         "source": "env_default",

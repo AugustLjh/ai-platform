@@ -39,8 +39,10 @@ from ai_runtime.llm.catalog import (
     model_capability_schema,
 )
 from ai_runtime.llm.factory import (
+    OPENAI_COMPATIBLE_PROVIDERS,
     PROVIDER_CHAT_MODELS,
     SUPPORTED_PROVIDERS,
+    SUPPORTED_PROVIDER_PATTERN,
     build_chat_model,
     wrap_model,
 )
@@ -81,6 +83,7 @@ __all__ = [
     "MediaTransportRunnable",
     "MockChatModel",
     "ModelRouterRunnable",
+    "OPENAI_COMPATIBLE_PROVIDERS",
     "OpenAIChatModel",
     "PROVIDER_CHAT_MODELS",
     "ParamPolicy",
@@ -90,6 +93,7 @@ __all__ = [
     "RouteDecision",
     "SUPPORTED_ENDPOINT_PROTOCOLS",
     "SUPPORTED_PROVIDERS",
+    "SUPPORTED_PROVIDER_PATTERN",
     "TransportPlan",
     "WenxinChatModel",
     "adapter_schema",

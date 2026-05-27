@@ -13,7 +13,7 @@ from ai_runtime.core.agent_runtime.models import (
 )
 from ai_runtime.core.agent_runtime.optimization import AgentRuntimeOptimizationConfig
 from ai_runtime.core.agent_runtime.subagents.models import SubagentTarget
-from ai_runtime.core.llm import OPENAI_COMPATIBLE_LLM_PROVIDERS
+from ai_runtime.llm import OPENAI_COMPATIBLE_PROVIDERS
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
@@ -26,7 +26,7 @@ class AgentPlanner:
         candidates = llm_resolution.get("candidates")
         if not isinstance(candidates, list) or not candidates:
             return False
-        supported_providers = {"deepseek", *OPENAI_COMPATIBLE_LLM_PROVIDERS}
+        supported_providers = {"deepseek", *OPENAI_COMPATIBLE_PROVIDERS}
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 return False

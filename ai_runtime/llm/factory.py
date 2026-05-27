@@ -66,6 +66,14 @@ SUPPORTED_PROVIDERS: tuple[str, ...] = (
 )
 
 
+OPENAI_COMPATIBLE_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "jina", "qwen", "wenxin", "glm", "kimi", "doubao"}
+)
+
+
+SUPPORTED_PROVIDER_PATTERN = f"^({'|'.join(SUPPORTED_PROVIDERS)})$"
+
+
 PROVIDER_CHAT_MODELS: dict[str, type] = {
     "openai": OpenAIChatModel,
     "deepseek": DeepseekChatModel,
@@ -218,8 +226,10 @@ def wrap_model(
 
 
 __all__ = [
+    "OPENAI_COMPATIBLE_PROVIDERS",
     "PROVIDER_CHAT_MODELS",
     "SUPPORTED_PROVIDERS",
+    "SUPPORTED_PROVIDER_PATTERN",
     "build_chat_model",
     "wrap_model",
 ]

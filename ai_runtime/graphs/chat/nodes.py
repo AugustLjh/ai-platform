@@ -17,13 +17,13 @@ from ai_runtime.core.chat.response_types import (
     RESPONSE_TYPE_ROUTE_DECISION,
 )
 from ai_runtime.core.llm.messages import (
-    UnifiedModelRequest,
     build_model_request_profile,
     validate_message_constraints,
 )
 from ai_runtime.core.uploads.bundle_store import get_attachment_bundle_store
 
 from . import helpers
+from .message_adapter import unified_to_langchain
 from .state import ChatState
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,8 @@ async def call_model_node(state: ChatState) -> ChatState:
         fallback_used = attempt_index > 0
         full_response = ""
         stream_started = False
+        usage: Dict[str, Any] = {}
+        finish_reason: Optional[str] = None
 
         try:
             constraint_errors = validate_message_constraints(
@@ -227,50 +229,58 @@ async def call_model_node(state: ChatState) -> ChatState:
                 ),
             )
 
-            async for llm_chunk in model_candidate["llm"].stream_chat(
-                UnifiedModelRequest.from_messages(
-                    candidate_messages,
-                    temperature=config.get("temperature"),
-                    max_tokens=config.get("max_tokens"),
-                ),
-            ):
-                if llm_chunk.content:
+            astream_kwargs: Dict[str, Any] = {}
+            if config.get("temperature") is not None:
+                astream_kwargs["temperature"] = config["temperature"]
+            if config.get("max_tokens") is not None:
+                astream_kwargs["max_tokens"] = config["max_tokens"]
+
+            llm = model_candidate["llm"]
+            lc_messages = unified_to_langchain(candidate_messages)
+
+            async for chunk in llm.astream(lc_messages, **astream_kwargs):
+                text = _chunk_text(chunk)
+                if text:
                     stream_started = True
-                    full_response += llm_chunk.content
+                    full_response += text
                     state["pending_chunks"].append(
                         {
                             "session_id": state.get("session_id"),
                             "message_id": state.get("message_id"),
                             "type": RESPONSE_TYPE_CONTENT,
-                            "content": llm_chunk.content,
+                            "content": text,
                             "metadata": {},
                         }
                     )
+                chunk_finish, chunk_usage = _chunk_completion_info(chunk)
+                if chunk_usage:
+                    usage = chunk_usage
+                if chunk_finish:
+                    finish_reason = chunk_finish
 
-                if llm_chunk.finish_reason:
-                    state["usage"] = llm_chunk.usage or {}
-                    state["fallback_used"] = fallback_used
-                    state["fallback_reason"] = last_error
-                    completion_metadata = helpers.build_completion_metadata(
-                        base_metadata=base_completion_metadata,
-                        model_row=model_candidate,
-                        route_scene=state.get("route_scene", "chat"),
-                        config_version=governance_resolution.get("config_version", 1),
-                        usage=llm_chunk.usage,
-                        fallback_used=fallback_used,
-                        fallback_reason=last_error,
-                        requested_model=config.get("model"),
-                    )
-                    state["pending_chunks"].append(
-                        {
-                            "session_id": state.get("session_id"),
-                            "message_id": state.get("message_id"),
-                            "type": RESPONSE_TYPE_COMPLETE,
-                            "content": "",
-                            "token_usage": llm_chunk.usage or {},
-                            "metadata": completion_metadata,
-                        }
-                    )
+            state["usage"] = usage
+            state["fallback_used"] = fallback_used
+            state["fallback_reason"] = last_error
+            completion_metadata = helpers.build_completion_metadata(
+                base_metadata=base_completion_metadata,
+                model_row=model_candidate,
+                route_scene=state.get("route_scene", "chat"),
+                config_version=governance_resolution.get("config_version", 1),
+                usage=usage,
+                fallback_used=fallback_used,
+                fallback_reason=last_error,
+                requested_model=config.get("model"),
+            )
+            state["pending_chunks"].append(
+                {
+                    "session_id": state.get("session_id"),
+                    "message_id": state.get("message_id"),
+                    "type": RESPONSE_TYPE_COMPLETE,
+                    "content": "",
+                    "token_usage": usage,
+                    "metadata": completion_metadata,
+                }
+            )
 
             state["response_text"] = full_response
             state["history"] = helpers.append_history(
@@ -291,6 +301,60 @@ async def call_model_node(state: ChatState) -> ChatState:
             )
 
     raise RuntimeError(last_error or "No available model candidate")
+
+
+def _chunk_text(chunk: Any) -> str:
+    """Extract printable text from a LangChain chat-model stream chunk.
+
+    ``AIMessageChunk.content`` is either ``str`` or a list of content
+    dicts; both shapes appear depending on whether the upstream provider
+    streams text or structured parts.
+    """
+    content = getattr(chunk, "content", None)
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return str(content)
+
+
+def _chunk_completion_info(chunk: Any) -> tuple[Optional[str], Dict[str, Any]]:
+    """Read ``finish_reason`` and token usage off a streamed chunk.
+
+    LangChain surfaces token counts on ``usage_metadata`` (preferred) and
+    falls back to provider-native ``response_metadata['token_usage']``.
+    The terminal chunk also carries ``finish_reason`` in ``response_metadata``.
+    """
+    finish_reason: Optional[str] = None
+    usage: Dict[str, Any] = {}
+    response_metadata = getattr(chunk, "response_metadata", None) or {}
+    if isinstance(response_metadata, dict):
+        finish_reason = response_metadata.get("finish_reason") or None
+        token_usage = response_metadata.get("token_usage")
+        if isinstance(token_usage, dict):
+            usage = {
+                "prompt_tokens": int(token_usage.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(token_usage.get("completion_tokens", 0) or 0),
+                "total_tokens": int(token_usage.get("total_tokens", 0) or 0),
+            }
+    usage_metadata = getattr(chunk, "usage_metadata", None)
+    if isinstance(usage_metadata, dict):
+        usage = {
+            "prompt_tokens": int(usage_metadata.get("input_tokens", 0) or 0),
+            "completion_tokens": int(usage_metadata.get("output_tokens", 0) or 0),
+            "total_tokens": int(usage_metadata.get("total_tokens", 0) or 0),
+        }
+    return finish_reason, usage
 
 
 async def no_hit_node(state: ChatState) -> ChatState:

@@ -10,9 +10,11 @@ from uuid import UUID
 import json
 import logging
 
-from ai_runtime.core.llm import SUPPORTED_LLM_PROVIDER_PATTERN
-from ai_runtime.core.llm.adapters import adapter_schema
-from ai_runtime.core.llm.catalog import model_capability_schema
+from ai_runtime.llm import (
+    SUPPORTED_PROVIDER_PATTERN as SUPPORTED_LLM_PROVIDER_PATTERN,
+    adapter_schema,
+    model_capability_schema,
+)
 from ai_runtime.core.llm.messages import capability_profile_from_settings, supports_endpoint_protocol
 from ai_runtime.core.dependencies import get_db_manager, get_current_tenant_id, get_current_user_id
 from ai_runtime.core.database import DatabaseManager

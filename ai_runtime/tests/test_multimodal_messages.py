@@ -1,9 +1,24 @@
-from pathlib import Path
+"""Tests for the messages-module multimodal helpers.
 
-import pytest
+This file used to also exercise ``OpenAILLM.prepare_messages`` /
+``prepare_responses_messages`` payload-shaping helpers; that legacy code
+has been removed in P8.3 in favour of LangChain ``ChatOpenAI``. The
+equivalent payload + transport coverage lives in
+``tests/llm/test_adapter_payloads.py`` and
+``tests/llm/test_media_transport.py``.
+"""
 
-from ai_runtime.core.llm.messages import capability_profile_from_settings, normalize_messages, required_input_modalities, supports_modalities, build_model_request_profile, supports_model_request, supports_endpoint_protocol, endpoint_protocol_input_modalities, validate_message_constraints
-from ai_runtime.core.llm.openai import OpenAILLM
+from ai_runtime.core.llm.messages import (
+    build_model_request_profile,
+    capability_profile_from_settings,
+    endpoint_protocol_input_modalities,
+    normalize_messages,
+    required_input_modalities,
+    supports_endpoint_protocol,
+    supports_model_request,
+    supports_modalities,
+    validate_message_constraints,
+)
 
 
 def test_normalize_messages_accepts_legacy_text_and_content_parts():
@@ -133,243 +148,6 @@ def test_normalize_messages_accepts_dashscope_style_media_fields():
     )
 
     assert [part.type for part in messages[0].content] == ["image", "video", "audio", "text"]
-
-
-def test_openai_llm_prepares_mixed_content_parts():
-    llm = OpenAILLM(model="gpt-test", api_key="test")
-
-    prepared = llm.prepare_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "what is in this image"},
-                    {"type": "image", "url": "https://example.com/image.png", "mime_type": "image/png"},
-                ],
-            }
-        ]
-    )
-
-    assert prepared[0]["role"] == "user"
-    assert isinstance(prepared[0]["content"], list)
-    assert prepared[0]["content"][0]["type"] == "text"
-    assert prepared[0]["content"][1]["type"] == "image_url"
-
-
-def test_openai_responses_prepares_file_audio_and_video_parts(tmp_path):
-    audio_path = tmp_path / "sample.mp3"
-    video_path = tmp_path / "sample.mp4"
-    audio_path.write_bytes(b"audio")
-    video_path.write_bytes(b"video")
-    llm = OpenAILLM(
-        model="gpt-test",
-        api_key="test",
-        endpoint_protocol="openai.responses",
-        input_modalities=["text", "image", "audio", "video", "file"],
-    )
-
-    prepared = llm.prepare_responses_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "file", "file_id": "file-abc", "file_name": "guide.pdf"},
-                    {"type": "audio", "url": str(audio_path), "mime_type": "audio/mpeg"},
-                    {"type": "video", "url": str(video_path), "mime_type": "video/mp4"},
-                ],
-            }
-        ]
-    )
-
-    parts = prepared[0]["content"]
-    assert parts[0] == {
-        "type": "input_file",
-        "file_id": "file-abc",
-        "filename": "guide.pdf",
-        "mime_type": "application/pdf",
-    }
-    assert parts[1]["type"] == "input_audio"
-    assert parts[1]["input_audio"]["data"] == "YXVkaW8="
-    assert parts[1]["input_audio"]["format"] == "mp3"
-    assert parts[2]["type"] == "input_file"
-    assert parts[2]["file_data"] == "dmlkZW8="
-    assert parts[2]["filename"] == "sample.mp4"
-    assert parts[2]["mime_type"] == "video/mp4"
-
-
-def test_openai_responses_honors_media_transport_priority_for_file_id():
-    llm = OpenAILLM(
-        model="gpt-test",
-        api_key="test",
-        endpoint_protocol="openai.responses",
-        input_modalities=["text", "image", "file"],
-        adapter_options={"media_transport": ["file_id", "base64", "url"]},
-    )
-
-    prepared = llm.prepare_responses_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "file_id": "img-1", "file_name": "cover.png", "mime_type": "image/png"},
-                    {"type": "file", "file_id": "file-1", "file_name": "report.pdf", "text": "summary"},
-                ],
-            }
-        ]
-    )
-
-    assert prepared[0]["content"][0]["file_id"] == "img-1"
-    assert prepared[0]["content"][1]["file_id"] == "file-1"
-
-
-def test_openai_responses_materializes_base64_audio_part():
-    llm = OpenAILLM(
-        model="gpt-test",
-        api_key="test",
-        endpoint_protocol="openai.responses",
-        input_modalities=["text", "audio"],
-    )
-
-    prepared = llm.prepare_responses_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "audio",
-                        "base64": "YXVkaW8=",
-                        "mime_type": "audio/wav",
-                        "file_name": "clip.wav",
-                    }
-                ],
-            }
-        ]
-    )
-
-    part = prepared[0]["content"][0]
-    assert part["type"] == "input_audio"
-    assert part["input_audio"]["data"] == "YXVkaW8="
-    assert part["input_audio"]["format"] == "wav"
-
-
-def test_openai_responses_protocol_accepts_video_input():
-    llm = OpenAILLM(
-        model="gpt-test",
-        api_key="test",
-        endpoint_protocol="openai.responses",
-        input_modalities=["text", "video"],
-    )
-
-    prepared = llm.prepare_responses_messages(
-        [
-            {
-                "role": "user",
-                "content": [{"type": "video", "file_id": "file-video", "file_name": "demo.mp4"}],
-            }
-        ]
-    )
-
-    assert prepared[0]["content"][0]["type"] == "input_file"
-    assert prepared[0]["content"][0]["file_id"] == "file-video"
-
-
-def test_openai_responses_uses_extracted_file_text_as_input_text():
-    llm = OpenAILLM(
-        model="gpt-test",
-        api_key="test",
-        endpoint_protocol="openai.responses",
-        input_modalities=["text", "file"],
-    )
-
-    prepared = llm.prepare_responses_messages(
-        [
-            {
-                "role": "user",
-                "content": [{"type": "file", "text": "extracted document text"}],
-            }
-        ]
-    )
-
-    assert prepared[0]["content"][0] == {"type": "input_text", "text": "extracted document text"}
-
-
-def test_openai_responses_uses_file_url_for_remote_audio():
-    llm = OpenAILLM(
-        model="gpt-test",
-        api_key="test",
-        endpoint_protocol="openai.responses",
-        input_modalities=["text", "audio"],
-    )
-
-    prepared = llm.prepare_responses_messages(
-        [
-            {
-                "role": "user",
-                "content": [{"type": "audio", "url": "https://example.com/clip.mp3"}],
-            }
-        ]
-    )
-
-    assert prepared[0]["content"][0]["type"] == "input_file"
-    assert prepared[0]["content"][0]["file_url"] == "https://example.com/clip.mp3"
-    assert prepared[0]["content"][0]["filename"] == "clip.mp3"
-
-
-def test_openai_responses_accepts_base64_file_payloads():
-    llm = OpenAILLM(
-        model="gpt-test",
-        api_key="test",
-        endpoint_protocol="openai.responses",
-        input_modalities=["text", "file"],
-    )
-
-    prepared = llm.prepare_responses_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "file",
-                        "base64": "cGRm",
-                        "mime_type": "application/pdf",
-                        "file_name": "guide.pdf",
-                    }
-                ],
-            }
-        ]
-    )
-
-    part = prepared[0]["content"][0]
-    assert part["type"] == "input_file"
-    assert part["file_data"] == "cGRm"
-    assert part["filename"] == "guide.pdf"
-    assert part["mime_type"] == "application/pdf"
-
-
-def test_openai_responses_rejects_unsupported_audio_format():
-    llm = OpenAILLM(
-        model="gpt-test",
-        api_key="test",
-        endpoint_protocol="openai.responses",
-        input_modalities=["text", "audio"],
-    )
-
-    with pytest.raises(RuntimeError, match="only supports mp3/wav audio"):
-        llm.prepare_responses_messages(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "audio",
-                            "base64": "YXVkaW8=",
-                            "mime_type": "audio/ogg",
-                            "file_name": "clip.ogg",
-                        }
-                    ],
-                }
-            ]
-        )
 
 
 def test_validate_message_constraints_flags_size_count_and_mime_violations():

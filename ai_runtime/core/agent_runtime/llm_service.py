@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from ai_runtime.graphs.chat import helpers as chat_helpers
+from ai_runtime.graphs.chat.message_adapter import unified_to_langchain
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,12 @@ class AgentLLMService:
         **kwargs: Any,
     ) -> Tuple[str, Dict[str, Any]]:
         last_error: Exception | None = None
+        lc_messages = unified_to_langchain(messages)
 
         for candidate in resolution.get("candidates", []):
             try:
-                response = await candidate["llm"].chat(messages, **kwargs)
-                return response, self._build_candidate_info(candidate, resolution)
+                response = await candidate["llm"].ainvoke(lc_messages, **kwargs)
+                return _content_text(response), self._build_candidate_info(candidate, resolution)
             except Exception as exc:
                 last_error = exc
                 logger.warning(
@@ -67,3 +69,25 @@ class AgentLLMService:
             "model_source": candidate.get("source"),
             "endpoint_protocol": (candidate.get("config") or {}).get("endpoint_protocol"),
         }
+
+
+def _content_text(message: Any) -> str:
+    """Extract printable text from an ``AIMessage`` returned by ``ainvoke``.
+
+    LangChain may return ``content`` as either a plain string or a list of
+    content-part dicts (responses-API style). Both flatten to text here.
+    """
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return str(content or "")
